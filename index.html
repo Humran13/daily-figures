@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:520px; margin:0 auto; min-height:100vh; background:var(--paper); display:flex; flex-direction:column; }
+  header{ background:var(--ink); color:var(--paper); padding:20px 20px 16px; position:sticky; top:0; z-index:10; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; display:flex; justify-content:space-between; align-items:center;}
+  header h1 .logout{ font-size:11px; color:#8A94A6; font-weight:600; cursor:pointer; text-decoration:underline; }
+  .tabs{ display:flex; gap:0; margin-top:16px; border-bottom:1px solid #333d4d; }
+  .tab{ flex:1; text-align:center; padding:10px 0; font-size:13px; font-weight:600; color:#8A94A6; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active{ color:var(--paper); border-bottom-color:var(--amber); }
+  main{ flex:1; padding:20px; padding-bottom:100px; }
+  .setup{ display:flex; gap:10px; margin-bottom:22px; }
+  .field{ flex:1; }
+  .field label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); margin-bottom:6px; }
+  .field input, .field select{ width:100%; padding:11px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:15px; font-family:var(--sans); background:white; color:var(--ink); }
+  .field select{ font-weight:600; }
+  .progress-wrap{ display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+  .progress-track{ flex:1; height:6px; background:var(--paper-dim); border-radius:3px; overflow:hidden; }
+  .progress-fill{ height:100%; background:var(--teal); border-radius:3px; transition:width .25s ease; }
+  .progress-label{ font-family:var(--mono); font-size:12px; color:var(--ink-soft); white-space:nowrap; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:16px; padding:22px 20px; margin-bottom:16px; }
+  .product-name{ font-size:22px; font-weight:800; letter-spacing:-.01em; margin:0 0 2px; }
+  .product-sub{ font-size:12px; color:var(--ink-soft); margin:0 0 18px; }
+  .stock-readout{ display:flex; justify-content:space-between; align-items:center; background:var(--paper-dim); border-radius:10px; padding:12px 14px; margin-bottom:18px; }
+  .stock-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); }
+  .stock-readout .val{ font-family:var(--mono); font-size:20px; font-weight:700; color:var(--ink); }
+  .num-field{ margin-bottom:14px; }
+  .num-field label{ display:block; font-size:13px; font-weight:700; color:var(--ink); margin-bottom:6px; }
+  .num-field .hint{ font-weight:400; color:var(--ink-soft); font-size:11px; }
+  .num-field input{ width:100%; padding:16px 14px; border:2px solid var(--line); border-radius:10px; font-family:var(--mono); font-size:24px; font-weight:700; color:var(--ink); background:var(--paper-dim); }
+  .num-field input:focus{ outline:none; border-color:var(--teal); background:white; }
+  .closing-readout{ margin-top:18px; padding:16px; border-radius:10px; background:var(--ink); color:var(--paper); display:flex; justify-content:space-between; align-items:center; }
+  .closing-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#8A94A6; }
+  .closing-readout .val{ font-family:var(--mono); font-size:26px; font-weight:800; color:var(--amber); }
+  .nav-row{ display:flex; gap:10px; margin-top:18px; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; }
+  .btn{ flex:1; padding:15px; border-radius:10px; font-size:15px; font-weight:700; }
+  .btn-primary{ background:var(--teal); color:white; }
+  .btn-primary:active{ background:var(--teal-dark); }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink-soft); flex:0 0 90px; }
+  .btn-skip{ background:none; color:var(--ink-soft); text-decoration:underline; padding:10px; font-size:13px; width:100%; margin-top:4px; font-weight:600; }
+  .done-card{ text-align:center; padding:40px 20px; }
+  .done-card .check{ font-size:44px; margin-bottom:10px; }
+  .done-card h2{ margin:0 0 8px; font-size:19px; }
+  .done-card p{ color:var(--ink-soft); font-size:14px; margin:0 0 20px; }
+  .hist-summary{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:18px; }
+  .hist-stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
+  .hist-stat .n{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--teal-dark); }
+  .hist-stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-top:2px; }
+  .entry-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .entry-row .meta{ font-size:11px; color:var(--ink-soft); }
+  .entry-row .name{ font-weight:700; font-size:14px; margin:2px 0; }
+  .entry-row .nums{ font-family:var(--mono); font-size:12px; color:var(--ink-soft); }
+  .entry-row .del{ background:none; color:var(--red); font-size:18px; padding:4px 8px; flex-shrink:0; }
+  .empty-state{ text-align:center; padding:50px 20px; color:var(--ink-soft); }
+  .empty-state .big{ font-size:34px; margin-bottom:10px; }
+  .export-btn{ width:100%; padding:15px; border-radius:10px; background:var(--ink); color:var(--paper); font-weight:700; font-size:14px; margin-top:10px; }
+  .toast{ position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink); color:white; padding:12px 20px; border-radius:30px; font-size:13px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .25s ease; z-index:50; max-width:90%; text-align:center; }
+  .toast.show{ opacity:1; }
+  .hidden{ display:none !important; }
+
+  .login-shell{ min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--ink); }
+  .login-card{ background:var(--paper); border-radius:18px; padding:36px 28px; width:min(340px,90vw); text-align:center; }
+  .login-card h1{ font-size:20px; margin:0 0 6px; }
+  .login-card p{ font-size:13px; color:var(--ink-soft); margin:0 0 20px; }
+  .login-card input{ width:100%; padding:16px; font-size:24px; letter-spacing:.3em; text-align:center; font-family:var(--mono); border:2px solid var(--line); border-radius:10px; margin-bottom:14px; }
+  .login-card input:focus{ outline:none; border-color:var(--teal); }
+  .login-card .err{ color:var(--red); font-size:12px; height:16px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+
+<div id="loginScreen" class="login-shell">
+  <div class="login-card">
+    <h1>Daily Figures</h1>
+    <p>Enter the shared PIN to continue</p>
+    <input type="password" inputmode="numeric" id="pinInput" maxlength="12" placeholder="••••">
+    <div class="err" id="loginErr"></div>
+    <button class="btn btn-primary" id="loginBtn" style="width:100%;">Unlock</button>
+  </div>
+</div>
+
+<div class="shell hidden" id="appShell">
+  <header>
+    <p class="eyebrow">Production Log</p>
+    <h1>Daily Figures <span class="logout" id="logoutBtn">Log out</span></h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="entry">Enter</div>
+      <div class="tab" data-tab="history">History &amp; Export</div>
+    </div>
+  </header>
+  <main>
+    <div id="tab-entry">
+      <div class="setup">
+        <div class="field"><label>Date</label><input type="date" id="dateInput"></div>
+        <div class="field"><label>Shift</label>
+          <select id="shiftInput"><option value="Day">Day</option><option value="Night">Night</option></select>
+        </div>
+      </div>
+      <div id="progressWrap" class="progress-wrap">
+        <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-label" id="progressLabel">1 / 16</div>
+      </div>
+      <div id="entryCard"></div>
+      <div id="doneCard" class="hidden"></div>
+    </div>
+    <div id="tab-history" class="hidden">
+      <div class="hist-summary" id="histSummary"></div>
+      <div id="histList"></div>
+      <button class="export-btn" id="exportBtn">Export CSV (for Excel report)</button>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const PRODUCTS = [
+  "Compac Cot","Compac Old","Lavex","K.max","Premium","J.max",
+  "Napkins Cot","Napkins Old","Napkins D","Smalls","Mambo",
+  "Silky 4pk","Kitchen Towel","Doubles","Singles","Silky 10pk"
+];
+const SHIFT_ORDER = {"Day":0,"Night":1};
+
+let entries = [];
+let currentIdx = 0;
+let sessionValues = {};
+
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+// ---------- API ----------
+async function apiGet(path){
+  const res = await fetch(path);
+  if(res.status===401) return { unauthorized:true };
+  return res.json();
+}
+async function apiPost(path, body){
+  const res = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  return res.json();
+}
+async function apiDelete(path, body){
+  const res = await fetch(path, {method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  return res.json();
+}
+
+async function loadEntries(){
+  const data = await apiGet('/api/entries');
+  entries = Array.isArray(data) ? data.map(e=>({...e, return_: e.return_val})) : [];
+}
+async function saveEntry(record){
+  await apiPost('/api/entries', {
+    date: record.date, shift: record.shift, product: record.product,
+    opening: record.opening, return_val: record.return_,
+    production: record.production, issued: record.issued,
+    closing: record.closing, notes: record.notes||""
+  });
+}
+async function deleteEntry(date, shift, product){
+  await apiDelete('/api/entries', {date, shift, product});
+}
+
+// ---------- domain logic ----------
+function sortKey(e){ return e.date + "-" + (SHIFT_ORDER[e.shift] ?? 9); }
+
+function getOpeningStock(product, date, shift){
+  const targetKey = date + "-" + SHIFT_ORDER[shift];
+  const prior = entries.filter(e => e.product===product && sortKey(e) < targetKey)
+                        .sort((a,b)=> sortKey(a) < sortKey(b) ? 1 : -1);
+  return prior.length ? prior[0].closing : null;
+}
+function findExisting(product, date, shift){
+  return entries.find(e => e.product===product && e.date===date && e.shift===shift);
+}
+
+// ---------- entry wizard ----------
+function renderEntryCard(){
+  const date = document.getElementById('dateInput').value;
+  const shift = document.getElementById('shiftInput').value;
+  document.getElementById('doneCard').classList.add('hidden');
+  document.getElementById('entryCard').classList.remove('hidden');
+  document.getElementById('progressWrap').classList.remove('hidden');
+
+  if(currentIdx >= PRODUCTS.length){ showDone(date, shift); return; }
+
+  const product = PRODUCTS[currentIdx];
+  document.getElementById('progressFill').style.width = ((currentIdx)/PRODUCTS.length*100)+'%';
+  document.getElementById('progressLabel').textContent = (currentIdx+1)+' / '+PRODUCTS.length;
+
+  const existing = findExisting(product, date, shift);
+  const openingFromHistory = getOpeningStock(product, date, shift);
+  const opening = existing ? existing.opening : (openingFromHistory !== null ? openingFromHistory : null);
+  const vals = sessionValues[product] || {
+    ret: existing ? existing.return_ : '',
+    prod: existing ? existing.production : '',
+    issued: existing ? existing.issued : ''
+  };
+  const openingEditable = (opening === null);
+
+  const card = document.getElementById('entryCard');
+  card.innerHTML = `
+    <div class="card">
+      <p class="product-sub">Product ${currentIdx+1} of ${PRODUCTS.length} · ${shift} shift, ${date}</p>
+      <p class="product-name">${product}</p>
+      <div class="stock-readout">
+        <span class="lbl">Opening Stock</span>
+        ${openingEditable
+          ? `<input type="number" step="0.1" id="openingInput" style="width:110px;text-align:right;padding:6px 8px;border-radius:6px;border:1.5px solid var(--teal);font-family:var(--mono);font-weight:700;font-size:16px;" placeholder="First entry">`
+          : `<span class="val">${Number(opening).toLocaleString(undefined,{maximumFractionDigits:1})}</span>`
+        }
+      </div>
+      <div class="num-field"><label>Return <span class="hint">(stock returned unused)</span></label>
+        <input type="number" inputmode="decimal" step="0.1" id="retInput" placeholder="0" value="${vals.ret}"></div>
+      <div class="num-field"><label>Production <span class="hint">(made this shift)</span></label>
+        <input type="number" inputmode="decimal" step="0.1" id="prodInput" placeholder="0" value="${vals.prod}"></div>
+      <div class="num-field"><label>Issued <span class="hint">(sent out / dispatched)</span></label>
+        <input type="number" inputmode="decimal" step="0.1" id="issuedInput" placeholder="0" value="${vals.issued}"></div>
+      <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
+      <div class="nav-row">
+        ${currentIdx>0 ? `<button class="btn btn-ghost" id="backBtn">Back</button>` : ''}
+        <button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>
+      </div>
+      <button class="btn-skip" id="skipBtn">Skip — no activity for this product</button>
+    </div>
+  `;
+
+  function currentOpening(){
+    if(openingEditable){
+      const v = document.getElementById('openingInput').value;
+      return v==='' ? null : parseFloat(v);
+    }
+    return opening;
+  }
+  function updatePreview(){
+    const o = currentOpening();
+    const r = parseFloat(document.getElementById('retInput').value)||0;
+    const p = parseFloat(document.getElementById('prodInput').value)||0;
+    const i = parseFloat(document.getElementById('issuedInput').value)||0;
+    const el = document.getElementById('closingPreview');
+    if(o === null){ el.textContent = 'Enter opening stock'; return; }
+    el.textContent = (o + r + p - i).toLocaleString(undefined,{maximumFractionDigits:1});
+  }
+  ['retInput','prodInput','issuedInput'].forEach(id=>document.getElementById(id).addEventListener('input', updatePreview));
+  if(openingEditable) document.getElementById('openingInput').addEventListener('input', updatePreview);
+  updatePreview();
+
+  document.getElementById('saveNextBtn').addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift));
+  document.getElementById('skipBtn').addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+  const backBtn = document.getElementById('backBtn');
+  if(backBtn) backBtn.addEventListener('click', ()=>{ currentIdx--; renderEntryCard(); });
+}
+
+async function saveCurrentAndAdvance(product, date, shift){
+  const openingInputEl = document.getElementById('openingInput');
+  const opening = openingInputEl ? parseFloat(openingInputEl.value) : getOpeningStock(product, date, shift);
+  if(opening === null || isNaN(opening)){ toast("Enter an opening stock first (no history found)"); return; }
+  const ret = parseFloat(document.getElementById('retInput').value)||0;
+  const prod = parseFloat(document.getElementById('prodInput').value)||0;
+  const issued = parseFloat(document.getElementById('issuedInput').value)||0;
+  const closing = opening + ret + prod - issued;
+
+  sessionValues[product] = {ret, prod, issued};
+
+  const record = {product, date, shift, opening, return_: ret, production: prod, issued, closing, notes:""};
+  const idx = entries.findIndex(e=>e.product===product && e.date===date && e.shift===shift);
+  if(idx>=0) entries[idx] = record; else entries.push(record);
+
+  await saveEntry(record);
+  currentIdx++;
+  renderEntryCard();
+}
+
+function showDone(date, shift){
+  document.getElementById('entryCard').classList.add('hidden');
+  document.getElementById('progressWrap').classList.add('hidden');
+  const savedCount = entries.filter(e=>e.date===date && e.shift===shift).length;
+  const doneCard = document.getElementById('doneCard');
+  doneCard.classList.remove('hidden');
+  doneCard.innerHTML = `
+    <div class="card done-card">
+      <div class="check">✓</div>
+      <h2>${shift} shift logged</h2>
+      <p>${savedCount} product${savedCount===1?'':'s'} recorded for ${date}.</p>
+      <button class="btn btn-primary" id="restartBtn" style="width:100%;">Log another shift</button>
+    </div>`;
+  document.getElementById('restartBtn').addEventListener('click', ()=>{
+    currentIdx = 0; sessionValues = {}; renderEntryCard();
+  });
+}
+
+// ---------- history ----------
+function renderHistory(){
+  const sorted = [...entries].sort((a,b)=> sortKey(b) < sortKey(a) ? -1 : 1);
+  const totalProd = entries.reduce((s,e)=>s+(e.production||0),0);
+  const totalIssued = entries.reduce((s,e)=>s+(e.issued||0),0);
+  const days = new Set(entries.map(e=>e.date)).size;
+
+  document.getElementById('histSummary').innerHTML = `
+    <div class="hist-stat"><div class="n">${totalProd.toLocaleString(undefined,{maximumFractionDigits:0})}</div><div class="l">Total Produced</div></div>
+    <div class="hist-stat"><div class="n">${totalIssued.toLocaleString(undefined,{maximumFractionDigits:0})}</div><div class="l">Total Issued</div></div>
+    <div class="hist-stat"><div class="n">${days}</div><div class="l">Days Logged</div></div>`;
+
+  const list = document.getElementById('histList');
+  if(sorted.length===0){
+    list.innerHTML = `<div class="empty-state"><div class="big">📋</div>No entries yet.<br>Go to the Enter tab to log today's figures.</div>`;
+    return;
+  }
+  list.innerHTML = sorted.slice(0,60).map(e => `
+    <div class="entry-row">
+      <div>
+        <div class="meta">${e.date} · ${e.shift}</div>
+        <div class="name">${e.product}</div>
+        <div class="nums">Prod ${e.production} · Issued ${e.issued} · Return ${e.return_} · Closing ${e.closing.toLocaleString(undefined,{maximumFractionDigits:1})}</div>
+      </div>
+      <button class="del" data-del="${e.date}|${e.shift}|${e.product}">✕</button>
+    </div>`).join('');
+
+  list.querySelectorAll('.del').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const [date, shift, product] = btn.dataset.del.split('|');
+      entries = entries.filter(e=>!(e.date===date && e.shift===shift && e.product===product));
+      await deleteEntry(date, shift, product);
+      renderHistory();
+      toast("Entry deleted");
+    });
+  });
+}
+
+// ---------- tabs ----------
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  document.getElementById('tab-entry').classList.toggle('hidden', name!=='entry');
+  document.getElementById('tab-history').classList.toggle('hidden', name!=='history');
+  if(name==='history') renderHistory();
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
+document.getElementById('exportBtn').addEventListener('click', ()=>{ window.location.href='/api/export.csv'; });
+document.getElementById('dateInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
+document.getElementById('shiftInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  await fetch('/api/logout', {method:'POST'});
+  window.location.reload();
+});
+
+// ---------- login ----------
+async function attemptLogin(){
+  const pin = document.getElementById('pinInput').value;
+  const res = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({pin})});
+  const data = await res.json();
+  if(data.ok){ await boot(); }
+  else { document.getElementById('loginErr').textContent = 'Incorrect PIN, try again'; }
+}
+document.getElementById('loginBtn').addEventListener('click', attemptLogin);
+document.getElementById('pinInput').addEventListener('keydown', e=>{ if(e.key==='Enter') attemptLogin(); });
+
+async function boot(){
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('appShell').classList.remove('hidden');
+  document.getElementById('dateInput').value = todayStr();
+  await loadEntries();
+  renderEntryCard();
+}
+
+(async function init(){
+  const s = await apiGet('/api/session');
+  if(s && s.authed){ await boot(); }
+})();
+</script>
+</body>
+</html>

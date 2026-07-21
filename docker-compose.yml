@@ -1,0 +1,13 @@
+services:
+  daily-figures:
+    build: .
+    container_name: daily_figures_app
+    restart: unless-stopped
+    ports:
+      - "5000:5000"     # host_port:container_port — change host_port if 5000 is taken
+    environment:
+      - APP_PIN=1234              # CHANGE THIS before deploying
+      - SECRET_KEY=change-this-to-something-random
+      - DB_PATH=/app/data/production.db
+    volumes:
+      - ./data:/app/data          # persists the SQLite database on the host
