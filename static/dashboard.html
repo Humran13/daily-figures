@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:560px; margin:0 auto; min-height:100vh; background:var(--paper); }
+  header{ background:var(--ink); color:var(--paper); padding:18px 20px 14px; position:sticky; top:0; z-index:10; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  .nav-links{ display:flex; gap:14px; margin-top:12px; flex-wrap:wrap; }
+  .nav-links a{ color:#8A94A6; font-size:12px; font-weight:700; text-decoration:none; }
+  .nav-links a.home{ color:var(--amber); }
+  main{ padding:16px; padding-bottom:60px; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .card h2{ margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); }
+  .stat-grid{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  .stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
+  .stat .n{ font-family:var(--mono); font-size:20px; font-weight:800; color:var(--teal-dark); }
+  .stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-top:2px; }
+  .row-link{ display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; text-decoration:none; color:var(--ink); }
+  .row-link:last-child{ border-bottom:none; }
+  .row-link .meta{ font-size:11px; color:var(--ink-soft); }
+  .row-link .val{ font-family:var(--mono); font-weight:700; }
+  .pill{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; }
+  .pill-draft{ background:#FCEfd7; color:#8a5a12; }
+  .pill-finalized{ background:#E4F3EC; color:var(--teal-dark); }
+  .pill-void{ background:#F3E4E4; color:var(--red); }
+  .warn-row{ background:#FCEfe7; border-radius:10px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; font-size:13px; }
+  .warn-row .name{ font-weight:700; }
+  .empty{ color:var(--ink-soft); font-size:13px; padding:8px 0; }
+  .hidden{ display:none !important; }
+  .gate{ padding:60px 20px; text-align:center; color:white; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate hidden">Sign in from the main app first.</div>
+
+<div class="shell hidden" id="shell">
+  <header>
+    <p class="eyebrow" id="userInfo">Overview</p>
+    <h1>Dashboard</h1>
+    <div class="nav-links">
+      <a href="/" class="home">Daily Figures</a>
+      <a href="/dispatch.html">Dispatch</a>
+      <a href="/admin.html" id="adminLink" class="hidden">Admin</a>
+    </div>
+  </header>
+  <main>
+    <div class="card">
+      <h2 id="stockSummaryTitle">Today's stock</h2>
+      <div id="stockSummary"></div>
+    </div>
+
+    <div class="card" id="lowStockCard">
+      <h2>Low stock warnings</h2>
+      <div id="lowStockList"></div>
+    </div>
+
+    <div class="card">
+      <h2>Recent dispatches</h2>
+      <div id="recentDispatches"></div>
+    </div>
+
+    <div class="card">
+      <h2>Top issued products (last 7 days)</h2>
+      <div id="topProducts"></div>
+    </div>
+
+    <div class="card">
+      <h2>Issued by sales category (last 30 days)</h2>
+      <div id="byCategory"></div>
+    </div>
+
+    <div class="card">
+      <h2>Issued by recipient (last 30 days)</h2>
+      <div id="byRecipient"></div>
+    </div>
+
+    <div class="stat-grid" style="margin-bottom:14px;">
+      <div class="stat"><div class="n" id="activeCustomersStat">—</div><div class="l">Active Customers</div></div>
+      <div class="stat"><div class="n" id="draftCountStat">—</div><div class="l">Unfinalized Drafts</div></div>
+      <div class="stat"><div class="n" id="lowStockCountStat">—</div><div class="l">Low Stock</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Unfinalized drafts</h2>
+      <div id="draftList"></div>
+    </div>
+
+    <div class="card">
+      <h2>Recent corrections</h2>
+      <div id="correctionsList"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+async function api(path){
+  const res = await fetch(path);
+  return {status: res.status, data: await res.json().catch(()=>({}))};
+}
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function statusPill(status){ return `<span class="pill pill-${status}">${status}</span>`; }
+function qty(part){
+  if(!part || part.cartons===undefined) return part ? String(part.base_qty) : '—';
+  return `${part.cartons}c ${part.packs||0}p ${part.pieces}pc`;
+}
+
+async function loadDashboard(){
+  const today = new Date().toISOString().slice(0,10);
+  const {data} = await api('/api/dashboard?date='+today);
+
+  document.getElementById('stockSummaryTitle').textContent = `Today's stock — ${data.date}`;
+  const summary = data.stock_summary || [];
+  document.getElementById('stockSummary').innerHTML = summary.length ? summary.map(r => `
+    <a class="row-link" href="/?tab=history&product=${encodeURIComponent(r.product_name)}">
+      <div>
+        <div>${escapeHtml(r.product_name)}</div>
+        <div class="meta">Opening ${qty(r.opening)} · Prod ${qty(r.production)} · Issued ${qty(r.issued)} · Return ${qty(r.return_)}</div>
+      </div>
+      <div class="val">${qty(r.closing)}</div>
+    </a>`).join('') : '<div class="empty">No activity recorded yet.</div>';
+
+  const lowStock = data.low_stock || [];
+  document.getElementById('lowStockCard').classList.toggle('hidden', lowStock.length===0);
+  document.getElementById('lowStockList').innerHTML = lowStock.map(r => `
+    <div class="warn-row">
+      <span class="name">${escapeHtml(r.product_name)}</span>
+      <span>${qty(r.closing)}</span>
+    </div>`).join('');
+  document.getElementById('lowStockCountStat').textContent = lowStock.length;
+
+  const recent = data.recent_dispatches || [];
+  document.getElementById('recentDispatches').innerHTML = recent.length ? recent.map(d => `
+    <a class="row-link" href="/dispatch.html?open=${d.id}">
+      <div>
+        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
+        <div class="meta">${d.date} · ${d.shift}</div>
+      </div>
+      ${statusPill(d.status)}
+    </a>`).join('') : '<div class="empty">No dispatches yet.</div>';
+
+  const top = data.top_products || [];
+  document.getElementById('topProducts').innerHTML = top.length ? top.map(p => `
+    <a class="row-link" href="/?tab=history&product=${encodeURIComponent(p.product_name)}">
+      <div>${escapeHtml(p.product_name)}</div>
+      <div class="val">${p.base_qty} pieces</div>
+    </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
+
+  await loadRecipientTotals(today);
+
+  document.getElementById('activeCustomersStat').textContent = data.active_customers ?? 0;
+
+  const drafts = (data.draft_dispatches && data.draft_dispatches.items) || [];
+  document.getElementById('draftCountStat').textContent = (data.draft_dispatches && data.draft_dispatches.count) || 0;
+  document.getElementById('draftList').innerHTML = drafts.length ? drafts.map(d => `
+    <a class="row-link" href="/dispatch.html?open=${d.id}">
+      <div>
+        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
+        <div class="meta">${d.date} · ${d.shift}</div>
+      </div>
+      ${statusPill(d.status)}
+    </a>`).join('') : '<div class="empty">Nothing waiting to be finalized.</div>';
+
+  const adjustments = (data.recent_adjustments || []).map(a => `
+    <div class="row-link">
+      <div>
+        <div>Adjustment · ${a.date} ${a.shift}</div>
+        <div class="meta">${escapeHtml(a.reason)}</div>
+      </div>
+      <div class="val">${a.delta_base_qty>0?'+':''}${a.delta_base_qty}</div>
+    </div>`).join('');
+  const voids = (data.recent_voids || []).map(d => `
+    <a class="row-link" href="/dispatch.html?open=${d.id}">
+      <div>
+        <div>Voided · #${escapeHtml(d.dispatch_number)}</div>
+        <div class="meta">${escapeHtml(d.void_reason||'')}</div>
+      </div>
+      ${statusPill(d.status)}
+    </a>`).join('');
+  document.getElementById('correctionsList').innerHTML = (adjustments + voids) || '<div class="empty">No recent corrections.</div>';
+}
+
+async function loadRecipientTotals(today){
+  const from = new Date(today); from.setDate(from.getDate()-29);
+  const dateFrom = from.toISOString().slice(0,10);
+  const params = `date_from=${dateFrom}&date_to=${today}`;
+
+  const {data: byCategory} = await api(`/api/reports/recipient-totals?${params}&group_by=category`);
+  document.getElementById('byCategory').innerHTML = (Array.isArray(byCategory) && byCategory.length) ? byCategory.map(r => `
+    <a class="row-link" href="/dispatch.html?sales_category_id=${r.group_id||''}">
+      <div>
+        <div>${escapeHtml(r.group_name)}</div>
+        <div class="meta">${r.dispatch_count} dispatch${r.dispatch_count===1?'':'es'}</div>
+      </div>
+      <div class="val">${r.total_issued_base_qty} pieces</div>
+    </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
+
+  const {data: byRecipient} = await api(`/api/reports/recipient-totals?${params}&group_by=recipient`);
+  document.getElementById('byRecipient').innerHTML = (Array.isArray(byRecipient) && byRecipient.length) ? byRecipient.slice(0,10).map(r => `
+    <a class="row-link" href="/dispatch.html?customer_id=${r.group_id||''}&customer_name=${encodeURIComponent(r.group_name)}">
+      <div>
+        <div>${escapeHtml(r.group_name)}</div>
+        <div class="meta">${r.dispatch_count} dispatch${r.dispatch_count===1?'':'es'}</div>
+      </div>
+      <div class="val">${r.total_issued_base_qty} pieces</div>
+    </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
+}
+
+(async function init(){
+  const {data} = await api('/api/session');
+  if(!data.authed || !data.user){
+    document.getElementById('gate').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('shell').classList.remove('hidden');
+  document.getElementById('userInfo').textContent = `${data.user.username} · ${data.user.role.replace('_',' ')}`;
+  document.getElementById('adminLink').classList.toggle('hidden', data.user.role !== 'super_admin');
+  await loadDashboard();
+})();
+</script>
+</body>
+</html>

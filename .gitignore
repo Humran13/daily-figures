@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+data/*.db
+data/*.db-journal
+data/backups/
+.env
+.env.*
+!.env.example
+imgz.zip
+imgz/
+
+*.code-workspace

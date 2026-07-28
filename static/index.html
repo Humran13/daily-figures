@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:520px; margin:0 auto; min-height:100vh; background:var(--paper); display:flex; flex-direction:column; }
+  header{ background:var(--ink); color:var(--paper); padding:20px 20px 16px; position:sticky; top:0; z-index:10; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:20px; font-weight:700; letter-spacing:-.01em; display:flex; justify-content:space-between; align-items:center;}
+  header h1 .logout{ font-size:11px; color:#8A94A6; font-weight:600; cursor:pointer; text-decoration:underline; }
+  .tabs{ display:flex; gap:0; margin-top:16px; border-bottom:1px solid #333d4d; }
+  .tab{ flex:1; text-align:center; padding:10px 0; font-size:13px; font-weight:600; color:#8A94A6; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active{ color:var(--paper); border-bottom-color:var(--amber); }
+  main{ flex:1; padding:20px; padding-bottom:100px; }
+  .setup{ display:flex; gap:10px; margin-bottom:22px; }
+  .field{ flex:1; }
+  .field label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); margin-bottom:6px; }
+  .field input, .field select{ width:100%; padding:11px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:15px; font-family:var(--sans); background:white; color:var(--ink); }
+  .field select{ font-weight:600; }
+  .progress-wrap{ display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+  .progress-track{ flex:1; height:6px; background:var(--paper-dim); border-radius:3px; overflow:hidden; }
+  .progress-fill{ height:100%; background:var(--teal); border-radius:3px; transition:width .25s ease; }
+  .progress-label{ font-family:var(--mono); font-size:12px; color:var(--ink-soft); white-space:nowrap; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:16px; padding:22px 20px; margin-bottom:16px; }
+  .product-name{ font-size:22px; font-weight:800; letter-spacing:-.01em; margin:0 0 2px; }
+  .product-sub{ font-size:12px; color:var(--ink-soft); margin:0 0 18px; }
+  .stock-readout{ display:flex; justify-content:space-between; align-items:center; background:var(--paper-dim); border-radius:10px; padding:12px 14px; margin-bottom:18px; }
+  .stock-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); }
+  .stock-readout .val{ font-family:var(--mono); font-size:20px; font-weight:700; color:var(--ink); }
+  .num-field{ margin-bottom:14px; }
+  .num-field label{ display:block; font-size:13px; font-weight:700; color:var(--ink); margin-bottom:6px; }
+  .num-field .hint{ font-weight:400; color:var(--ink-soft); font-size:11px; }
+  .num-field input{ width:100%; padding:16px 14px; border:2px solid var(--line); border-radius:10px; font-family:var(--mono); font-size:24px; font-weight:700; color:var(--ink); background:var(--paper-dim); }
+  .num-field input:focus{ outline:none; border-color:var(--teal); background:white; }
+  .closing-readout{ margin-top:18px; padding:16px; border-radius:10px; background:var(--ink); color:var(--paper); display:flex; justify-content:space-between; align-items:center; }
+  .closing-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#8A94A6; }
+  .closing-readout .val{ font-family:var(--mono); font-size:26px; font-weight:800; color:var(--amber); }
+  .nav-row{ display:flex; gap:10px; margin-top:18px; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; }
+  .btn{ flex:1; padding:15px; border-radius:10px; font-size:15px; font-weight:700; }
+  .btn-primary{ background:var(--teal); color:white; }
+  .btn-primary:active{ background:var(--teal-dark); }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink-soft); flex:0 0 90px; }
+  .btn-small{ padding:8px 12px; font-size:12px; border-radius:8px; flex:0 0 auto; }
+  .btn-skip{ background:none; color:var(--ink-soft); text-decoration:underline; padding:10px; font-size:13px; width:100%; margin-top:4px; font-weight:600; }
+  .done-card{ text-align:center; padding:40px 20px; }
+  .done-card .check{ font-size:44px; margin-bottom:10px; }
+  .done-card h2{ margin:0 0 8px; font-size:19px; }
+  .done-card p{ color:var(--ink-soft); font-size:14px; margin:0 0 20px; }
+  .hist-summary{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:18px; }
+  .hist-stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
+  .hist-stat .n{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--teal-dark); }
+  .hist-stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-top:2px; }
+  .entry-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .entry-row .meta{ font-size:11px; color:var(--ink-soft); }
+  .entry-row .name{ font-weight:700; font-size:14px; margin:2px 0; }
+  .entry-row .nums{ font-family:var(--mono); font-size:12px; color:var(--ink-soft); }
+  .entry-row .del{ background:none; color:var(--red); font-size:18px; padding:4px 8px; flex-shrink:0; }
+  .empty-state{ text-align:center; padding:50px 20px; color:var(--ink-soft); }
+  .empty-state .big{ font-size:34px; margin-bottom:10px; }
+  .export-btn{ width:100%; padding:15px; border-radius:10px; background:var(--ink); color:var(--paper); font-weight:700; font-size:14px; margin-top:10px; }
+  .toast{ position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink); color:white; padding:12px 20px; border-radius:30px; font-size:13px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .25s ease; z-index:50; max-width:90%; text-align:center; }
+  .toast.show{ opacity:1; }
+  .hidden{ display:none !important; }
+
+  .qty-row{ display:flex; gap:8px; }
+  .qty-field{ flex:1; text-align:center; }
+  .qty-field label{ display:block; font-size:10px; font-weight:700; text-transform:uppercase; color:var(--ink-soft); margin-bottom:4px; }
+  .qty-field input{ width:100%; text-align:center; font-family:var(--mono); font-weight:700; font-size:17px; padding:10px 4px; border:2px solid var(--line); border-radius:8px; background:var(--paper-dim); }
+  .qty-field input:focus{ outline:none; border-color:var(--teal); background:white; }
+  .qty-readout{ font-family:var(--mono); font-size:15px; font-weight:700; }
+  .issued-link{ background:none; color:var(--teal-dark); text-decoration:underline; font-size:12px; font-weight:700; padding:0; }
+  .adjust-link{ background:none; color:var(--ink-soft); text-decoration:underline; font-size:11px; padding:0; margin-left:8px; }
+  .not-configured{ text-align:center; padding:20px; color:var(--ink-soft); font-size:13px; }
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.6); z-index:60; display:flex; align-items:flex-end; justify-content:center; }
+  .modal-sheet{ background:var(--paper); width:100%; max-width:520px; max-height:82vh; overflow-y:auto; border-radius:18px 18px 0 0; padding:20px; }
+  .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
+  .modal-close{ float:right; background:none; color:var(--ink-soft); font-size:20px; padding:0 4px; }
+  .contrib-row{ display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; }
+  .contrib-row .meta{ color:var(--ink-soft); font-size:11px; }
+  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .filters input{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; }
+  .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  .quick-filters button.active{ background:var(--teal); color:white; }
+  .export-row{ display:flex; align-items:center; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .date-group{ margin-bottom:14px; }
+  .date-group-head{ display:flex; justify-content:space-between; align-items:center; padding:10px 4px; cursor:pointer; }
+  .date-group-head .date{ font-weight:700; font-size:14px; }
+  .date-group-head .summary{ font-size:11px; color:var(--ink-soft); }
+  .date-group-head .chev{ transition:transform .15s ease; color:var(--ink-soft); }
+  .date-group.collapsed .chev{ transform:rotate(-90deg); }
+  .date-group.collapsed .date-group-body{ display:none; }
+
+  .login-shell{ min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--ink); }
+  .login-card{ background:var(--paper); border-radius:18px; padding:36px 28px; width:min(340px,90vw); text-align:center; }
+  .login-card h1{ font-size:20px; margin:0 0 6px; }
+  .login-card p{ font-size:13px; color:var(--ink-soft); margin:0 0 20px; }
+  .login-card input{ width:100%; padding:16px; font-size:24px; letter-spacing:.3em; text-align:center; font-family:var(--mono); border:2px solid var(--line); border-radius:10px; margin-bottom:14px; }
+  .login-card input:focus{ outline:none; border-color:var(--teal); }
+  .login-card .err{ color:var(--red); font-size:12px; height:16px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+
+<div id="loginScreen" class="login-shell">
+  <div class="login-card">
+    <h1>Daily Figures</h1>
+    <p>Sign in to continue</p>
+    <input type="text" autocomplete="username" id="usernameInput" placeholder="Username" style="margin-bottom:10px;letter-spacing:normal;font-size:16px;text-align:left;">
+    <input type="password" autocomplete="current-password" id="passwordInput" placeholder="Password" style="letter-spacing:normal;font-size:16px;text-align:left;">
+    <div class="err" id="loginErr"></div>
+    <button class="btn btn-primary" id="loginBtn" style="width:100%;">Sign in</button>
+  </div>
+</div>
+
+<div class="shell hidden" id="appShell">
+  <header>
+    <p class="eyebrow" id="userInfo">Production Log</p>
+    <h1>Daily Figures <span class="logout" id="logoutBtn">Log out</span></h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="entry">Enter</div>
+      <div class="tab" data-tab="history">History &amp; Export</div>
+      <a href="/dashboard.html" class="tab" style="text-decoration:none;">Dashboard</a>
+      <a href="/dispatch.html" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/admin.html" class="tab hidden" id="adminLink" style="text-decoration:none;">Admin</a>
+    </div>
+  </header>
+  <main>
+    <div id="tab-entry">
+      <div class="setup">
+        <div class="field"><label>Date</label><input type="date" id="dateInput"></div>
+        <div class="field"><label>Shift</label>
+          <select id="shiftInput"><option value="Day">Day</option><option value="Night">Night</option></select>
+        </div>
+      </div>
+      <div id="progressWrap" class="progress-wrap">
+        <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-label" id="progressLabel">1 / 16</div>
+      </div>
+      <div id="entryCard"></div>
+      <div id="doneCard" class="hidden"></div>
+    </div>
+    <div id="tab-history" class="hidden">
+      <div class="quick-filters">
+        <button class="btn-ghost btn-small" data-hquick="today">Today</button>
+        <button class="btn-ghost btn-small" data-hquick="yesterday">Yesterday</button>
+        <button class="btn-ghost btn-small" data-hquick="week">This week</button>
+        <button class="btn-ghost btn-small" data-hquick="month">This month</button>
+      </div>
+      <div class="filters">
+        <input id="hDateFrom" type="date" title="From date">
+        <input id="hDateTo" type="date" title="To date">
+        <input id="hProduct" placeholder="Product">
+        <button class="btn-ghost btn-small" id="hClearBtn">Clear all</button>
+      </div>
+      <div class="hist-summary" id="histSummary"></div>
+      <div id="histList"></div>
+      <div class="export-row">
+        <span class="hint">Export current results:</span>
+        <a href="#" id="exportCsvBtn" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
+        <a href="#" id="exportXlsxBtn" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
+        <a href="#" id="exportPdfBtn" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<div class="modal-backdrop hidden" id="issuedModal">
+  <div class="modal-sheet">
+    <button class="modal-close" id="issuedModalClose">&times;</button>
+    <h3 id="issuedModalTitle">Issued breakdown</h3>
+    <div id="issuedModalBody"></div>
+  </div>
+</div>
+
+<script>
+let products = [];
+let currentIdx = 0;
+let sessionValues = {};
+let currentUser = null;
+
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+// ---------- API ----------
+async function apiGet(path){
+  const res = await fetch(path);
+  if(res.status===401) return { unauthorized:true };
+  return res.json();
+}
+async function apiPost(path, body){
+  const res = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  return {status: res.status, data: await res.json()};
+}
+
+async function loadProducts(){
+  const data = await apiGet('/api/admin/products');
+  products = Array.isArray(data) ? data : [];
+}
+
+// ---------- packaging helpers (display-only preview; backend is the source of truth) ----------
+function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
+function toBaseUnits(c, p, pc, rule){
+  if(!rule) return 0;
+  if(hasPackTier(rule)) return (c*rule.cartons_to_packs + p) * rule.packs_to_pieces + pc;
+  return c*rule.carton_to_pieces + pc;
+}
+function qtyLabel(part){
+  if(!part) return '—';
+  if(part.cartons === undefined) return String(part.base_qty);
+  return hasPackTierFromParts(part)
+    ? `${part.cartons}c ${part.packs}p ${part.pieces}pc`
+    : `${part.cartons}c ${part.pieces}pc`;
+}
+function hasPackTierFromParts(part){ return part.packs !== undefined && part.packs !== null; }
+
+function qtyInputsHtml(prefix, rule, vals){
+  vals = vals || {cartons:0, packs:0, pieces:0};
+  const packsField = hasPackTier(rule)
+    ? `<div class="qty-field"><label>Packs</label><input type="number" min="0" inputmode="numeric" id="${prefix}Packs" value="${vals.packs||0}"></div>`
+    : '';
+  return `
+    <div class="qty-row">
+      <div class="qty-field"><label>Cartons</label><input type="number" min="0" inputmode="numeric" id="${prefix}Cartons" value="${vals.cartons||0}"></div>
+      ${packsField}
+      <div class="qty-field"><label>Pieces</label><input type="number" min="0" inputmode="numeric" id="${prefix}Pieces" value="${vals.pieces||0}"></div>
+    </div>`;
+}
+function readQtyInputs(prefix, rule){
+  const cartons = parseInt(document.getElementById(prefix+'Cartons').value, 10) || 0;
+  const packsEl = document.getElementById(prefix+'Packs');
+  const packs = hasPackTier(rule) && packsEl ? (parseInt(packsEl.value, 10) || 0) : 0;
+  const pieces = parseInt(document.getElementById(prefix+'Pieces').value, 10) || 0;
+  return {cartons, packs, pieces};
+}
+
+// ---------- entry wizard ----------
+async function renderEntryCard(){
+  const date = document.getElementById('dateInput').value;
+  const shift = document.getElementById('shiftInput').value;
+  document.getElementById('doneCard').classList.add('hidden');
+  document.getElementById('entryCard').classList.remove('hidden');
+  document.getElementById('progressWrap').classList.remove('hidden');
+
+  if(currentIdx >= products.length){ showDone(date, shift); return; }
+
+  const product = products[currentIdx];
+  document.getElementById('progressFill').style.width = ((currentIdx)/products.length*100)+'%';
+  document.getElementById('progressLabel').textContent = (currentIdx+1)+' / '+products.length;
+
+  const card = document.getElementById('entryCard');
+
+  if(!product.packaging_rule){
+    card.innerHTML = `
+      <div class="card">
+        <p class="product-sub">Product ${currentIdx+1} of ${products.length} · ${shift} shift, ${date}</p>
+        <p class="product-name">${product.name}</p>
+        <div class="not-configured">No packaging rule configured for this product yet.<br>Set one in Admin &gt; Products.</div>
+        <div class="nav-row">
+          ${currentIdx>0 ? `<button class="btn btn-ghost" id="backBtn">Back</button>` : ''}
+          <button class="btn btn-primary" id="skipBtn">Skip &amp; continue</button>
+        </div>
+      </div>`;
+    document.getElementById('skipBtn').addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+    const backBtn = document.getElementById('backBtn');
+    if(backBtn) backBtn.addEventListener('click', ()=>{ currentIdx--; renderEntryCard(); });
+    return;
+  }
+
+  const view = await apiGet(`/api/daily-figures/${product.id}?date=${date}&shift=${shift}`);
+  const rule = view.packaging_rule;
+  const vals = sessionValues[product.id] || {
+    return_: view.return_,
+    production: view.production,
+  };
+
+  const canAdjust = currentUser && ['super_admin','manager'].includes(currentUser.role);
+
+  card.innerHTML = `
+    <div class="card">
+      <p class="product-sub">Product ${currentIdx+1} of ${products.length} · ${shift} shift, ${date}</p>
+      <p class="product-name">${product.name}</p>
+      <div class="stock-readout">
+        <span class="lbl">Opening Stock</span>
+        <span class="val qty-readout" id="openingReadout">${qtyLabel(view.opening)}</span>
+      </div>
+      ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening)}</div>` : ''}
+
+      <div class="num-field"><label>Return <span class="hint">(stock returned unused)</span></label></div>
+      ${qtyInputsHtml('ret', rule, vals.return_)}
+
+      <div class="num-field" style="margin-top:14px;"><label>Production <span class="hint">(made this shift)</span></label></div>
+      ${qtyInputsHtml('prod', rule, vals.production)}
+
+      <div class="stock-readout" style="margin-top:18px;">
+        <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
+        <span>
+          <span class="val qty-readout">${qtyLabel(view.issued)}</span>
+          <button class="issued-link" id="issuedBreakdownBtn">view</button>
+          ${canAdjust ? `<button class="adjust-link" id="adjustIssuedBtn">adjust</button>` : ''}
+        </span>
+      </div>
+
+      <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
+      <div class="nav-row">
+        ${currentIdx>0 ? `<button class="btn btn-ghost" id="backBtn">Back</button>` : ''}
+        <button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>
+      </div>
+      <button class="btn-skip" id="skipBtn">Skip — no activity for this product</button>
+    </div>
+  `;
+
+  function updatePreview(){
+    const o = view.opening_editable ? toBaseUnits(...Object.values(readQtyInputs('opening', rule)), rule) : view.opening.base_qty;
+    const r = toBaseUnits(...Object.values(readQtyInputs('ret', rule)), rule);
+    const p = toBaseUnits(...Object.values(readQtyInputs('prod', rule)), rule);
+    const closingBase = o + r + p - view.issued.base_qty;
+    document.getElementById('closingPreview').textContent = closingBase + ' pieces';
+  }
+  card.querySelectorAll('input').forEach(el=>el.addEventListener('input', updatePreview));
+  updatePreview();
+
+  document.getElementById('issuedBreakdownBtn').addEventListener('click', ()=>openIssuedBreakdown(product, date, shift));
+  const adjustBtn = document.getElementById('adjustIssuedBtn');
+  if(adjustBtn) adjustBtn.addEventListener('click', ()=>adjustIssued(product, date, shift));
+
+  document.getElementById('saveNextBtn').addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));
+  document.getElementById('skipBtn').addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+  const backBtn = document.getElementById('backBtn');
+  if(backBtn) backBtn.addEventListener('click', ()=>{ currentIdx--; renderEntryCard(); });
+}
+
+async function saveCurrentAndAdvance(product, date, shift, rule, view){
+  const return_ = readQtyInputs('ret', rule);
+  const production = readQtyInputs('prod', rule);
+  const opening = view.opening_editable ? readQtyInputs('opening', rule) : null;
+
+  sessionValues[product.id] = {return_, production};
+
+  const {status, data} = await apiPost('/api/daily-figures', {
+    product_id: product.id, date, shift, opening, return_, production,
+  });
+  if(status !== 200){
+    toast(data.error || 'Could not save — check the values');
+    return;
+  }
+  currentIdx++;
+  renderEntryCard();
+}
+
+function showDone(date, shift){
+  document.getElementById('entryCard').classList.add('hidden');
+  document.getElementById('progressWrap').classList.add('hidden');
+  const doneCard = document.getElementById('doneCard');
+  doneCard.classList.remove('hidden');
+  doneCard.innerHTML = `
+    <div class="card done-card">
+      <div class="check">✓</div>
+      <h2>${shift} shift logged</h2>
+      <p>${date} — figures recorded for all configured products.</p>
+      <button class="btn btn-primary" id="restartBtn" style="width:100%;">Log another shift</button>
+    </div>`;
+  document.getElementById('restartBtn').addEventListener('click', ()=>{
+    currentIdx = 0; sessionValues = {}; renderEntryCard();
+  });
+}
+
+// ---------- issued drill-down & adjustments ----------
+async function openIssuedBreakdown(product, date, shift){
+  const detail = await apiGet(`/api/daily-figures/issued-detail?product_id=${product.id}&date=${date}&shift=${shift}`);
+  document.getElementById('issuedModalTitle').textContent = `${product.name} — Issued, ${date} ${shift}`;
+  const body = document.getElementById('issuedModalBody');
+  const dispatchRows = (detail.dispatches||[]).map(d => `
+    <div class="contrib-row">
+      <div>
+        <div><a href="/dispatch.html?customer_id=${d.customer_id||''}&customer_name=${encodeURIComponent(d.customer_name||'')}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(d.customer_name||'—')}</a>${d.sales_category_name ? ` · <a href="/dispatch.html?sales_category_id=${d.sales_category_id||''}" style="color:var(--ink-soft);text-decoration:underline;font-size:11px;">${escapeHtml(d.sales_category_name)}</a>` : ''}</div>
+        <div class="meta"><a href="/dispatch.html?dispatch_number=${encodeURIComponent(d.dispatch_number)}" style="color:var(--teal-dark);">Dispatch #${d.dispatch_number} &rarr;</a></div>
+      </div>
+      <div class="qty-readout">${d.cartons}c ${d.packs}p ${d.pieces}pc</div>
+    </div>`).join('');
+  const adjustmentRows = (detail.adjustments||[]).map(a => `
+    <div class="contrib-row">
+      <div>
+        <div>Adjustment</div>
+        <div class="meta">${a.reason}</div>
+      </div>
+      <div class="qty-readout">${a.delta_base_qty>0?'+':''}${a.delta_base_qty}</div>
+    </div>`).join('');
+  body.innerHTML = (dispatchRows||'') + (adjustmentRows||'') ||
+    '<p class="hint">No finalized dispatches or adjustments contribute to this total.</p>';
+  document.getElementById('issuedModal').classList.remove('hidden');
+}
+document.getElementById('issuedModalClose').addEventListener('click', ()=>{
+  document.getElementById('issuedModal').classList.add('hidden');
+});
+
+async function adjustIssued(product, date, shift){
+  const deltaStr = prompt('Adjustment amount in pieces (use a negative number to reduce Issued):');
+  if(deltaStr === null || deltaStr.trim()==='') return;
+  const delta = parseInt(deltaStr, 10);
+  if(isNaN(delta) || delta===0){ toast('Enter a non-zero whole number'); return; }
+  const reason = prompt('Reason for this adjustment (required, will be audited):');
+  if(!reason){ toast('A reason is required'); return; }
+
+  const {status, data} = await apiPost('/api/daily-figures/adjustments', {
+    product_id: product.id, date, shift, delta_base_qty: delta, reason,
+  });
+  if(status===201){ toast('Adjustment recorded.'); renderEntryCard(); }
+  else { toast(data.error || 'Could not save adjustment'); }
+}
+
+// ---------- history ----------
+function historyFilterParams(){
+  const params = new URLSearchParams();
+  params.set('limit', '200');
+  if(document.getElementById('hDateFrom').value) params.set('date_from', document.getElementById('hDateFrom').value);
+  if(document.getElementById('hDateTo').value) params.set('date_to', document.getElementById('hDateTo').value);
+  const productText = document.getElementById('hProduct').value.trim().toLowerCase();
+  if(productText){
+    const match = products.find(p=>p.name.toLowerCase().includes(productText));
+    if(match) params.set('product_id', match.id);
+  }
+  return params;
+}
+
+function hDateStr(offsetDays){
+  const d = new Date(); d.setDate(d.getDate()+offsetDays);
+  return d.toISOString().slice(0,10);
+}
+document.querySelectorAll('[data-hquick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    const q = btn.dataset.hquick;
+    if(q==='today'){ document.getElementById('hDateFrom').value = hDateStr(0); document.getElementById('hDateTo').value = hDateStr(0); }
+    if(q==='yesterday'){ document.getElementById('hDateFrom').value = hDateStr(-1); document.getElementById('hDateTo').value = hDateStr(-1); }
+    if(q==='week'){ document.getElementById('hDateFrom').value = hDateStr(-6); document.getElementById('hDateTo').value = hDateStr(0); }
+    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('hDateFrom').value = d.toISOString().slice(0,10); document.getElementById('hDateTo').value = hDateStr(0); }
+    renderHistory();
+  });
+});
+document.getElementById('hClearBtn').addEventListener('click', ()=>{
+  document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value=''; document.getElementById('hProduct').value='';
+  document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.remove('active'));
+  renderHistory();
+});
+['hDateFrom','hDateTo','hProduct'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>renderHistory());
+  document.getElementById(id).addEventListener('change', ()=>renderHistory());
+});
+
+function groupHistoryByDate(results){
+  const groups = {};
+  results.forEach(e=>{ (groups[e.date] = groups[e.date] || []).push(e); });
+  return Object.keys(groups).sort((a,b)=> a<b?1:-1).map(date=>({date, items: groups[date]}));
+}
+
+async function renderHistory(){
+  const params = historyFilterParams();
+  const rows = await apiGet('/api/daily-figures/history?' + params.toString());
+  const list = document.getElementById('histList');
+  const results = Array.isArray(rows) ? rows : [];
+
+  ['exportCsvBtn','exportXlsxBtn','exportPdfBtn'].forEach((id,i)=>{
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(id).href = '/api/daily-figures/export.'+fmt+'?'+params.toString();
+  });
+
+  const totalProd = results.reduce((s,e)=>s+(e.production?.base_qty||0),0);
+  const totalIssued = results.reduce((s,e)=>s+(e.issued?.base_qty||0),0);
+  const days = new Set(results.map(e=>e.date)).size;
+  document.getElementById('histSummary').innerHTML = `
+    <div class="hist-stat"><div class="n">${totalProd}</div><div class="l">Produced (pieces)</div></div>
+    <div class="hist-stat"><div class="n">${totalIssued}</div><div class="l">Issued (pieces)</div></div>
+    <div class="hist-stat"><div class="n">${days}</div><div class="l">Days Logged</div></div>`;
+
+  if(results.length===0){
+    list.innerHTML = `<div class="empty-state"><div class="big">📋</div>No entries match these filters.</div>`;
+    return;
+  }
+
+  const groups = groupHistoryByDate(results);
+  list.innerHTML = groups.map(g => `
+    <div class="date-group">
+      <div class="date-group-head" data-toggle-hgroup>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} product line${g.items.length===1?'':'s'}</div></div>
+        <span class="chev">▾</span>
+      </div>
+      <div class="date-group-body">
+        ${g.items.map(e => `
+          <div class="entry-row">
+            <div>
+              <div class="meta">${e.shift}</div>
+              <div class="name">${escapeHtml(e.product_name)}</div>
+              <div class="nums">Prod ${qtyLabel(e.production)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}" style="text-decoration:underline;cursor:pointer;">Issued ${qtyLabel(e.issued)}</span> · Return ${qtyLabel(e.return_)} · Closing ${qtyLabel(e.closing)}</div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`).join('');
+
+  list.querySelectorAll('[data-toggle-hgroup]').forEach(head=>{
+    head.addEventListener('click', ()=>head.closest('.date-group').classList.toggle('collapsed'));
+  });
+  list.querySelectorAll('[data-drill]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const [productId, date, shift] = el.dataset.drill.split('|');
+      const product = products.find(p=>String(p.id)===productId) || {id: parseInt(productId,10), name: ''};
+      openIssuedBreakdown(product, date, shift);
+    });
+  });
+}
+
+// ---------- tabs ----------
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  document.getElementById('tab-entry').classList.toggle('hidden', name!=='entry');
+  document.getElementById('tab-history').classList.toggle('hidden', name!=='history');
+  if(name==='history') renderHistory();
+}
+document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
+document.getElementById('dateInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
+document.getElementById('shiftInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  await fetch('/api/logout', {method:'POST'});
+  window.location.reload();
+});
+
+// ---------- login ----------
+async function attemptLogin(){
+  const username = document.getElementById('usernameInput').value;
+  const password = document.getElementById('passwordInput').value;
+  const res = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password})});
+  const data = await res.json();
+  if(data.ok){ await boot(data.user); }
+  else { document.getElementById('loginErr').textContent = data.error || 'Invalid username or password'; }
+}
+document.getElementById('loginBtn').addEventListener('click', attemptLogin);
+document.getElementById('passwordInput').addEventListener('keydown', e=>{ if(e.key==='Enter') attemptLogin(); });
+
+function applyUser(user){
+  if(!user) return;
+  currentUser = user;
+  document.getElementById('userInfo').textContent = `${user.username} · ${user.role.replace('_',' ')}`;
+  document.getElementById('adminLink').classList.toggle('hidden', user.role !== 'super_admin');
+}
+
+async function boot(user){
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('appShell').classList.remove('hidden');
+  document.getElementById('dateInput').value = todayStr();
+  applyUser(user);
+  await loadProducts();
+  renderEntryCard();
+
+  const q = new URLSearchParams(window.location.search);
+  if(q.get('tab') === 'history'){
+    if(q.get('product')) document.getElementById('hProduct').value = q.get('product');
+    switchTab('history');
+  }
+}
+
+(async function init(){
+  const s = await apiGet('/api/session');
+  if(s && s.authed){ await boot(s.user); }
+})();
+</script>
+</body>
+</html>

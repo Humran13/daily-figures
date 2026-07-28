@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dispatch — Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:560px; margin:0 auto; min-height:100vh; background:var(--paper); display:flex; flex-direction:column; }
+  header{ background:var(--ink); color:var(--paper); padding:18px 20px 14px; position:sticky; top:0; z-index:10; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  header h1 a{ color:#8A94A6; font-size:12px; font-weight:600; text-decoration:underline; }
+  .tabs{ display:flex; gap:0; margin-top:14px; border-bottom:1px solid #333d4d; }
+  .tab{ flex:1; text-align:center; padding:9px 0; font-size:13px; font-weight:600; color:#8A94A6; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active{ color:var(--paper); border-bottom-color:var(--amber); }
+  main{ flex:1; padding:16px; padding-bottom:100px; }
+  .hidden{ display:none !important; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-bottom:5px; }
+  input, select, textarea{ width:100%; padding:12px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:15px; font-family:var(--sans); background:white; color:var(--ink); }
+  textarea{ min-height:60px; resize:vertical; }
+  .field{ margin-bottom:14px; position:relative; }
+  .row2{ display:flex; gap:10px; }
+  .row2 > .field{ flex:1; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:10px; font-weight:700; }
+  .btn{ padding:14px; font-size:15px; width:100%; }
+  .btn-primary{ background:var(--teal); color:white; }
+  .btn-primary:disabled{ opacity:.5; }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
+  .btn-danger{ background:var(--red); color:white; }
+  .btn-small{ padding:8px 12px; font-size:12px; border-radius:8px; }
+  .nav-row{ display:flex; gap:10px; margin-top:6px; }
+  .nav-row > button{ flex:1; }
+  .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:20; }
+  .autocomplete-item{ padding:10px; font-size:14px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
+  .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
+  .autocomplete-item .cat{ font-size:11px; color:var(--ink-soft); }
+  .line-card{ background:var(--paper-dim); border-radius:12px; padding:12px; margin-bottom:10px; }
+  .line-card .head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .line-card .name{ font-weight:700; font-size:14px; }
+  .line-card .remove{ background:none; color:var(--red); font-size:13px; padding:2px 6px; }
+  .qty-row{ display:flex; gap:8px; }
+  .qty-field{ flex:1; text-align:center; }
+  .qty-field label{ text-align:center; }
+  .qty-field input{ text-align:center; font-family:var(--mono); font-weight:700; font-size:16px; padding:10px 4px; }
+  .hint{ font-size:11px; color:var(--ink-soft); margin-top:4px; }
+  .msg{ font-size:12px; margin-top:8px; min-height:16px; }
+  .msg.err{ color:var(--red); }
+  .msg.ok{ color:var(--teal-dark); }
+  .pill{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .pill-draft{ background:#FCEfd7; color:#8a5a12; }
+  .pill-finalized{ background:#E4F3EC; color:var(--teal-dark); }
+  .pill-void{ background:#F3E4E4; color:var(--red); }
+  .issued-link{ text-decoration:underline; cursor:pointer; }
+  .dispatch-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; cursor:pointer; }
+  .dispatch-row .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .dispatch-row .num{ font-family:var(--mono); font-weight:700; font-size:13px; }
+  .dispatch-row .meta{ font-size:12px; color:var(--ink-soft); }
+  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .filters input, .filters select{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; }
+  .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  .quick-filters button.active{ background:var(--teal); color:white; }
+  .export-row{ display:flex; align-items:center; gap:8px; margin-bottom:14px; }
+  .date-group{ margin-bottom:14px; }
+  .date-group-head{ display:flex; justify-content:space-between; align-items:center; padding:10px 4px; cursor:pointer; }
+  .date-group-head .date{ font-weight:700; font-size:14px; }
+  .date-group-head .summary{ font-size:11px; color:var(--ink-soft); }
+  .date-group-head .chev{ transition:transform .15s ease; color:var(--ink-soft); }
+  .date-group.collapsed .chev{ transform:rotate(-90deg); }
+  .date-group.collapsed .date-group-body{ display:none; }
+  .empty-state{ text-align:center; padding:50px 20px; color:var(--ink-soft); }
+  .toast{ position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--ink); color:white; padding:12px 20px; border-radius:30px; font-size:13px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .25s ease; z-index:50; max-width:90%; text-align:center; }
+  .toast.show{ opacity:1; }
+  .detail-line{ display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--paper-dim); font-size:14px; }
+  .add-product-bar{ display:flex; gap:8px; margin-bottom:14px; }
+  @media print {
+    header, .tabs, .no-print { display:none !important; }
+    body, .shell { background:white; }
+  }
+</style>
+</head>
+<body>
+
+<div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Sign in from the main app first.</div>
+
+<div class="shell hidden" id="appShell">
+  <header class="no-print">
+    <p class="eyebrow">Dispatch Book</p>
+    <h1>Dispatch <a href="/">&larr; Daily Figures</a></h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="list">Dispatches</div>
+      <div class="tab" data-tab="new">New Dispatch</div>
+      <a href="/dashboard.html" class="tab" style="text-decoration:none;">Dashboard</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- LIST -->
+    <div id="tab-list">
+      <div class="quick-filters no-print">
+        <button class="btn-ghost btn-small" data-quick="today">Today</button>
+        <button class="btn-ghost btn-small" data-quick="yesterday">Yesterday</button>
+        <button class="btn-ghost btn-small" data-quick="week">This week</button>
+        <button class="btn-ghost btn-small" data-quick="month">This month</button>
+      </div>
+      <div class="filters no-print">
+        <input id="fDate" type="date" title="Exact date">
+        <input id="fDateFrom" type="date" title="From date">
+        <input id="fDateTo" type="date" title="To date">
+        <select id="fSalesCategory"><option value="">Any sales category</option></select>
+        <input id="fCustomer" placeholder="Customer">
+        <input id="fProduct" placeholder="Product">
+        <input id="fNumber" placeholder="Dispatch #">
+        <input id="fInvoice" placeholder="Invoice #">
+        <select id="fShift">
+          <option value="">Any shift</option>
+          <option value="Day">Day</option>
+          <option value="Night">Night</option>
+        </select>
+        <select id="fStatus">
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="finalized">Finalized</option>
+          <option value="void">Void</option>
+        </select>
+        <select id="fCreatedBy" class="hidden"><option value="">Any user</option></select>
+        <button class="btn-ghost btn-small" id="clearFiltersBtn">Clear all</button>
+      </div>
+      <div class="export-row no-print">
+        <span class="hint">Export current results:</span>
+        <a href="#" id="exportCsv" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
+        <a href="#" id="exportXlsx" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
+        <a href="#" id="exportPdf" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
+      </div>
+      <div id="dispatchList"></div>
+    </div>
+
+    <!-- NEW / EDIT -->
+    <div id="tab-new" class="hidden">
+      <div class="card">
+        <div class="row2">
+          <div class="field"><label>Date</label><input type="date" id="dDate"></div>
+          <div class="field"><label>Shift</label>
+            <select id="dShift"><option value="Day">Day</option><option value="Night">Night</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Sales Category</label>
+          <select id="dSalesCategory">
+            <option value="">Select a category…</option>
+          </select>
+        </div>
+        <div class="field" id="recipientFieldWrap" style="display:none;">
+          <label>Recipient</label>
+          <input id="dCustomerSearch" placeholder="Type to search…" autocomplete="off" disabled>
+          <div class="autocomplete-list hidden" id="customerResults"></div>
+          <div class="hint" id="customerSelectedHint"></div>
+        </div>
+        <div class="field hidden" id="tempNameFieldWrap">
+          <label>Temporary / New Customer Name</label>
+          <input id="dTempCustomerName" placeholder="e.g. Walk-in Customer, Unknown Customer, or a new name">
+          <div class="msg" id="tempNameMsg"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>Dispatch No.</label><input id="dNumber" placeholder="e.g. 18601"></div>
+          <div class="field"><label>Invoice No. <span style="font-weight:400;">(optional)</span></label><input id="dInvoice"></div>
+        </div>
+        <div class="msg" id="numberMsg"></div>
+        <div class="field"><label>Notes <span style="font-weight:400;">(optional)</span></label><textarea id="dNotes"></textarea></div>
+      </div>
+
+      <div class="card">
+        <label style="margin-bottom:10px;">Product lines</label>
+        <div id="lineList"></div>
+        <div class="add-product-bar">
+          <select id="addProductSelect" style="flex:1;"><option value="">+ Add a product…</option></select>
+        </div>
+      </div>
+
+      <div class="msg" id="saveMsg"></div>
+      <div class="nav-row">
+        <button class="btn btn-ghost" id="saveDraftBtn">Save draft</button>
+        <button class="btn btn-primary" id="finalizeBtn">Finalize</button>
+      </div>
+    </div>
+
+    <!-- DETAIL -->
+    <div id="tab-detail" class="hidden">
+      <div class="card no-print">
+        <button class="btn-ghost btn-small" id="backToListBtn">&larr; Back to list</button>
+      </div>
+      <div class="card" id="detailHeader"></div>
+      <div class="card" id="detailLines"></div>
+      <div class="msg" id="detailMsg"></div>
+      <div class="nav-row no-print" id="detailActions"></div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let currentUser = null;
+let productsCache = [];
+let salesCategoriesCache = [];
+let currentLines = []; // [{product_id, product_name, rule, cartons, packs, pieces}]
+let editingDispatchId = null; // set when reopening a draft for edit
+let selectedCustomer = null; // {id, name}
+let selectedCategory = null; // {id, name}
+const OTHER_NEW_CUSTOMER = '__other_new__';
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+async function api(path, opts){
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await res.json().catch(()=>({}));
+  return {status: res.status, data};
+}
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- tabs ----------
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  document.getElementById('tab-list').classList.toggle('hidden', name!=='list');
+  document.getElementById('tab-new').classList.toggle('hidden', name!=='new');
+  document.getElementById('tab-detail').classList.toggle('hidden', name!=='detail');
+  if(name==='list') loadList();
+}
+document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>{
+  if(t.dataset.tab==='new') resetForm();
+  switchTab(t.dataset.tab);
+}));
+
+// ---------- sales category -> recipient (two-step) ----------
+async function loadSalesCategories(){
+  const {data} = await api('/api/admin/sales-categories');
+  salesCategoriesCache = Array.isArray(data) ? data : [];
+  const select = document.getElementById('dSalesCategory');
+  select.innerHTML = '<option value="">Select a category…</option>' +
+    salesCategoriesCache.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+}
+
+function resetRecipientOnly(){
+  // Changing category must not lose date/dispatch-number/notes/product lines.
+  selectedCustomer = null;
+  document.getElementById('dCustomerSearch').value = '';
+  document.getElementById('customerSelectedHint').textContent = '';
+  document.getElementById('customerResults').classList.add('hidden');
+  document.getElementById('dTempCustomerName').value = '';
+  document.getElementById('tempNameMsg').textContent = '';
+  document.getElementById('tempNameFieldWrap').classList.add('hidden');
+}
+
+document.getElementById('dSalesCategory').addEventListener('change', (e)=>{
+  const id = e.target.value;
+  selectedCategory = id ? salesCategoriesCache.find(c => String(c.id) === id) : null;
+  resetRecipientOnly();
+  const recipientField = document.getElementById('recipientFieldWrap');
+  const input = document.getElementById('dCustomerSearch');
+  if(selectedCategory){
+    recipientField.style.display = '';
+    input.disabled = false;
+    input.placeholder = `Search ${selectedCategory.name} recipients…`;
+  } else {
+    recipientField.style.display = 'none';
+    input.disabled = true;
+  }
+});
+
+let customerSearchTimer;
+document.getElementById('dCustomerSearch').addEventListener('input', (e)=>{
+  selectedCustomer = null;
+  document.getElementById('customerSelectedHint').textContent = '';
+  clearTimeout(customerSearchTimer);
+  if(!selectedCategory) return;
+  const q = e.target.value.trim();
+  customerSearchTimer = setTimeout(async ()=>{
+    const params = new URLSearchParams({sales_category_id: selectedCategory.id});
+    if(q) params.set('q', q);
+    const {data} = await api(`/api/admin/customers?${params.toString()}`);
+    const results = document.getElementById('customerResults');
+    const items = Array.isArray(data) ? data : [];
+    results.innerHTML = items.map(c=>`<div class="autocomplete-item" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.is_temporary ? ' <span class="cat">(unverified)</span>' : ''}</div>`).join('')
+      + `<div class="autocomplete-item" data-other="1" style="font-weight:700;color:var(--teal-dark);">+ Other / New Customer</div>`;
+    results.classList.remove('hidden');
+    results.querySelectorAll('[data-id]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        selectedCustomer = {id: parseInt(el.dataset.id,10), name: el.dataset.name};
+        document.getElementById('dCustomerSearch').value = el.dataset.name;
+        document.getElementById('customerSelectedHint').textContent = `Selected · ${selectedCategory.name}`;
+        document.getElementById('tempNameFieldWrap').classList.add('hidden');
+        results.classList.add('hidden');
+      });
+    });
+    const otherEl = results.querySelector('[data-other]');
+    if(otherEl){
+      otherEl.addEventListener('click', ()=>{
+        selectedCustomer = null;
+        document.getElementById('dCustomerSearch').value = '';
+        document.getElementById('customerSelectedHint').textContent = '';
+        document.getElementById('tempNameFieldWrap').classList.remove('hidden');
+        document.getElementById('dTempCustomerName').focus();
+        results.classList.add('hidden');
+      });
+    }
+  }, 200);
+});
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('#dCustomerSearch') && !e.target.closest('#customerResults')){
+    document.getElementById('customerResults').classList.add('hidden');
+  }
+});
+
+// ---------- temporary / new customer name ----------
+let tempNameCheckTimer;
+document.getElementById('dTempCustomerName').addEventListener('input', (e)=>{
+  clearTimeout(tempNameCheckTimer);
+  const name = e.target.value.trim();
+  const msg = document.getElementById('tempNameMsg');
+  if(!name){ msg.textContent=''; return; }
+  tempNameCheckTimer = setTimeout(async ()=>{
+    const {data} = await api(`/api/admin/customers/check-duplicate?name=${encodeURIComponent(name)}`);
+    const matches = (data && data.matches) || [];
+    if(matches.length){
+      msg.innerHTML = `Similar existing recipient(s): ${matches.map(m=>escapeHtml(m.name)).join(', ')}. ` +
+        `You can continue with this new name, or search for one of these above instead.`;
+      msg.className = 'msg err';
+    } else {
+      msg.textContent = ''; msg.className = 'msg';
+    }
+  }, 250);
+});
+
+// ---------- products & lines ----------
+async function loadProducts(){
+  const {data} = await api('/api/admin/products');
+  productsCache = Array.isArray(data) ? data : [];
+  const select = document.getElementById('addProductSelect');
+  select.innerHTML = '<option value="">+ Add a product…</option>' + productsCache.map(p =>
+    `<option value="${p.id}" ${!p.packaging_rule ? 'disabled' : ''}>${escapeHtml(p.name)}${!p.packaging_rule ? ' (not configured)' : ''}</option>`
+  ).join('');
+}
+document.getElementById('addProductSelect').addEventListener('change', (e)=>{
+  const id = parseInt(e.target.value, 10);
+  if(!id) return;
+  const product = productsCache.find(p=>p.id===id);
+  if(currentLines.some(l=>l.product_id===id)){ toast('Already on this dispatch — edit the existing line.'); e.target.value=''; return; }
+  currentLines.push({product_id: id, product_name: product.name, rule: product.packaging_rule, cartons:0, packs:0, pieces:0});
+  e.target.value = '';
+  renderLines();
+});
+
+function ruleHint(rule){
+  if(!rule) return '';
+  return rule.carton_to_pieces
+    ? `1 carton = ${rule.carton_to_pieces} pieces`
+    : `1 carton = ${rule.cartons_to_packs} packs · 1 pack = ${rule.packs_to_pieces} pieces`;
+}
+function lineTotalPieces(line){
+  const r = line.rule;
+  if(!r) return 0;
+  if(r.carton_to_pieces) return line.cartons * r.carton_to_pieces + line.pieces;
+  return (line.cartons * r.cartons_to_packs + line.packs) * r.packs_to_pieces + line.pieces;
+}
+
+function renderLines(){
+  const container = document.getElementById('lineList');
+  if(currentLines.length===0){
+    container.innerHTML = '<p class="hint">No products added yet — pick one below.</p>';
+    return;
+  }
+  container.innerHTML = currentLines.map((line, idx) => `
+    <div class="line-card">
+      <div class="head">
+        <span class="name">${escapeHtml(line.product_name)}</span>
+        <button class="remove" data-remove="${idx}">Remove</button>
+      </div>
+      <div class="qty-row">
+        <div class="qty-field"><label>Cartons</label><input type="number" min="0" inputmode="numeric" data-qty="${idx}" data-unit="cartons" value="${line.cartons}"></div>
+        ${line.rule && !line.rule.carton_to_pieces ? `<div class="qty-field"><label>Packs</label><input type="number" min="0" inputmode="numeric" data-qty="${idx}" data-unit="packs" value="${line.packs}"></div>` : ''}
+        <div class="qty-field"><label>Pieces</label><input type="number" min="0" inputmode="numeric" data-qty="${idx}" data-unit="pieces" value="${line.pieces}"></div>
+      </div>
+      <div class="hint">${ruleHint(line.rule)} — total ${lineTotalPieces(line)} pieces</div>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('[data-remove]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ currentLines.splice(parseInt(btn.dataset.remove,10),1); renderLines(); });
+  });
+  container.querySelectorAll('[data-qty]').forEach(input=>{
+    input.addEventListener('input', ()=>{
+      const idx = parseInt(input.dataset.qty, 10);
+      currentLines[idx][input.dataset.unit] = parseInt(input.value, 10) || 0;
+      renderLines();
+      // restore focus after re-render
+      const again = container.querySelector(`[data-qty="${idx}"][data-unit="${input.dataset.unit}"]`);
+      if(again){ again.focus(); again.selectionStart = again.selectionEnd = again.value.length; }
+    });
+  });
+}
+
+// ---------- dispatch number duplicate check ----------
+let numberCheckTimer;
+document.getElementById('dNumber').addEventListener('input', (e)=>{
+  clearTimeout(numberCheckTimer);
+  const number = e.target.value.trim();
+  const msg = document.getElementById('numberMsg');
+  if(!number){ msg.textContent=''; return; }
+  numberCheckTimer = setTimeout(async ()=>{
+    const {data} = await api(`/api/dispatches/check-number?number=${encodeURIComponent(number)}`);
+    if(data.conflict && data.conflict.id !== editingDispatchId){
+      msg.textContent = `Already used by dispatch #${data.conflict.id} (${data.conflict.date}, ${data.conflict.customer_name || ''}).`;
+      msg.className = 'msg err';
+    } else {
+      msg.textContent = '';
+    }
+  }, 250);
+});
+
+// ---------- save ----------
+function resetForm(){
+  editingDispatchId = null;
+  selectedCustomer = null;
+  selectedCategory = null;
+  currentLines = [];
+  document.getElementById('dDate').value = todayStr();
+  document.getElementById('dShift').value = 'Day';
+  document.getElementById('dSalesCategory').value = '';
+  document.getElementById('recipientFieldWrap').style.display = 'none';
+  resetRecipientOnly();
+  document.getElementById('dNumber').value = '';
+  document.getElementById('dInvoice').value = '';
+  document.getElementById('dNotes').value = '';
+  document.getElementById('saveMsg').textContent = '';
+  renderLines();
+}
+
+async function saveDispatch(finalize){
+  const msg = document.getElementById('saveMsg');
+  const tempName = document.getElementById('dTempCustomerName').value.trim();
+  if(!selectedCategory){ msg.textContent='Select a sales category first.'; msg.className='msg err'; return; }
+  if(!selectedCustomer && !tempName){ msg.textContent='Select a recipient, or enter a temporary/new customer name.'; msg.className='msg err'; return; }
+  const number = document.getElementById('dNumber').value.trim();
+  if(!number){ msg.textContent='Dispatch number is required.'; msg.className='msg err'; return; }
+  if(currentLines.length===0){ msg.textContent='Add at least one product.'; msg.className='msg err'; return; }
+
+  const body = {
+    dispatch_number: number,
+    date: document.getElementById('dDate').value,
+    shift: document.getElementById('dShift').value,
+    sales_category_id: selectedCategory.id,
+    customer_id: selectedCustomer ? selectedCustomer.id : null,
+    new_customer_name: selectedCustomer ? null : tempName,
+    invoice_number: document.getElementById('dInvoice').value || null,
+    notes: document.getElementById('dNotes').value || null,
+    lines: currentLines.map(l => ({product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces})),
+  };
+
+  const {status, data} = await api('/api/dispatches', {method:'POST', body: JSON.stringify(body)});
+  if(status !== 201){
+    msg.textContent = data.error || 'Could not save dispatch.';
+    msg.className = 'msg err';
+    return;
+  }
+
+  if(finalize){
+    const fin = await api(`/api/dispatches/${data.id}/finalize`, {method:'POST'});
+    if(fin.status !== 200){
+      toast('Saved as draft, but finalizing failed: ' + (fin.data.error||''));
+      openDetail(data.id);
+      switchTab('detail');
+      return;
+    }
+  }
+
+  toast(finalize ? 'Dispatch finalized.' : 'Draft saved.');
+  resetForm();
+  switchTab('list');
+}
+document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveDispatch(false));
+document.getElementById('finalizeBtn').addEventListener('click', ()=>saveDispatch(true));
+
+// ---------- list ----------
+function statusPill(status){
+  return `<span class="pill pill-${status}">${status}</span>`;
+}
+
+function currentFilterParams(){
+  const params = new URLSearchParams();
+  const map = {
+    fDate: 'date', fDateFrom: 'date_from', fDateTo: 'date_to',
+    fNumber: 'dispatch_number', fInvoice: 'invoice_number',
+    fShift: 'shift', fStatus: 'status', fCreatedBy: 'created_by',
+    fSalesCategory: 'sales_category_id',
+  };
+  for(const [id, param] of Object.entries(map)){
+    const el = document.getElementById(id);
+    if(el && el.value) params.set(param, el.value);
+  }
+  const productText = document.getElementById('fProduct').value.trim().toLowerCase();
+  if(productText){
+    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
+    if(matches.length===1) params.set('product_id', matches[0].id);
+  }
+  return params;
+}
+
+function dateStr(offsetDays){
+  const d = new Date();
+  d.setDate(d.getDate()+offsetDays);
+  return d.toISOString().slice(0,10);
+}
+document.querySelectorAll('[data-quick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-quick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('fDate').value = '';
+    const q = btn.dataset.quick;
+    if(q==='today'){ document.getElementById('fDateFrom').value = dateStr(0); document.getElementById('fDateTo').value = dateStr(0); }
+    if(q==='yesterday'){ document.getElementById('fDateFrom').value = dateStr(-1); document.getElementById('fDateTo').value = dateStr(-1); }
+    if(q==='week'){ document.getElementById('fDateFrom').value = dateStr(-6); document.getElementById('fDateTo').value = dateStr(0); }
+    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('fDateFrom').value = d.toISOString().slice(0,10); document.getElementById('fDateTo').value = dateStr(0); }
+    loadList();
+  });
+});
+
+function groupByDate(results){
+  const groups = {};
+  results.forEach(d=>{ (groups[d.date] = groups[d.date] || []).push(d); });
+  return Object.keys(groups).sort((a,b)=> a<b?1:-1).map(date=>({date, items: groups[date]}));
+}
+
+async function loadList(){
+  const params = currentFilterParams();
+  const {data} = await api('/api/dispatches?limit=200&' + params.toString());
+  let results = (data && data.results) || [];
+
+  const customerFilter = document.getElementById('fCustomer').value.trim().toLowerCase();
+  if(customerFilter) results = results.filter(d => (d.customer_name||'').toLowerCase().includes(customerFilter));
+
+  ['exportCsv','exportXlsx','exportPdf'].forEach((linkId, i)=>{
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(linkId).href = '/api/dispatches/export.'+fmt+'?'+params.toString();
+  });
+
+  const list = document.getElementById('dispatchList');
+  if(results.length===0){
+    list.innerHTML = '<div class="empty-state">No dispatches match these filters.</div>';
+    return;
+  }
+
+  const groups = groupByDate(results);
+  list.innerHTML = groups.map(g => {
+    const finalizedCount = g.items.filter(d=>d.status==='finalized').length;
+    return `
+    <div class="date-group">
+      <div class="date-group-head" data-toggle-group>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} dispatch${g.items.length===1?'':'es'} · ${finalizedCount} finalized</div></div>
+        <span class="chev">▾</span>
+      </div>
+      <div class="date-group-body">
+        ${g.items.map(d => `
+          <div class="dispatch-row" data-open="${d.id}">
+            <div class="top">
+              <span class="num">#${escapeHtml(d.dispatch_number)}</span>
+              ${statusPill(d.status)}
+            </div>
+            <div class="meta">${d.shift} · <span class="issued-link" data-customer="${d.customer_id}">${escapeHtml(d.customer_name||'—')}</span>
+              ${d.sales_category_name ? ` · <span class="issued-link" data-category="${d.sales_category_id}">${escapeHtml(d.sales_category_name)}</span>` : ' · <span class="hint">Uncategorized</span>'}
+              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-toggle-group]').forEach(head=>{
+    head.addEventListener('click', (e)=>{
+      if(e.target.closest('[data-open]')) return;
+      head.closest('.date-group').classList.toggle('collapsed');
+    });
+  });
+  list.querySelectorAll('[data-open]').forEach(el=>{
+    el.addEventListener('click', ()=>{ openDetail(parseInt(el.dataset.open,10)); switchTab('detail'); });
+  });
+  list.querySelectorAll('[data-customer]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      document.getElementById('fCustomer').value = el.textContent.trim();
+      loadList();
+    });
+  });
+  list.querySelectorAll('[data-category]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      document.getElementById('fSalesCategory').value = el.dataset.category;
+      loadList();
+    });
+  });
+}
+
+async function loadUserFilterOptions(){
+  if(!currentUser || currentUser.role !== 'super_admin') return;
+  const {data} = await api('/api/admin/users');
+  const select = document.getElementById('fCreatedBy');
+  select.classList.remove('hidden');
+  select.innerHTML = '<option value="">Any user</option>' +
+    (Array.isArray(data)?data:[]).map(u=>`<option value="${u.id}">${escapeHtml(u.username)}</option>`).join('');
+}
+
+function loadFilterCategoryOptions(){
+  const select = document.getElementById('fSalesCategory');
+  select.innerHTML = '<option value="">Any sales category</option>' +
+    salesCategoriesCache.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+}
+
+['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice','fShift','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>loadList());
+  document.getElementById(id).addEventListener('change', ()=>loadList());
+});
+document.getElementById('clearFiltersBtn').addEventListener('click', ()=>{
+  ['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fShift').value=''; document.getElementById('fStatus').value=''; document.getElementById('fCreatedBy').value='';
+  document.getElementById('fSalesCategory').value='';
+  document.querySelectorAll('[data-quick]').forEach(b=>b.classList.remove('active'));
+  loadList();
+});
+
+function applyFiltersFromUrl(){
+  const q = new URLSearchParams(window.location.search);
+  if(q.get('customer_name')) document.getElementById('fCustomer').value = q.get('customer_name');
+  if(q.get('dispatch_number')) document.getElementById('fNumber').value = q.get('dispatch_number');
+  if(q.get('date')) document.getElementById('fDate').value = q.get('date');
+  if(q.get('invoice_number')) document.getElementById('fInvoice').value = q.get('invoice_number');
+  if(q.get('sales_category_id')) document.getElementById('fSalesCategory').value = q.get('sales_category_id');
+  if(q.get('customer_id')) document.getElementById('fCustomer').value = q.get('customer_name') || '';
+}
+
+// ---------- detail ----------
+let currentDetail = null;
+
+async function openDetail(id){
+  const {data} = await api(`/api/dispatches/${id}`);
+  currentDetail = data;
+  document.getElementById('detailHeader').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span class="num" style="font-family:var(--mono);font-weight:700;">#${escapeHtml(data.dispatch_number)}</span>
+      ${statusPill(data.status)}
+    </div>
+    <div class="hint"><span class="issued-link" data-goto-date="${data.date}">${data.date}</span> · ${data.shift}</div>
+    <div style="margin-top:8px;"><strong class="issued-link" data-goto-customer="${escapeHtml(data.customer_name||'')}">${escapeHtml(data.customer_name||'—')}</strong></div>
+    <div class="hint">${data.sales_category_name ? `<span class="issued-link" data-goto-category="${data.sales_category_id}">${escapeHtml(data.sales_category_name)}</span>` : 'Uncategorized'}</div>
+    ${data.invoice_number ? `<div class="hint">Invoice: ${escapeHtml(data.invoice_number)}</div>` : ''}
+    ${data.notes ? `<div class="hint" style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(data.notes)}</div>` : ''}
+    ${data.void_reason ? `<div class="hint" style="color:var(--red);margin-top:6px;">Voided: ${escapeHtml(data.void_reason)}</div>` : ''}
+  `;
+  document.getElementById('detailLines').innerHTML = data.lines.map(l => `
+    <div class="detail-line">
+      <a href="/?tab=history&product=${encodeURIComponent(l.product_name)}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(l.product_name)}</a>
+      <span style="font-family:var(--mono);">${l.cartons}c ${l.packs}p ${l.pieces}pc</span>
+    </div>
+  `).join('');
+
+  const goDate = document.querySelector('[data-goto-date]');
+  if(goDate) goDate.addEventListener('click', ()=>{
+    document.getElementById('fDate').value = goDate.dataset.gotoDate;
+    switchTab('list'); loadList();
+  });
+  const goCustomer = document.querySelector('[data-goto-customer]');
+  if(goCustomer && goCustomer.dataset.gotoCustomer) goCustomer.addEventListener('click', ()=>{
+    document.getElementById('fCustomer').value = goCustomer.dataset.gotoCustomer;
+    switchTab('list'); loadList();
+  });
+  const goCategory = document.querySelector('[data-goto-category]');
+  if(goCategory) goCategory.addEventListener('click', ()=>{
+    document.getElementById('fSalesCategory').value = goCategory.dataset.gotoCategory;
+    switchTab('list'); loadList();
+  });
+
+  const actions = document.getElementById('detailActions');
+  const buttons = [];
+  if(data.status === 'draft'){
+    buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
+  }
+  if(currentUser && ['super_admin','manager'].includes(currentUser.role)){
+    if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="void">Void</button>`);
+  }
+  buttons.push(`<button class="btn btn-ghost" data-action="duplicate">Duplicate</button>`);
+  buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
+  actions.innerHTML = buttons.join('');
+
+  const msg = document.getElementById('detailMsg');
+  msg.textContent = '';
+
+  actions.querySelectorAll('[data-action]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const action = btn.dataset.action;
+      if(action === 'print'){ window.print(); return; }
+      if(action === 'finalize'){
+        const r = await api(`/api/dispatches/${data.id}/finalize`, {method:'POST'});
+        if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+        return;
+      }
+      if(action === 'reopen' || action === 'void'){
+        const reason = prompt(`Reason to ${action} this dispatch:`);
+        if(!reason) return;
+        const r = await api(`/api/dispatches/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
+        if(r.status===200){ toast(action==='reopen' ? 'Reopened.' : 'Voided.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+        return;
+      }
+      if(action === 'duplicate'){
+        const number = prompt('New dispatch number for the copy:');
+        if(!number) return;
+        const r = await api(`/api/dispatches/${data.id}/duplicate`, {method:'POST', body: JSON.stringify({dispatch_number: number})});
+        if(r.status===201){ toast('Duplicated as a new draft.'); openDetail(r.data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+        return;
+      }
+    });
+  });
+}
+document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab('list'));
+
+// ---------- boot ----------
+(async function init(){
+  const {data} = await api('/api/session');
+  if(!data.authed || !['super_admin','manager','operator','viewer'].includes((data.user||{}).role)){
+    document.getElementById('gate').classList.remove('hidden');
+    return;
+  }
+  currentUser = data.user;
+  document.getElementById('appShell').classList.remove('hidden');
+  await loadProducts();
+  await loadSalesCategories();
+  await loadFilterCategoryOptions();
+  await loadUserFilterOptions();
+  resetForm();
+
+  const q = new URLSearchParams(window.location.search);
+  if(q.get('open')){
+    await openDetail(parseInt(q.get('open'), 10));
+    switchTab('detail');
+  } else {
+    applyFiltersFromUrl();
+    loadList();
+  }
+})();
+</script>
+</body>
+</html>

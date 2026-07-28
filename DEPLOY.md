@@ -25,30 +25,70 @@ curl -fsSL https://get.docker.com | sh
    ```bash
    scp -r webapp_server youruser@yourserver:/home/youruser/daily-figures
    ```
-2. SSH into your server and edit `docker-compose.yml`:
-   - Change `APP_PIN` to a real PIN your clerk will use.
-   - Change `SECRET_KEY` to a random string (e.g. run `openssl rand -hex 32`).
-   - Change the host port (`"5000:5000"`) if 5000 is already in use.
+2. SSH into your server and set up your secrets — **never edit
+   docker-compose.yml with real secrets; it's tracked in git.**
+   ```bash
+   cp .env.example .env
+   ```
+   Then edit `.env` (which is git-ignored) and fill in:
+   - `SECRET_KEY` — required, the app refuses to start without it. Generate
+     one with `openssl rand -hex 32`.
+   - `SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` — only take effect once,
+     on the very first startup when the `users` table is empty, to create
+     your first login. Safe to leave in `.env` afterwards; they're ignored
+     once any user exists.
+   - Change the host-side port in `docker-compose.yml` if `127.0.0.1:5000`
+     collides with something else already running — but keep the
+     `127.0.0.1:` prefix. The app is meant to sit behind CloudPanel's
+     reverse proxy, never exposed directly to the internet on any port.
 3. Build and start it:
    ```bash
    cd /home/youruser/daily-figures
    docker compose up -d --build
    ```
-4. Visit `http://your-server-ip:5000` — you should see the PIN screen.
-5. **Put it behind HTTPS.** Don't expose port 5000 directly to the internet
-   long-term. Easiest option if you're already using CloudPanel: create a
+   The container's entrypoint (`docker-entrypoint.sh`) runs `flask db
+   upgrade` before gunicorn starts, so schema migrations apply
+   automatically on every deploy — see "Database migrations" below.
+4. The container's port is bound to `127.0.0.1:5000` — it is **not**
+   reachable from outside the server at all (by design; this is the
+   production-safety fix that keeps a bare Flask/Gunicorn port from ever
+   facing the internet directly). From the server itself,
+   `curl http://127.0.0.1:5000/api/health` should return `{"status":"ok"}`.
+5. **Put it behind CloudPanel's reverse proxy for real access.** Create a
    "Reverse Proxy" site in CloudPanel pointing at `127.0.0.1:5000`, and let
-   CloudPanel issue a free Let's Encrypt SSL certificate for it. Then the
-   clerk visits `https://figures.yourdomain.com` instead of a bare IP.
+   CloudPanel issue a free Let's Encrypt SSL certificate for it. Then visit
+   `https://figures.yourdomain.com` — you should see the sign-in screen.
+   Log in with the `SUPERADMIN_USERNAME`/`SUPERADMIN_PASSWORD` you set, then
+   create individual accounts for everyone else from `/admin.html`.
 
 ## Backing up your data
 
-The entire database is one file: `./data/production.db`. Back it up with:
+The entire database is one file: `./data/production.db`.
+
+**This now happens automatically on every deploy/restart.**
+`docker-entrypoint.sh` runs `scripts/backup_db.sh` before touching the
+schema at all — it copies `production.db` to
+`./data/backups/production_<timestamp>.db`, and if that copy fails for any
+reason (disk full, permissions, whatever), the entrypoint aborts
+immediately and **`flask db upgrade` never runs**. The container will
+refuse to start rather than migrate an unbacked-up database. It never
+overwrites an existing backup file — a same-second collision gets a
+numeric suffix instead.
+
+To back up by hand (e.g. before poking at something manually, or on a
+schedule outside of a deploy):
 ```bash
-cp data/production.db data/production_backup_$(date +%Y%m%d).db
+sh scripts/backup_db.sh ./data/production.db
 ```
-Consider a nightly cron job that copies this file somewhere safe (or emails
-it to yourself).
+Consider also pointing a nightly cron job at this script, or copying
+`./data/backups/` somewhere off-server (or emailing it to yourself).
+
+**Restoring from a backup:**
+```bash
+docker compose down
+cp data/backups/production_<timestamp>.db data/production.db
+docker compose up -d
+```
 
 ## Updating the app later
 
@@ -58,6 +98,113 @@ docker compose down
 docker compose up -d --build
 ```
 Your data in `./data` is untouched by this — it only rebuilds the app code.
+The entrypoint runs any new migrations automatically on startup.
+
+## Database migrations
+
+Schema changes ship as versioned scripts in `migrations/versions/`, applied
+with Alembic via Flask-Migrate. They are **additive only** — no migration in
+this project ever alters or drops the original `entries` table (the Daily
+Figures data), and this is enforced by `migrations/env.py`'s
+`include_object` filter plus a test (`tests/test_migrations.py`) that scans
+every migration script for `drop_table('entries')` and fails the suite if
+one is ever added.
+
+**Applying migrations** happens automatically via `docker-entrypoint.sh` on
+every container start — immediately after the automatic backup described
+above. To run it by hand instead (e.g. outside Docker), back up first,
+then:
+```bash
+sh scripts/backup_db.sh /path/to/production.db
+export FLASK_APP=app.py
+export DB_PATH=/path/to/production.db
+flask db upgrade
+```
+
+**Rolling back** a migration:
+```bash
+flask db downgrade <revision-id>   # or: flask db downgrade -1
+```
+If anything looks wrong afterwards, restoring the pre-migration backup is
+always the fastest safety net — see "Restoring from a backup" above.
+
+Current migrations and what their rollback does:
+- `a451e04281fc` (initial: users, products, packaging_rules, customers,
+  audit_log) — downgrade drops exactly those 5 new tables. `entries` is
+  never touched in either direction.
+- `a939d0b27a3e` (seed default products and packaging rules) — downgrade
+  deletes only the specific seeded product/rule rows it inserted (matched
+  by name), leaving any products you've added since untouched.
+- `64984c2b0aba`, `b4961f69011b`, `b10744abb49e` — additive dispatch/daily-
+  figures/low-stock-threshold tables and columns; downgrades drop exactly
+  what each one added.
+- `012e556ab7ad` (sales categories + recipient fields) — adds the
+  `sales_categories` table (seeded with the 5 fixed categories) and
+  nullable columns on `customers`/`dispatches`. Downgrade drops exactly
+  those; `customers` and `dispatches` themselves are never touched.
+- `135b08c5ab45` (customer normalized_name) — adds a case/whitespace-
+  insensitive comparison column used for duplicate detection, backfilled
+  for every existing customer row. Attempts a UNIQUE index; if your data
+  already has case/whitespace-only duplicate names, it falls back to a
+  non-unique index and prints a warning rather than failing the deploy —
+  check the container logs after upgrading for that warning and resolve
+  any flagged duplicates by hand if it appears.
+
+**Always back up `data/production.db` before running a migration against
+real production data** — as of this version that happens automatically,
+but a manual `sh scripts/backup_db.sh data/production.db` right before a
+risky change costs two seconds and never hurts.
+
+## Migrating legacy Daily Figures data (one-time, manual)
+
+Phase 4 replaced hand-typed Issued with an auto-calculated total derived
+from finalized dispatches, and moved Opening/Return/Production to exact
+cartons/packs/pieces instead of the old decimal notation. The original
+`entries` table is preserved forever and is never touched by any of this.
+
+To bring old entries into the new structure: log in as a Super
+Administrator, open `/admin.html` → **Legacy Data** → **Run migration
+now**. It's safe to run more than once (already-migrated rows are
+skipped). Anything it can't confidently decode — a product whose
+packaging ratio doesn't fit the old single-digit-per-unit notation, or an
+out-of-range value — is listed under "Flagged for manual review" instead
+of being guessed; re-enter those specific date/shift/product rows by hand
+via the Enter tab once you know the correct figures.
+
+## Accounts and roles
+
+The old shared PIN is gone. There are 4 roles — Super Administrator,
+Manager, Operator, Viewer — described in the Phase 1 analysis. The first
+Super Administrator account is created automatically from the
+`SUPERADMIN_USERNAME` / `SUPERADMIN_PASSWORD` environment variables the
+first time the app starts with an empty `users` table; from then on, manage
+everyone else from `/admin.html` (Super Administrator only).
+
+## Health checks and post-deployment verification
+
+The container has a built-in Docker `HEALTHCHECK` that hits
+`GET /api/health` (unauthenticated, checks the process is up and the
+SQLite file is actually reachable) every 30s. Check it with:
+```bash
+docker inspect --format='{{json .State.Health}}' daily_figures_app
+```
+or just `docker ps` — unhealthy containers show `(unhealthy)` next to the
+uptime.
+
+After every deploy, verify:
+1. `curl http://127.0.0.1:5000/api/health` → `{"status":"ok"}`.
+2. Sign in at `/` with a real account (not the seed super-admin, if you've
+   since created named accounts).
+3. Open `/dashboard.html` — confirms the daily-figures, dispatch, and
+   customer subsystems are all reachable end-to-end.
+4. Create one draft dispatch and finalize it (`/dispatch.html`), then
+   confirm its Issued total shows up on `/` under the matching
+   date/shift/product — this is the one thing that must never silently
+   break, since it's the core "no double entry" guarantee of the whole
+   rebuild.
+5. Check `docker compose logs -f daily-figures` for migration errors —
+   the entrypoint runs `flask db upgrade` before gunicorn starts, and logs
+   there if a migration fails (the container won't come up in that case).
 
 ## Connecting this to the daily/monthly reports
 

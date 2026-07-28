@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:var(--sans); background:var(--paper-dim); color:var(--ink); }
+  header{ background:var(--ink); color:var(--paper); padding:18px 24px; display:flex; justify-content:space-between; align-items:center; }
+  header a{ color:var(--paper); text-decoration:underline; font-size:13px; }
+  header h1{ margin:0; font-size:18px; }
+  .wrap{ max-width:920px; margin:0 auto; padding:20px; }
+  .tabs{ display:flex; gap:8px; margin-bottom:18px; }
+  .tab{ padding:9px 16px; border-radius:8px; background:white; border:1.5px solid var(--line); font-weight:700; font-size:13px; cursor:pointer; color:var(--ink-soft); }
+  .tab.active{ background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .panel{ display:none; }
+  .panel.active{ display:block; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2{ margin:0 0 14px; font-size:15px; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th, td{ text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th{ color:var(--ink-soft); text-transform:uppercase; font-size:11px; letter-spacing:.05em; }
+  input, select, textarea{ font-family:var(--sans); font-size:13px; padding:8px; border:1.5px solid var(--line); border-radius:6px; width:100%; }
+  label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:4px; }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .row > div{ flex:1; min-width:140px; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:8px; padding:9px 14px; font-weight:700; font-size:13px; }
+  .btn-primary{ background:var(--teal); color:white; }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
+  .btn-danger{ background:var(--red); color:white; }
+  .pill{ display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:700; }
+  .pill-active{ background:#E4F3EC; color:var(--teal-dark); }
+  .pill-inactive{ background:#F3E4E4; color:var(--red); }
+  .msg{ font-size:12px; margin-top:6px; min-height:16px; }
+  .msg.err{ color:var(--red); }
+  .msg.ok{ color:var(--teal-dark); }
+  .hidden{ display:none !important; }
+  .small{ font-size:11px; color:var(--ink-soft); }
+  .gate{ text-align:center; padding:60px 20px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Admin</h1>
+  <a href="/dashboard.html" style="margin-right:14px;">Dashboard</a>
+  <a href="/">&larr; Back to Daily Figures</a>
+</header>
+
+<div class="wrap">
+  <div id="gate" class="gate hidden">
+    <p>You need a super-administrator account to view this page.</p>
+  </div>
+
+  <div id="adminBody" class="hidden">
+    <div class="tabs">
+      <div class="tab active" data-panel="users">Users</div>
+      <div class="tab" data-panel="products">Products &amp; Packaging</div>
+      <div class="tab" data-panel="customers">Customers</div>
+      <div class="tab" data-panel="categories">Sales Categories</div>
+      <div class="tab" data-panel="review">Recipient Review</div>
+      <div class="tab" data-panel="import">Corporate Import</div>
+      <div class="tab" data-panel="legacy">Legacy Data</div>
+    </div>
+
+    <!-- USERS -->
+    <div class="panel active" id="panel-users">
+      <div class="card">
+        <h2>New user</h2>
+        <div class="row">
+          <div><label>Username</label><input id="newUserName"></div>
+          <div><label>Password</label><input id="newUserPass" type="password" placeholder="min 8 characters"></div>
+          <div><label>Role</label>
+            <select id="newUserRole">
+              <option value="viewer">Viewer</option>
+              <option value="operator">Operator</option>
+              <option value="manager">Manager</option>
+              <option value="super_admin">Super Administrator</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn-primary" id="createUserBtn">Create user</button>
+        <div class="msg" id="userMsg"></div>
+      </div>
+      <div class="card">
+        <h2>Existing users</h2>
+        <table><thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead>
+        <tbody id="usersTable"></tbody></table>
+      </div>
+    </div>
+
+    <!-- PRODUCTS -->
+    <div class="panel" id="panel-products">
+      <div class="card">
+        <h2>New product</h2>
+        <div class="row">
+          <div><label>Name</label><input id="newProductName"></div>
+          <div><label>Parent product (optional)</label><select id="newProductParent"><option value="">— none —</option></select></div>
+        </div>
+        <button class="btn-primary" id="createProductBtn">Create product</button>
+        <div class="msg" id="productMsg"></div>
+      </div>
+      <div class="card">
+        <h2>Products &amp; packaging rules</h2>
+        <p class="small">A packaging rule is versioned: setting a new one closes the old one from that moment on — dispatches already entered keep whichever rule was active when they were saved.</p>
+        <table><thead><tr><th>Product</th><th>Status</th><th>Current rule</th><th>Set new rule</th><th>Low-stock warning</th></tr></thead>
+        <tbody id="productsTable"></tbody></table>
+      </div>
+    </div>
+
+    <!-- CUSTOMERS -->
+    <div class="panel" id="panel-customers">
+      <div class="card">
+        <h2>New customer</h2>
+        <div class="row">
+          <div><label>Name</label><input id="newCustomerName"></div>
+          <div><label>Category</label>
+            <select id="newCustomerCategory">
+              <option value="customer">Customer</option>
+              <option value="salesperson">Salesperson</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div><label>Sales Category</label>
+            <select id="newCustomerSalesCategory"><option value="">— none —</option></select>
+          </div>
+          <div><label>Contact info</label><input id="newCustomerContact"></div>
+        </div>
+        <button class="btn-primary" id="createCustomerBtn">Create customer</button>
+        <div class="msg" id="customerMsg"></div>
+      </div>
+      <div class="card">
+        <h2>Customers / Recipients</h2>
+        <div class="row" style="margin-bottom:12px;">
+          <div><input id="customerSearch" placeholder="Search customers…"></div>
+          <div><label>Sales Category</label>
+            <select id="customerFilterSalesCategory"><option value="">All categories</option></select>
+          </div>
+        </div>
+        <table><thead><tr><th>Name</th><th>Category</th><th>Sales Category</th><th>Status</th><th></th></tr></thead>
+        <tbody id="customersTable"></tbody></table>
+      </div>
+    </div>
+
+    <!-- SALES CATEGORIES -->
+    <div class="panel" id="panel-categories">
+      <div class="card">
+        <h2>New sales category</h2>
+        <div class="row">
+          <div><label>Name</label><input id="newCategoryName" placeholder="e.g. Regional Sales"></div>
+        </div>
+        <button class="btn-primary" id="createCategoryBtn">Create category</button>
+        <div class="msg" id="categoryMsg"></div>
+      </div>
+      <div class="card">
+        <h2>Sales categories</h2>
+        <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead>
+        <tbody id="categoriesTable"></tbody></table>
+      </div>
+    </div>
+
+    <!-- RECIPIENT REVIEW -->
+    <div class="panel" id="panel-review">
+      <div class="card">
+        <h2>Temporary / unverified recipients</h2>
+        <p class="small">Created via "Other / New Customer" during dispatch entry. Never deleted — approve, correct, reassign, merge, or leave as-is.</p>
+        <table><thead><tr><th>Name</th><th>Sales Category</th><th>Entered by / when</th><th>Dispatches</th><th>Similar recipients</th><th>Actions</th></tr></thead>
+        <tbody id="reviewTable"></tbody></table>
+      </div>
+    </div>
+
+    <!-- CORPORATE IMPORT -->
+    <div class="panel" id="panel-import">
+      <div class="card">
+        <h2>Initial category assignments</h2>
+        <p class="small">Dakar &amp; Derrick &rarr; Metro Sales · Ayub &amp; Fenecansi &rarr; Upcountry Sales · Shop &rarr; Shop/Kikuubo Sales. Checks for existing matches before creating anything.</p>
+        <button class="btn-ghost" id="previewInitialBtn">Preview</button>
+        <button class="btn-primary" id="executeInitialBtn" disabled>Execute import</button>
+        <div class="msg" id="initialImportMsg"></div>
+        <div id="initialImportPreview"></div>
+      </div>
+      <div class="card">
+        <h2>Corporate Sales customer import (104 recipients)</h2>
+        <p class="small">Preserves each name exactly as supplied. Exact duplicates are skipped automatically. Similar-looking names are flagged below for your review, never auto-merged. Safe to run more than once.</p>
+        <button class="btn-ghost" id="previewCorporateBtn">Preview</button>
+        <button class="btn-primary" id="executeCorporateBtn" disabled>Execute import</button>
+        <div class="msg" id="corporateImportMsg"></div>
+        <div id="corporateImportPreview"></div>
+      </div>
+    </div>
+
+    <!-- LEGACY DATA -->
+    <div class="panel" id="panel-legacy">
+      <div class="card">
+        <h2>Migrate legacy Daily Figures</h2>
+        <p class="small">
+          Converts the old entries table's Opening/Return/Production/Issued values into the new
+          exact cartons/packs/pieces structure, product by product. Never modifies or deletes the
+          original entries table. Safe to run more than once — already-migrated rows are skipped.
+          Anything that can't be confidently decoded (e.g. a product whose packaging ratio doesn't
+          fit the old compact notation, or an out-of-range value) is left out and listed below for
+          manual review instead of being guessed.
+        </p>
+        <button class="btn-primary" id="runMigrationBtn">Run migration now</button>
+        <div class="msg" id="migrationMsg"></div>
+      </div>
+      <div class="card">
+        <h2>Flagged for manual review</h2>
+        <div class="row" style="margin-bottom:10px;">
+          <div><label>Show</label>
+            <select id="flagsFilter">
+              <option value="0">Unresolved</option>
+              <option value="1">Resolved</option>
+            </select>
+          </div>
+        </div>
+        <table><thead><tr><th>Date</th><th>Shift</th><th>Product</th><th>Field</th><th>Raw value</th><th>Reason</th><th></th></tr></thead>
+        <tbody id="flagsTable"></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function api(path, opts){
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await res.json().catch(()=>({}));
+  return {status: res.status, data};
+}
+
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- tabs ----------
+document.querySelectorAll('.tab[data-panel]').forEach(t=>{
+  t.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab[data-panel]').forEach(x=>x.classList.toggle('active', x===t));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active', p.id === 'panel-'+t.dataset.panel));
+  });
+});
+
+// ---------- users ----------
+async function loadUsers(){
+  const {data} = await api('/api/admin/users');
+  const rows = (Array.isArray(data) ? data : []).map(u => `
+    <tr>
+      <td>${escapeHtml(u.username)}</td>
+      <td>
+        <select data-role-for="${u.id}">
+          ${['viewer','operator','manager','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${r.replace('_',' ')}</option>`).join('')}
+        </select>
+      </td>
+      <td><span class="pill ${u.active?'pill-active':'pill-inactive'}">${u.active?'Active':'Disabled'}</span></td>
+      <td class="small">${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'never'}</td>
+      <td>
+        <button class="btn-ghost" data-save-role="${u.id}">Save role</button>
+        <button class="${u.active?'btn-danger':'btn-primary'}" data-toggle-active="${u.id}" data-next="${!u.active}">${u.active?'Disable':'Reactivate'}</button>
+      </td>
+    </tr>`).join('');
+  document.getElementById('usersTable').innerHTML = rows || '<tr><td colspan="5" class="small">No users yet.</td></tr>';
+
+  document.querySelectorAll('[data-save-role]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.saveRole;
+      const role = document.querySelector(`[data-role-for="${id}"]`).value;
+      const {status, data} = await api(`/api/admin/users/${id}`, {method:'PATCH', body: JSON.stringify({role})});
+      document.getElementById('userMsg').textContent = status===200 ? 'Role updated.' : (data.error||'Failed');
+      document.getElementById('userMsg').className = 'msg ' + (status===200?'ok':'err');
+      loadUsers();
+    });
+  });
+  document.querySelectorAll('[data-toggle-active]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.toggleActive;
+      const next = btn.dataset.next === 'true';
+      if(!next && !confirm('Disable this user? They will be signed out and unable to log in until reactivated.')) return;
+      const {status, data} = await api(`/api/admin/users/${id}`, {method:'PATCH', body: JSON.stringify({active: next})});
+      document.getElementById('userMsg').textContent = status===200 ? 'Updated.' : (data.error||'Failed');
+      document.getElementById('userMsg').className = 'msg ' + (status===200?'ok':'err');
+      loadUsers();
+    });
+  });
+}
+
+document.getElementById('createUserBtn').addEventListener('click', async ()=>{
+  const username = document.getElementById('newUserName').value.trim();
+  const password = document.getElementById('newUserPass').value;
+  const role = document.getElementById('newUserRole').value;
+  const {status, data} = await api('/api/admin/users', {method:'POST', body: JSON.stringify({username, password, role})});
+  const msg = document.getElementById('userMsg');
+  if(status===201){
+    msg.textContent = 'User created.'; msg.className='msg ok';
+    document.getElementById('newUserName').value=''; document.getElementById('newUserPass').value='';
+    loadUsers();
+  } else { msg.textContent = data.error || 'Failed to create user.'; msg.className='msg err'; }
+});
+
+// ---------- products ----------
+let productsCache = [];
+
+async function loadProducts(){
+  const {data} = await api('/api/admin/products?include_inactive=1');
+  productsCache = Array.isArray(data) ? data : [];
+
+  const parentSelect = document.getElementById('newProductParent');
+  parentSelect.innerHTML = '<option value="">— none —</option>' +
+    productsCache.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  document.getElementById('productsTable').innerHTML = productsCache.map(p=>{
+    const rule = p.packaging_rule;
+    const ruleText = !rule ? '<span class="small">Not configured</span>'
+      : rule.carton_to_pieces
+        ? `1 carton = ${rule.carton_to_pieces} pieces`
+        : `1 carton = ${rule.cartons_to_packs} packs · 1 pack = ${rule.packs_to_pieces} pieces`;
+    return `
+      <tr>
+        <td>${escapeHtml(p.name)}${p.parent_product_id ? `<div class="small">under ${escapeHtml((productsCache.find(x=>x.id===p.parent_product_id)||{}).name || '')}</div>` : ''}</td>
+        <td>
+          <span class="pill ${p.active?'pill-active':'pill-inactive'}">${p.active?'Active':'Inactive'}</span>
+          <div><button class="btn-ghost" data-toggle-product="${p.id}" data-next="${!p.active}" style="margin-top:6px;">${p.active?'Deactivate':'Activate'}</button></div>
+        </td>
+        <td>${ruleText}</td>
+        <td>
+          <div class="row" style="margin-bottom:6px;">
+            <div><input placeholder="cartons→packs" data-rule-ctp="${p.id}" style="width:90px;"></div>
+            <div><input placeholder="packs→pieces" data-rule-ptp="${p.id}" style="width:90px;"></div>
+          </div>
+          <div class="small">— or, if this product has no pack tier —</div>
+          <div class="row" style="margin:6px 0;">
+            <div><input placeholder="carton→pieces" data-rule-direct="${p.id}" style="width:90px;"></div>
+          </div>
+          <button class="btn-primary" data-save-rule="${p.id}">Save new rule</button>
+        </td>
+        <td>
+          <input type="number" min="0" placeholder="pieces" value="${p.low_stock_threshold ?? ''}" data-threshold="${p.id}" style="width:80px;">
+          <button class="btn-ghost" data-save-threshold="${p.id}" style="margin-top:6px;">Save</button>
+        </td>
+      </tr>`;
+  }).join('') || '<tr><td colspan="5" class="small">No products yet.</td></tr>';
+
+  document.querySelectorAll('[data-toggle-product]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.toggleProduct;
+      const next = btn.dataset.next === 'true';
+      await api(`/api/admin/products/${id}`, {method:'PATCH', body: JSON.stringify({active: next})});
+      loadProducts();
+    });
+  });
+  document.querySelectorAll('[data-save-threshold]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.saveThreshold;
+      const val = document.querySelector(`[data-threshold="${id}"]`).value;
+      const {status, data} = await api(`/api/admin/products/${id}`, {method:'PATCH', body: JSON.stringify({
+        low_stock_threshold: val === '' ? null : parseInt(val, 10),
+      })});
+      const msg = document.getElementById('productMsg');
+      msg.textContent = status===200 ? 'Low-stock threshold saved.' : (data.error||'Failed');
+      msg.className = 'msg ' + (status===200?'ok':'err');
+      loadProducts();
+    });
+  });
+  document.querySelectorAll('[data-save-rule]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.saveRule;
+      const ctp = document.querySelector(`[data-rule-ctp="${id}"]`).value;
+      const ptp = document.querySelector(`[data-rule-ptp="${id}"]`).value;
+      const direct = document.querySelector(`[data-rule-direct="${id}"]`).value;
+      const body = direct
+        ? {carton_to_pieces: parseInt(direct, 10)}
+        : {cartons_to_packs: parseInt(ctp, 10), packs_to_pieces: parseInt(ptp, 10)};
+      const {status, data} = await api(`/api/admin/products/${id}/packaging-rules`, {method:'POST', body: JSON.stringify(body)});
+      const msg = document.getElementById('productMsg');
+      msg.textContent = status===201 ? 'Packaging rule saved.' : (data.error||'Failed');
+      msg.className = 'msg ' + (status===201?'ok':'err');
+      loadProducts();
+    });
+  });
+}
+
+document.getElementById('createProductBtn').addEventListener('click', async ()=>{
+  const name = document.getElementById('newProductName').value.trim();
+  const parent = document.getElementById('newProductParent').value;
+  const {status, data} = await api('/api/admin/products', {method:'POST', body: JSON.stringify({
+    name, parent_product_id: parent ? parseInt(parent,10) : null,
+  })});
+  const msg = document.getElementById('productMsg');
+  if(status===201){
+    msg.textContent='Product created.'; msg.className='msg ok';
+    document.getElementById('newProductName').value='';
+    loadProducts();
+  } else { msg.textContent = data.error || 'Failed to create product.'; msg.className='msg err'; }
+});
+
+// ---------- sales categories ----------
+let salesCategoriesCache = [];
+async function loadSalesCategoriesAdmin(){
+  const {data} = await api('/api/admin/sales-categories?include_inactive=1');
+  salesCategoriesCache = Array.isArray(data) ? data : [];
+
+  const opts = (includeNone) => (includeNone ? '<option value="">— none —</option>' : '<option value="">All categories</option>') +
+    salesCategoriesCache.filter(c=>c.active).map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  document.getElementById('newCustomerSalesCategory').innerHTML = opts(true);
+  document.getElementById('customerFilterSalesCategory').innerHTML = opts(false);
+
+  document.getElementById('categoriesTable').innerHTML = salesCategoriesCache.map(c => `
+    <tr>
+      <td id="cat-name-${c.id}">${escapeHtml(c.name)}</td>
+      <td><span class="pill ${c.active?'pill-active':'pill-inactive'}">${c.active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn-ghost" data-rename-category="${c.id}">Rename</button>
+        <button class="btn-ghost" data-toggle-category="${c.id}" data-next="${!c.active}">${c.active?'Deactivate':'Activate'}</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="3" class="small">No categories yet.</td></tr>';
+
+  document.querySelectorAll('[data-rename-category]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.renameCategory;
+      const current = salesCategoriesCache.find(c=>String(c.id)===id);
+      const name = prompt('New name for this sales category:', current ? current.name : '');
+      if(!name) return;
+      const {status, data} = await api(`/api/admin/sales-categories/${id}`, {method:'PATCH', body: JSON.stringify({name})});
+      if(status!==200){ alert(data.error || 'Failed to rename'); return; }
+      loadSalesCategoriesAdmin();
+    });
+  });
+  document.querySelectorAll('[data-toggle-category]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.toggleCategory;
+      const next = btn.dataset.next === 'true';
+      await api(`/api/admin/sales-categories/${id}`, {method:'PATCH', body: JSON.stringify({active: next})});
+      loadSalesCategoriesAdmin();
+    });
+  });
+}
+document.getElementById('createCategoryBtn').addEventListener('click', async ()=>{
+  const name = document.getElementById('newCategoryName').value.trim();
+  const {status, data} = await api('/api/admin/sales-categories', {method:'POST', body: JSON.stringify({name})});
+  const msg = document.getElementById('categoryMsg');
+  if(status===201){
+    msg.textContent='Category created.'; msg.className='msg ok';
+    document.getElementById('newCategoryName').value='';
+    loadSalesCategoriesAdmin();
+  } else { msg.textContent = data.error || 'Failed to create category.'; msg.className='msg err'; }
+});
+
+// ---------- customers ----------
+let customersCache = [];
+async function loadCustomers(){
+  const q = document.getElementById('customerSearch').value.trim();
+  const categoryId = document.getElementById('customerFilterSalesCategory').value;
+  const params = new URLSearchParams({include_inactive: '1'});
+  if(q) params.set('q', q);
+  if(categoryId) params.set('sales_category_id', categoryId);
+  const {data} = await api('/api/admin/customers?' + params.toString());
+  customersCache = Array.isArray(data) ? data : [];
+
+  const rows = customersCache.map(c => `
+    <tr>
+      <td>${escapeHtml(c.name)}${c.is_temporary ? ' <span class="pill pill-inactive">unverified</span>' : ''}${c.merged_into_id ? ' <span class="small">(merged)</span>' : ''}</td>
+      <td>${escapeHtml(c.category)}</td>
+      <td>${escapeHtml(c.sales_category_name || '—')}</td>
+      <td><span class="pill ${c.active?'pill-active':'pill-inactive'}">${c.active?'Active':'Inactive'}</span></td>
+      <td>
+        <button class="btn-ghost" data-toggle-customer="${c.id}" data-next="${!c.active}">${c.active?'Deactivate':'Activate'}</button>
+        <button class="btn-ghost" data-merge-customer="${c.id}">Merge into…</button>
+      </td>
+    </tr>`).join('');
+  document.getElementById('customersTable').innerHTML = rows || '<tr><td colspan="5" class="small">No customers yet.</td></tr>';
+
+  document.querySelectorAll('[data-toggle-customer]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.toggleCustomer;
+      const next = btn.dataset.next === 'true';
+      await api(`/api/admin/customers/${id}`, {method:'PATCH', body: JSON.stringify({active: next})});
+      loadCustomers();
+    });
+  });
+  document.querySelectorAll('[data-merge-customer]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const sourceId = btn.dataset.mergeCustomer;
+      const source = customersCache.find(c=>String(c.id)===sourceId);
+      const targetName = prompt(`Merge "${source ? source.name : ''}" into which existing recipient? Enter its exact name:`);
+      if(!targetName) return;
+      const target = customersCache.find(c=>c.name.toLowerCase()===targetName.trim().toLowerCase() && String(c.id)!==sourceId);
+      if(!target){ alert('No exact match found in the currently loaded/filtered list — search for the target first, then retry.'); return; }
+      const reason = prompt('Reason for this merge (for the audit log):');
+      if(!reason) return;
+      const {status, data} = await api(`/api/admin/customers/${sourceId}/merge`, {
+        method:'POST', body: JSON.stringify({target_customer_id: target.id, reason}),
+      });
+      if(status!==200){ alert(data.error || 'Merge failed'); return; }
+      alert(`Merged. ${data.dispatch_count_preserved} dispatch(es) preserved under "${target.name}".`);
+      loadCustomers();
+    });
+  });
+}
+document.getElementById('customerSearch').addEventListener('input', ()=>{
+  clearTimeout(window._custSearchT);
+  window._custSearchT = setTimeout(loadCustomers, 200);
+});
+document.getElementById('customerFilterSalesCategory').addEventListener('change', loadCustomers);
+document.getElementById('createCustomerBtn').addEventListener('click', async ()=>{
+  const name = document.getElementById('newCustomerName').value.trim();
+  const category = document.getElementById('newCustomerCategory').value;
+  const sales_category_id = document.getElementById('newCustomerSalesCategory').value || null;
+  const contact_info = document.getElementById('newCustomerContact').value.trim();
+  const {status, data} = await api('/api/admin/customers', {method:'POST', body: JSON.stringify({name, category, sales_category_id, contact_info})});
+  const msg = document.getElementById('customerMsg');
+  if(status===201){
+    msg.textContent='Customer created.'; msg.className='msg ok';
+    document.getElementById('newCustomerName').value=''; document.getElementById('newCustomerContact').value='';
+    loadCustomers();
+  } else if(status===409 && data.warning==='similar_customers_exist'){
+    msg.textContent = 'Similar customer(s) already exist: ' + data.matches.map(m=>m.name).join(', ') + '. Change the name or ask an admin to confirm.';
+    msg.className='msg err';
+  } else { msg.textContent = data.error || 'Failed to create customer.'; msg.className='msg err'; }
+});
+
+// ---------- recipient review ----------
+async function loadReviewQueue(){
+  const {data} = await api('/api/admin/customers/temporary-review');
+  const rows = (Array.isArray(data) ? data : []).map(c => `
+    <tr>
+      <td>${escapeHtml(c.name)}</td>
+      <td>${escapeHtml(c.sales_category_name || '—')}</td>
+      <td class="small">${c.created_by ? 'user #'+c.created_by : '—'}</td>
+      <td><a href="#" data-view-dispatches="${c.id}">${c.dispatch_count}</a></td>
+      <td class="small">${(c.similar_customers||[]).map(m=>escapeHtml(m.name)).join(', ') || '—'}</td>
+      <td>
+        <button class="btn-primary" data-approve-temp="${c.id}">Approve</button>
+        <button class="btn-danger" data-reject-temp="${c.id}">Reject</button>
+      </td>
+    </tr>`).join('');
+  document.getElementById('reviewTable').innerHTML = rows || '<tr><td colspan="6" class="small">Nothing awaiting review.</td></tr>';
+
+  document.querySelectorAll('[data-approve-temp]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      await api(`/api/admin/customers/${btn.dataset.approveTemp}/approve-temporary`, {method:'POST'});
+      loadReviewQueue();
+    });
+  });
+  document.querySelectorAll('[data-reject-temp]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const reason = prompt('Reason for rejecting this temporary recipient (it will be deactivated, not deleted):');
+      if(!reason) return;
+      const {status, data} = await api(`/api/admin/customers/${btn.dataset.rejectTemp}/reject-temporary`, {
+        method:'POST', body: JSON.stringify({reason}),
+      });
+      if(status!==200){ alert(data.error||'Failed'); return; }
+      loadReviewQueue();
+    });
+  });
+  document.querySelectorAll('[data-view-dispatches]').forEach(a=>{
+    a.addEventListener('click', async (e)=>{
+      e.preventDefault();
+      const {data} = await api(`/api/admin/customers/${a.dataset.viewDispatches}/dispatches`);
+      const list = (Array.isArray(data)?data:[]).map(d=>`#${d.dispatch_number} (${d.date}, ${d.status})`).join('\n') || 'No dispatches yet.';
+      alert('Dispatches for this recipient:\n\n' + list);
+    });
+  });
+}
+
+// ---------- corporate / initial import ----------
+function renderImportPreview(container, preview){
+  if(Array.isArray(preview)){
+    container.innerHTML = preview.map(p => renderOnePreview(p)).join('<hr>');
+  } else {
+    container.innerHTML = renderOnePreview(preview);
+  }
+}
+function renderOnePreview(p){
+  return `
+    <p><strong>${escapeHtml(p.category.name)}</strong> — ${p.total_supplied} supplied</p>
+    <p class="small">To create: ${p.to_create.length} · Exact duplicates skipped: ${p.exact_duplicates_skipped.length} · Flagged spelling variations: ${p.possible_spelling_variations.length}${p.in_batch_duplicates_collapsed.length ? ' · In-batch duplicates collapsed: '+p.in_batch_duplicates_collapsed.length : ''}</p>
+    ${p.exact_duplicates_skipped.length ? `<p class="small"><strong>Skipped (already exist):</strong> ${p.exact_duplicates_skipped.map(d=>escapeHtml(d.name)).join(', ')}</p>` : ''}
+    ${p.possible_spelling_variations.length ? `<p class="small"><strong>Flagged for review:</strong> ${p.possible_spelling_variations.map(v=>`${escapeHtml(v.name)} (similar to ${v.similar_to.map(s=>escapeHtml(s.name)).join(', ')})`).join('; ')}</p>` : ''}
+  `;
+}
+document.getElementById('previewInitialBtn').addEventListener('click', async ()=>{
+  const {status, data} = await api('/api/admin/recipient-import/initial-assignments/preview');
+  const msg = document.getElementById('initialImportMsg');
+  if(status!==200){ msg.textContent = data.error||'Preview failed'; msg.className='msg err'; return; }
+  msg.textContent=''; renderImportPreview(document.getElementById('initialImportPreview'), data);
+  document.getElementById('executeInitialBtn').disabled = false;
+});
+document.getElementById('executeInitialBtn').addEventListener('click', async ()=>{
+  if(!confirm('Execute the initial category assignments now? This creates real recipient records.')) return;
+  const {status, data} = await api('/api/admin/recipient-import/initial-assignments/execute', {method:'POST', body: JSON.stringify({confirm: true})});
+  const msg = document.getElementById('initialImportMsg');
+  if(status===201){ msg.textContent='Executed.'; msg.className='msg ok'; loadCustomers(); }
+  else { msg.textContent = data.error||'Execution failed'; msg.className='msg err'; }
+});
+document.getElementById('previewCorporateBtn').addEventListener('click', async ()=>{
+  const {status, data} = await api('/api/admin/recipient-import/corporate-sales/preview');
+  const msg = document.getElementById('corporateImportMsg');
+  if(status!==200){ msg.textContent = data.error||'Preview failed'; msg.className='msg err'; return; }
+  msg.textContent=''; renderImportPreview(document.getElementById('corporateImportPreview'), data);
+  document.getElementById('executeCorporateBtn').disabled = false;
+});
+document.getElementById('executeCorporateBtn').addEventListener('click', async ()=>{
+  if(!confirm('Execute the Corporate Sales import now? This creates real recipient records (104 names, minus any exact duplicates).')) return;
+  const {status, data} = await api('/api/admin/recipient-import/corporate-sales/execute', {method:'POST', body: JSON.stringify({confirm: true})});
+  const msg = document.getElementById('corporateImportMsg');
+  if(status===201){ msg.textContent = `Executed: ${data.created_count} created, ${data.skipped_count} skipped.`; msg.className='msg ok'; loadCustomers(); }
+  else { msg.textContent = data.error||'Execution failed'; msg.className='msg err'; }
+});
+
+// ---------- legacy data ----------
+async function loadFlags(){
+  const resolved = document.getElementById('flagsFilter').value;
+  const {data} = await api(`/api/admin/legacy/flags?resolved=${resolved}`);
+  const rows = (Array.isArray(data) ? data : []).map(f => `
+    <tr>
+      <td>${escapeHtml(f.date)}</td>
+      <td>${escapeHtml(f.shift)}</td>
+      <td>${escapeHtml(f.product_name)}</td>
+      <td>${escapeHtml(f.field)}</td>
+      <td>${f.raw_value}</td>
+      <td class="small">${escapeHtml(f.reason)}</td>
+      <td>${f.resolved ? '' : `<button class="btn-ghost" data-resolve="${f.id}">Mark resolved</button>`}</td>
+    </tr>`).join('');
+  document.getElementById('flagsTable').innerHTML = rows || '<tr><td colspan="7" class="small">Nothing here.</td></tr>';
+
+  document.querySelectorAll('[data-resolve]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      await api(`/api/admin/legacy/flags/${btn.dataset.resolve}`, {method:'PATCH', body: JSON.stringify({})});
+      loadFlags();
+    });
+  });
+}
+document.getElementById('flagsFilter').addEventListener('change', loadFlags);
+
+document.getElementById('runMigrationBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('migrationMsg');
+  msg.textContent = 'Running…'; msg.className = 'msg';
+  const {status, data} = await api('/api/admin/legacy/migrate', {method:'POST'});
+  if(status===200){
+    msg.textContent = `Migrated ${data.migrated} row(s), flagged ${data.flagged} for review, skipped ${data.skipped_already_migrated} already-migrated.`;
+    msg.className = 'msg ok';
+    loadFlags();
+  } else {
+    msg.textContent = data.error || 'Migration failed.'; msg.className = 'msg err';
+  }
+});
+
+// ---------- boot ----------
+(async function init(){
+  const {data} = await api('/api/session');
+  if(!data.authed || !data.user || data.user.role !== 'super_admin'){
+    document.getElementById('gate').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('adminBody').classList.remove('hidden');
+  await loadSalesCategoriesAdmin();
+  await Promise.all([loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue()]);
+})();
+</script>
+</body>
+</html>

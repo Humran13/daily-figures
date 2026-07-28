@@ -1,0 +1,42 @@
+# Development-only artifacts that must never end up in the build context
+# or a built image layer.
+
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+.git/
+.gitignore
+.dockerignore
+
+# Local data — the real database is mounted as a volume at runtime, never
+# baked into the image, and backups certainly don't belong in a build.
+data/
+imgz.zip
+imgz/
+
+# Secrets — passed in at runtime via docker-compose's env_file, never
+# needed (and never wanted) inside a built image layer.
+.env
+.env.*
+!.env.example
+
+# Editor/workspace/OS cruft
+*.code-workspace
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tests aren't needed to run the container
+tests/
+pytest.ini
+requirements-dev.txt
+
+# Docs aren't needed at runtime (Dockerfile copies specific paths, not
+# the whole tree, so this mainly keeps the build context small)
+*.md

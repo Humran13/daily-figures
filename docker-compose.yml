@@ -4,10 +4,13 @@ services:
     container_name: daily_figures_app
     restart: unless-stopped
     ports:
-      - "5000:5000"     # host_port:container_port — change host_port if 5000 is taken
+      # Bound to localhost only — CloudPanel's reverse proxy talks to this
+      # over 127.0.0.1; the Flask/Gunicorn port is never exposed publicly.
+      # Do not change this to "5000:5000" (all-interfaces) in production.
+      - "127.0.0.1:5000:5000"
+    env_file:
+      - .env    # copy .env.example -> .env and fill in real values first; .env is git-ignored
     environment:
-      - APP_PIN=1234              # CHANGE THIS before deploying
-      - SECRET_KEY=change-this-to-something-random
       - DB_PATH=/app/data/production.db
     volumes:
-      - ./data:/app/data          # persists the SQLite database on the host
+      - ./data:/app/data          # persists the SQLite database (and its backups/) on the host
