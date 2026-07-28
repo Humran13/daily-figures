@@ -393,23 +393,35 @@ function renderLines(){
         ${line.rule && !line.rule.carton_to_pieces ? `<div class="qty-field"><label>Packs</label><input type="number" min="0" inputmode="numeric" data-qty="${idx}" data-unit="packs" value="${line.packs}"></div>` : ''}
         <div class="qty-field"><label>Pieces</label><input type="number" min="0" inputmode="numeric" data-qty="${idx}" data-unit="pieces" value="${line.pieces}"></div>
       </div>
-      <div class="hint">${ruleHint(line.rule)} — total ${lineTotalPieces(line)} pieces</div>
+      <div class="hint" data-hint="${idx}">${ruleHint(line.rule)} — total ${lineTotalPieces(line)} pieces</div>
     </div>
   `).join('');
 
   container.querySelectorAll('[data-remove]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ currentLines.splice(parseInt(btn.dataset.remove,10),1); renderLines(); });
   });
+  // Quantity inputs update currentLines and just that line's hint text directly —
+  // never rebuild the DOM here. Rebuilding on every keystroke destroyed and
+  // recreated the input element mid-typing; restoring focus afterwards required
+  // setting selectionStart/selectionEnd, which type="number" inputs don't
+  // support, so the cursor silently reset to position 0 and each new digit was
+  // inserted before the previous one (typing "85" produced "58").
   container.querySelectorAll('[data-qty]').forEach(input=>{
     input.addEventListener('input', ()=>{
       const idx = parseInt(input.dataset.qty, 10);
-      currentLines[idx][input.dataset.unit] = parseInt(input.value, 10) || 0;
-      renderLines();
-      // restore focus after re-render
-      const again = container.querySelector(`[data-qty="${idx}"][data-unit="${input.dataset.unit}"]`);
-      if(again){ again.focus(); again.selectionStart = again.selectionEnd = again.value.length; }
+      const unit = input.dataset.unit;
+      const parsed = parseInt(input.value, 10);
+      currentLines[idx][unit] = Number.isNaN(parsed) ? 0 : parsed;
+      updateLineHint(idx);
     });
   });
+}
+
+function updateLineHint(idx){
+  const line = currentLines[idx];
+  if(!line) return;
+  const hintEl = document.querySelector(`[data-hint="${idx}"]`);
+  if(hintEl) hintEl.textContent = `${ruleHint(line.rule)} — total ${lineTotalPieces(line)} pieces`;
 }
 
 // ---------- dispatch number duplicate check ----------
