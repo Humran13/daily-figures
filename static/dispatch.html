@@ -96,8 +96,8 @@
     <p class="eyebrow">Dispatch Book</p>
     <h1>Dispatch <a href="/">&larr; Daily Figures</a></h1>
     <div class="tabs">
-      <div class="tab active" data-tab="list">Dispatches</div>
       <div class="tab" data-tab="new">New Dispatch</div>
+      <div class="tab active" data-tab="list">Dispatches</div>
       <a href="/dashboard.html" class="tab" style="text-decoration:none;">Dashboard</a>
     </div>
   </header>
@@ -414,6 +414,21 @@ function renderLines(){
       currentLines[idx][unit] = Number.isNaN(parsed) ? 0 : parsed;
       updateLineHint(idx);
     });
+    attachZeroClearBehavior(input);
+  });
+}
+
+// A quantity field showing exactly "0" clears itself on focus so typing
+// starts clean (left-to-right, no leftover leading zero); an empty field
+// reverts to displaying "0" on blur once it's no longer focused. The
+// underlying value (currentLines[idx][unit]) is already 0 in both of these
+// cases, so neither handler needs to touch state — display-only.
+function attachZeroClearBehavior(input){
+  input.addEventListener('focus', ()=>{
+    if(input.value === '0') input.value = '';
+  });
+  input.addEventListener('blur', ()=>{
+    if(input.value.trim() === '') input.value = '0';
   });
 }
 

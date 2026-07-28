@@ -250,6 +250,18 @@ function readQtyInputs(prefix, rule){
   const pieces = parseInt(document.getElementById(prefix+'Pieces').value, 10) || 0;
   return {cartons, packs, pieces};
 }
+// A quantity field showing exactly "0" clears itself on focus so typing
+// starts clean; an empty field reverts to displaying "0" on blur. Reading
+// (readQtyInputs, via `|| 0`) already treats a blank field as zero, so
+// neither handler needs to touch any stored value — display-only.
+function attachZeroClearBehavior(input){
+  input.addEventListener('focus', ()=>{
+    if(input.value === '0') input.value = '';
+  });
+  input.addEventListener('blur', ()=>{
+    if(input.value.trim() === '') input.value = '0';
+  });
+}
 
 // ---------- entry wizard ----------
 async function renderEntryCard(){
@@ -334,7 +346,10 @@ async function renderEntryCard(){
     const closingBase = o + r + p - view.issued.base_qty;
     document.getElementById('closingPreview').textContent = closingBase + ' pieces';
   }
-  card.querySelectorAll('input').forEach(el=>el.addEventListener('input', updatePreview));
+  card.querySelectorAll('input').forEach(el=>{
+    el.addEventListener('input', updatePreview);
+    attachZeroClearBehavior(el);
+  });
   updatePreview();
 
   document.getElementById('issuedBreakdownBtn').addEventListener('click', ()=>openIssuedBreakdown(product, date, shift));
