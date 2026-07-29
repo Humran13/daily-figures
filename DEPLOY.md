@@ -167,6 +167,13 @@ Current migrations and what their rollback does:
   not touch or delete any uploaded logo file under
   `data/uploads/branding/` (those aren't tracked by the database at all —
   see "Backing up your data" above).
+- `e8a1576c5404` (feature_flags) — adds one row per module (dispatch,
+  daily_figures, history_exports, dashboard, customer_management,
+  reporting), all seeded `enabled=True` so every existing installation
+  keeps working unmodified. Downgrade drops exactly that table; disabling
+  or re-enabling a module never touches the data that module owns
+  (dispatches, daily figures, customers, etc.) regardless of migration
+  direction.
 
 **Always back up `data/production.db` before running a migration against
 real production data** — as of this version that happens automatically,

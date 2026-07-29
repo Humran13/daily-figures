@@ -1,7 +1,7 @@
 from flask import Blueprint, Response, jsonify, request
 from sqlalchemy import or_
 
-from webapp.auth import current_user, login_required, roles_required
+from webapp.auth import current_user, login_required, roles_required, feature_required
 from webapp.extensions import db
 from webapp.models.customer import Customer
 from webapp.models.dispatch import SHIFTS, STATUS_DRAFT, STATUS_FINALIZED, STATUSES, Dispatch, DispatchLine
@@ -101,6 +101,7 @@ def _filtered_dispatch_query(args):
 
 @dispatches_bp.route("", methods=["GET"])
 @login_required
+@feature_required("dispatch")
 def list_dispatches():
     query, _ = _filtered_dispatch_query(request.args)
     query = query.order_by(Dispatch.date.desc(), Dispatch.id.desc())
@@ -117,6 +118,7 @@ def list_dispatches():
 
 @dispatches_bp.route("/export.<fmt>", methods=["GET"])
 @login_required
+@feature_required("dispatch")
 def export_dispatches(fmt):
     query, filters_applied = _filtered_dispatch_query(request.args)
     dispatches = query.order_by(Dispatch.date.desc(), Dispatch.id.desc()).limit(5000).all()
@@ -160,6 +162,7 @@ def export_dispatches(fmt):
 
 @dispatches_bp.route("/check-number", methods=["GET"])
 @login_required
+@feature_required("dispatch")
 def check_number():
     number = (request.args.get("number") or "").strip()
     if not number:
@@ -170,6 +173,7 @@ def check_number():
 
 @dispatches_bp.route("/<int:dispatch_id>", methods=["GET"])
 @login_required
+@feature_required("dispatch")
 def get_dispatch(dispatch_id):
     dispatch = db.session.get(Dispatch, dispatch_id)
     if dispatch is None:
@@ -179,6 +183,7 @@ def get_dispatch(dispatch_id):
 
 @dispatches_bp.route("", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
+@feature_required("dispatch")
 def create_dispatch():
     d = request.get_json(force=True) or {}
     user = current_user()
@@ -235,6 +240,7 @@ def _load_editable_dispatch(dispatch_id, user):
 
 @dispatches_bp.route("/<int:dispatch_id>", methods=["PATCH"])
 @login_required
+@feature_required("dispatch")
 def update_dispatch(dispatch_id):
     user = current_user()
     dispatch, err = _load_editable_dispatch(dispatch_id, user)
@@ -282,6 +288,7 @@ def update_dispatch(dispatch_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/lines", methods=["POST"])
 @login_required
+@feature_required("dispatch")
 def add_line(dispatch_id):
     user = current_user()
     dispatch, err = _load_editable_dispatch(dispatch_id, user)
@@ -311,6 +318,7 @@ def add_line(dispatch_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/lines/<int:line_id>", methods=["PATCH"])
 @login_required
+@feature_required("dispatch")
 def update_line(dispatch_id, line_id):
     user = current_user()
     dispatch, err = _load_editable_dispatch(dispatch_id, user)
@@ -345,6 +353,7 @@ def update_line(dispatch_id, line_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/lines/<int:line_id>", methods=["DELETE"])
 @login_required
+@feature_required("dispatch")
 def remove_line(dispatch_id, line_id):
     user = current_user()
     dispatch, err = _load_editable_dispatch(dispatch_id, user)
@@ -370,6 +379,7 @@ def remove_line(dispatch_id, line_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/finalize", methods=["POST"])
 @login_required
+@feature_required("dispatch")
 def finalize(dispatch_id):
     user = current_user()
     dispatch, err = _load_editable_dispatch(dispatch_id, user)
@@ -389,6 +399,7 @@ def finalize(dispatch_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/reopen", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("dispatch")
 def reopen(dispatch_id):
     user = current_user()
     dispatch = db.session.get(Dispatch, dispatch_id)
@@ -409,6 +420,7 @@ def reopen(dispatch_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/void", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("dispatch")
 def void(dispatch_id):
     user = current_user()
     dispatch = db.session.get(Dispatch, dispatch_id)
@@ -429,6 +441,7 @@ def void(dispatch_id):
 
 @dispatches_bp.route("/<int:dispatch_id>/duplicate", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
+@feature_required("dispatch")
 def duplicate(dispatch_id):
     user = current_user()
     source = db.session.get(Dispatch, dispatch_id)

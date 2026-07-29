@@ -74,22 +74,22 @@
     <p class="eyebrow">History &amp; Exports</p>
     <h1>History &amp; Exports</h1>
     <div class="tabs">
-      <div class="tab active" data-tab="dispatch">Dispatch History</div>
-      <div class="tab" data-tab="daily-figures">Daily Figures History</div>
+      <div class="tab active" data-tab="dispatch" data-module="dispatch">Dispatch History</div>
+      <div class="tab" data-tab="daily-figures" data-module="daily_figures">Daily Figures History</div>
     </div>
     <!-- Operator/Viewer only — identical to the block on dispatch.html/index.html. -->
     <div class="tabs hidden" id="operatorNav">
-      <a href="/dispatch.html?tab=new" class="tab" style="text-decoration:none;">Dispatch</a>
-      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
+      <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
+      <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
       <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
     </div>
     <!-- Manager/Super Admin/Viewer-with-full-access: unobtrusive way back;
          this page isn't part of their existing nav (unchanged per Stage 1),
          it's simply reachable. -->
     <div class="tabs" id="adminTierNav">
-      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
-      <a href="/dispatch.html" class="tab" style="text-decoration:none;">Dispatch</a>
-      <a href="/dashboard.html" class="tab hidden" id="dashboardLink" style="text-decoration:none;">Dashboard</a>
+      <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
+      <a href="/dispatch.html" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
+      <a href="/dashboard.html" class="tab hidden" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
     </div>
   </header>
 
@@ -200,6 +200,49 @@ async function applyBranding(){
   } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
 }
 applyBranding();
+
+// ---------- visibility: role and feature-flag state tracked independently ----------
+// An element is visible only when BOTH its role check and its feature
+// flag say so — each recorded on the element itself (defaulting to
+// "allowed" when never set by that side) so either can update
+// independently, any number of times, without one undoing the other.
+function setRoleVisible(el, visible){
+  el.dataset.roleVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function setFlagVisible(el, visible){
+  el.dataset.flagVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function _recomputeVisibility(el){
+  const roleOk = el.dataset.roleVisible !== 'false';
+  const flagOk = el.dataset.flagVisible !== 'false';
+  el.classList.toggle('hidden', !(roleOk && flagOk));
+}
+
+// ---------- feature flags ----------
+// login_required, so called from init() after a session is confirmed.
+// Safe to call again later too: setFlagVisible always reflects the
+// latest fetch in either direction, so a module coming back on is
+// correctly re-shown for any role still allowed to see it.
+let featureFlagsCache = null;
+async function applyFeatureFlags(){
+  try{
+    const {data} = await api('/api/feature-flags');
+    featureFlagsCache = {};
+    (Array.isArray(data) ? data : []).forEach(f=>{ featureFlagsCache[f.module_key] = f.enabled; });
+    document.querySelectorAll('[data-module]').forEach(el=>{
+      setFlagVisible(el, featureFlagsCache[el.dataset.module] !== false);
+    });
+    // If the active internal tab just got hidden (its own module is off),
+    // switch to whichever of the two is still visible.
+    const activeTab = document.querySelector('.tabs .tab[data-tab].active');
+    if(activeTab && activeTab.classList.contains('hidden')){
+      const other = document.querySelector('.tabs .tab[data-tab]:not(.hidden)');
+      if(other) switchTab(other.dataset.tab);
+    }
+  } catch(e){ /* fail safe: leave nav exactly as it was rather than hiding everything */ }
+}
 
 function statusPill(status){
   return `<span class="pill pill-${status}">${status}</span>`;
@@ -527,7 +570,7 @@ function applyDailyFiguresFiltersFromUrl(q){
   const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
   document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
   document.getElementById('adminTierNav').classList.toggle('hidden', isOperatorOrViewer);
-  document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(data.user.role));
+  setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(data.user.role));
   document.getElementById('appShell').classList.remove('hidden');
 
   const {data: products} = await api('/api/admin/products');
@@ -546,6 +589,10 @@ function applyDailyFiguresFiltersFromUrl(q){
   } else {
     switchTab('dispatch');
   }
+  // After the initial tab is chosen, so its own auto-switch-away-from-a-
+  // hidden-active-tab logic sees the real active tab, not the static
+  // markup default.
+  await applyFeatureFlags();
 })();
 </script>
 </body>

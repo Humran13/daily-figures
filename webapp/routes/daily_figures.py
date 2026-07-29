@@ -1,6 +1,6 @@
 from flask import Blueprint, Response, jsonify, request
 
-from webapp.auth import current_user, login_required, roles_required
+from webapp.auth import current_user, login_required, roles_required, feature_required
 from webapp.extensions import db
 from webapp.models.daily_figure import DailyFigure, StockAdjustment
 from webapp.models.dispatch import SHIFTS
@@ -30,6 +30,7 @@ def _require_date_shift():
 
 @daily_figures_bp.route("", methods=["GET"])
 @login_required
+@feature_required("daily_figures")
 def list_views():
     date, shift, err = _require_date_shift()
     if err:
@@ -40,6 +41,7 @@ def list_views():
 
 @daily_figures_bp.route("/<int:product_id>", methods=["GET"])
 @login_required
+@feature_required("daily_figures")
 def get_view(product_id):
     date, shift, err = _require_date_shift()
     if err:
@@ -67,6 +69,7 @@ def _qty_changed(submitted, current):
 
 @daily_figures_bp.route("", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
+@feature_required("daily_figures")
 def upsert():
     d = request.get_json(force=True) or {}
     user = current_user()
@@ -116,6 +119,7 @@ def upsert():
 
 @daily_figures_bp.route("/issued-detail", methods=["GET"])
 @login_required
+@feature_required("daily_figures")
 def issued_detail():
     date, shift, err = _require_date_shift()
     if err:
@@ -134,6 +138,7 @@ def issued_detail():
 
 @daily_figures_bp.route("/adjustments", methods=["GET"])
 @login_required
+@feature_required("daily_figures")
 def list_adjustments():
     query = StockAdjustment.query
     if request.args.get("date"):
@@ -148,6 +153,7 @@ def list_adjustments():
 
 @daily_figures_bp.route("/adjustments", methods=["POST"])
 @login_required
+@feature_required("daily_figures")
 def create_adjustment():
     user = current_user()
     if user.role == ROLE_VIEWER:
@@ -204,6 +210,7 @@ def _filtered_daily_figure_query(args):
 
 @daily_figures_bp.route("/history", methods=["GET"])
 @login_required
+@feature_required("daily_figures")
 def history():
     query, _ = _filtered_daily_figure_query(request.args)
     limit = min(int(request.args.get("limit", 60)), 500)
@@ -219,6 +226,7 @@ def _qty_part(part, key):
 
 @daily_figures_bp.route("/export.<fmt>", methods=["GET"])
 @login_required
+@feature_required("daily_figures")
 def export_daily_figures(fmt):
     query, filters_applied = _filtered_daily_figure_query(request.args)
     rows_db = query.order_by(DailyFigure.date, DailyFigure.shift, DailyFigure.product_id).limit(5000).all()

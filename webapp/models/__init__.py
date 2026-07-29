@@ -8,6 +8,7 @@ from webapp.models.dispatch import Dispatch, DispatchLine
 from webapp.models.daily_figure import DailyFigure, StockAdjustment, LegacyMigrationFlag
 from webapp.models.operator_daily_figure_permissions import OperatorDailyFigurePermissions
 from webapp.models.company_settings import CompanySettings
+from webapp.models.feature_flag import FeatureFlag
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -15,4 +16,5 @@ __all__ = [
     "DailyFigure", "StockAdjustment", "LegacyMigrationFlag",
     "OperatorDailyFigurePermissions",
     "CompanySettings",
+    "FeatureFlag",
 ]

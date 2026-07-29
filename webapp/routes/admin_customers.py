@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from webapp.auth import current_user, login_required, roles_required
+from webapp.auth import current_user, login_required, roles_required, feature_required
 from webapp.extensions import db
 from webapp.models.customer import CATEGORIES, Customer
 from webapp.models.dispatch import Dispatch
@@ -19,6 +19,7 @@ def _error(e, status=400):
 
 @admin_customers_bp.route("", methods=["GET"])
 @login_required
+@feature_required("customer_management")
 def list_customers():
     search = (request.args.get("q") or "").strip()
     include_inactive = request.args.get("include_inactive") == "1"
@@ -39,6 +40,7 @@ def list_customers():
 
 @admin_customers_bp.route("/check-duplicate", methods=["GET"])
 @login_required
+@feature_required("customer_management")
 def check_duplicate():
     name = (request.args.get("name") or "").strip()
     if not name:
@@ -48,6 +50,7 @@ def check_duplicate():
 
 @admin_customers_bp.route("", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
+@feature_required("customer_management")
 def create_customer():
     d = request.get_json(force=True) or {}
     name = (d.get("name") or "").strip()
@@ -89,6 +92,7 @@ def create_customer():
 
 @admin_customers_bp.route("/<int:customer_id>", methods=["PATCH"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("customer_management")
 def update_customer(customer_id):
     customer = db.session.get(Customer, customer_id)
     if customer is None:
@@ -125,6 +129,7 @@ def update_customer(customer_id):
 
 @admin_customers_bp.route("/<int:customer_id>/dispatches", methods=["GET"])
 @login_required
+@feature_required("customer_management")
 def customer_dispatches(customer_id):
     """All dispatches recorded under this exact recipient record — used by
     the review screen so an admin can see the history before merging."""
@@ -142,6 +147,7 @@ def customer_dispatches(customer_id):
 
 @admin_customers_bp.route("/temporary-review", methods=["GET"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("customer_management")
 def temporary_review_queue():
     customers = (
         Customer.query.filter_by(is_temporary=True, active=True)
@@ -163,6 +169,7 @@ def temporary_review_queue():
 
 @admin_customers_bp.route("/<int:customer_id>/approve-temporary", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("customer_management")
 def approve_temporary(customer_id):
     customer = db.session.get(Customer, customer_id)
     if customer is None:
@@ -180,6 +187,7 @@ def approve_temporary(customer_id):
 
 @admin_customers_bp.route("/<int:customer_id>/reject-temporary", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("customer_management")
 def reject_temporary(customer_id):
     """
     Rejects a temporary recipient WITHOUT deleting it — its dispatches must
@@ -204,6 +212,7 @@ def reject_temporary(customer_id):
 
 @admin_customers_bp.route("/<int:customer_id>/merge", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("customer_management")
 def merge_customer(customer_id):
     source = db.session.get(Customer, customer_id)
     if source is None:

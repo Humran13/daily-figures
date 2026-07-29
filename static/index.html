@@ -135,8 +135,8 @@
     <div class="tabs" id="primaryTabs">
       <div class="tab active" data-tab="entry">Enter</div>
       <div class="tab" data-tab="history">History &amp; Export</div>
-      <a href="/dashboard.html" class="tab" id="dashboardLink" style="text-decoration:none;">Dashboard</a>
-      <a href="/dispatch.html" class="tab" id="dispatchLink" style="text-decoration:none;">Dispatch</a>
+      <a href="/dashboard.html" class="tab" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
+      <a href="/dispatch.html" class="tab" id="dispatchLink" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
       <a href="/admin.html" class="tab hidden" id="adminLink" style="text-decoration:none;">Admin</a>
     </div>
     <!-- Operator/Viewer only: the exact 3-item operational nav (Dispatch,
@@ -144,9 +144,9 @@
          reach. Hidden for every other role — their existing nav above is
          untouched. -->
     <div class="tabs hidden" id="operatorNav">
-      <a href="/dispatch.html?tab=new" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
       <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
-      <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
+      <a href="/history.html" class="tab" data-module="history_exports" style="text-decoration:none;">History &amp; Exports</a>
     </div>
   </header>
   <main>
@@ -671,14 +671,35 @@ async function attemptLogin(){
 document.getElementById('loginBtn').addEventListener('click', attemptLogin);
 document.getElementById('passwordInput').addEventListener('keydown', e=>{ if(e.key==='Enter') attemptLogin(); });
 
+// ---------- visibility: role and feature-flag state tracked independently ----------
+// An element is visible only when BOTH its role check and its feature
+// flag say so. Each is recorded on the element itself (defaulting to
+// "allowed" when never set by that side) so either one can update
+// independently, in any order, any number of times — including a flag
+// flipping back on after having been off — without one silently undoing
+// the other's decision.
+function setRoleVisible(el, visible){
+  el.dataset.roleVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function setFlagVisible(el, visible){
+  el.dataset.flagVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function _recomputeVisibility(el){
+  const roleOk = el.dataset.roleVisible !== 'false';
+  const flagOk = el.dataset.flagVisible !== 'false';
+  el.classList.toggle('hidden', !(roleOk && flagOk));
+}
+
 function applyUser(user){
   if(!user) return;
   currentUser = user;
   document.getElementById('userInfo').textContent = `${user.username} · ${user.role.replace('_',' ')}`;
   const isOperatorOrViewer = ['operator','viewer'].includes(user.role);
   document.getElementById('adminLink').classList.toggle('hidden', user.role !== 'super_admin');
-  document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(user.role));
-  document.getElementById('dispatchLink').classList.toggle('hidden', isOperatorOrViewer);
+  setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(user.role));
+  setRoleVisible(document.getElementById('dispatchLink'), !isOperatorOrViewer);
   document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
   // Operator/Viewer see only the 3-item operatorNav (Dispatch, Daily
   // Figures, History & Exports) — the old Enter/History & Export internal
@@ -687,11 +708,43 @@ function applyUser(user){
   document.getElementById('primaryTabs').classList.toggle('hidden', isOperatorOrViewer);
 }
 
+// ---------- feature flags ----------
+// Fetched once per boot (login_required, so this runs after a session is
+// confirmed) — never per-interaction. Re-running this (it's also safe to
+// call again later, e.g. after the admin toggles a flag on the same page)
+// correctly re-shows a [data-module] element the moment its flag comes
+// back on, for any role still allowed to see it — setFlagVisible always
+// reflects the latest fetch, in either direction. Other pages simply see
+// the current state on their next normal page load.
+let featureFlagsCache = null;
+async function applyFeatureFlags(){
+  try{
+    const flags = await apiGet('/api/feature-flags');
+    featureFlagsCache = {};
+    (Array.isArray(flags) ? flags : []).forEach(f=>{ featureFlagsCache[f.module_key] = f.enabled; });
+    document.querySelectorAll('[data-module]').forEach(el=>{
+      setFlagVisible(el, featureFlagsCache[el.dataset.module] !== false);
+    });
+  } catch(e){ /* fail safe: leave nav exactly as it was rather than hiding everything */ }
+}
+
 async function boot(user){
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('appShell').classList.remove('hidden');
   document.getElementById('dateInput').value = todayStr();
   applyUser(user);
+  await applyFeatureFlags();
+  if(featureFlagsCache && featureFlagsCache.daily_figures === false){
+    // This page IS the Daily Figures module. Unlike every other page, "/"
+    // can't be server-side redirected when its own module is off (it's
+    // also the only login page — see webapp/routes/pages.py) so this is
+    // handled here instead, post-login, exactly once.
+    if(featureFlagsCache.dispatch !== false){ window.location.href = '/dispatch.html'; return; }
+    if(featureFlagsCache.history_exports !== false){ window.location.href = '/history.html'; return; }
+    document.getElementById('appShell').innerHTML =
+      '<div style="padding:60px 20px;text-align:center;">No modules are currently enabled. Contact your administrator.</div>';
+    return;
+  }
   // Fetched once here, not on every render — only Operator's UI depends on
   // these flags (Manager/Super Admin are always unlocked, Viewer is always
   // locked regardless of them).

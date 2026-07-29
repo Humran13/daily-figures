@@ -55,8 +55,8 @@
     <p class="eyebrow" id="userInfo">Overview</p>
     <h1>Dashboard</h1>
     <div class="nav-links">
-      <a href="/" class="home">Daily Figures</a>
-      <a href="/dispatch.html">Dispatch</a>
+      <a href="/" class="home" data-module="daily_figures">Daily Figures</a>
+      <a href="/dispatch.html" data-module="dispatch">Dispatch</a>
       <a href="/admin.html" id="adminLink" class="hidden">Admin</a>
     </div>
   </header>
@@ -131,6 +131,43 @@ async function applyBranding(){
   } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
 }
 applyBranding();
+
+// ---------- visibility: role and feature-flag state tracked independently ----------
+// adminLink is role-gated separately (see init()); [data-module] elements
+// here have no independent role check of their own, but this same
+// dual-state mechanism is used everywhere for consistency and so a role
+// check could be added to one of them later without reintroducing the
+// "flag re-enable never un-hides" bug this replaces.
+function setRoleVisible(el, visible){
+  el.dataset.roleVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function setFlagVisible(el, visible){
+  el.dataset.flagVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function _recomputeVisibility(el){
+  const roleOk = el.dataset.roleVisible !== 'false';
+  const flagOk = el.dataset.flagVisible !== 'false';
+  el.classList.toggle('hidden', !(roleOk && flagOk));
+}
+
+// ---------- feature flags ----------
+// login_required, so called from init() after a session is confirmed.
+// Safe to call again later too: setFlagVisible always reflects the
+// latest fetch in either direction.
+let featureFlagsCache = null;
+async function applyFeatureFlags(){
+  try{
+    const res = await fetch('/api/feature-flags');
+    const flags = await res.json();
+    featureFlagsCache = {};
+    (Array.isArray(flags) ? flags : []).forEach(f=>{ featureFlagsCache[f.module_key] = f.enabled; });
+    document.querySelectorAll('[data-module]').forEach(el=>{
+      setFlagVisible(el, featureFlagsCache[el.dataset.module] !== false);
+    });
+  } catch(e){ /* fail safe: leave nav exactly as it was rather than hiding everything */ }
+}
 
 function statusPill(status){ return `<span class="pill pill-${status}">${status}</span>`; }
 function qty(part){
@@ -248,6 +285,7 @@ async function loadRecipientTotals(today){
   document.getElementById('shell').classList.remove('hidden');
   document.getElementById('userInfo').textContent = `${data.user.username} · ${data.user.role.replace('_',' ')}`;
   document.getElementById('adminLink').classList.toggle('hidden', data.user.role !== 'super_admin');
+  await applyFeatureFlags();
   await loadDashboard();
 })();
 </script>

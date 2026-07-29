@@ -44,11 +44,16 @@ def test_operator_nav_toggled_by_role_in_index_html():
 
 
 def test_dashboard_link_hidden_for_operator_and_viewer_in_dispatch_html():
-    assert "document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(data.user.role))" in DISPATCH_HTML
+    # Stage 4's feature-flag hardening moved this from a raw
+    # classList.toggle() to the independent role/flag visibility
+    # mechanism (setRoleVisible) — see tests/test_stage4_frontend.py for
+    # the full behavior. This just pins that dashboardLink is still
+    # role-gated by the same condition, through the new mechanism.
+    assert "setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(data.user.role))" in DISPATCH_HTML
 
 
 def test_dashboard_link_hidden_for_operator_and_viewer_in_index_html():
-    assert "document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(user.role))" in INDEX_HTML
+    assert "setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(user.role))" in INDEX_HTML
 
 
 def test_operator_and_viewer_default_to_new_dispatch_tab():

@@ -11,7 +11,7 @@ the HTTP method).
 """
 from flask import Blueprint, jsonify, request
 
-from webapp.auth import current_user, roles_required
+from webapp.auth import current_user, roles_required, feature_required
 from webapp.extensions import db
 from webapp.models.user import ROLE_SUPER_ADMIN
 from webapp.services.audit_service import record_audit
@@ -53,6 +53,7 @@ def _grouped_by_category(pairs):
 
 @admin_recipient_import_bp.route("/initial-assignments/preview", methods=["GET"])
 @roles_required(ROLE_SUPER_ADMIN)
+@feature_required("customer_management")
 def preview_initial_assignments():
     """Read-only: computes what WOULD be created, creates nothing."""
     results = []
@@ -70,6 +71,7 @@ def preview_initial_assignments():
 
 @admin_recipient_import_bp.route("/initial-assignments/execute", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN)
+@feature_required("customer_management")
 def execute_initial_assignments():
     err = _require_confirmation()
     if err:
@@ -90,6 +92,7 @@ def execute_initial_assignments():
 
 @admin_recipient_import_bp.route("/corporate-sales/preview", methods=["GET"])
 @roles_required(ROLE_SUPER_ADMIN)
+@feature_required("customer_management")
 def preview_corporate_sales():
     """Read-only: computes what WOULD be created, creates nothing."""
     try:
@@ -105,6 +108,7 @@ def preview_corporate_sales():
 
 @admin_recipient_import_bp.route("/corporate-sales/execute", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN)
+@feature_required("customer_management")
 def execute_corporate_sales():
     err = _require_confirmation()
     if err:

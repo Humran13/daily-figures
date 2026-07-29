@@ -55,8 +55,8 @@
     </span>
     Admin
   </h1>
-  <a href="/dashboard.html" style="margin-right:14px;">Dashboard</a>
-  <a href="/">&larr; Back to Daily Figures</a>
+  <a href="/dashboard.html" id="dashboardLink" data-module="dashboard" style="margin-right:14px;">Dashboard</a>
+  <a href="/" data-module="daily_figures">&larr; Back to Daily Figures</a>
 </header>
 
 <div class="wrap">
@@ -68,12 +68,13 @@
     <div class="tabs">
       <div class="tab active" data-panel="users">Users</div>
       <div class="tab" data-panel="products">Products &amp; Packaging</div>
-      <div class="tab" data-panel="customers">Customers</div>
-      <div class="tab" data-panel="categories">Sales Categories</div>
-      <div class="tab" data-panel="review">Recipient Review</div>
-      <div class="tab" data-panel="import">Corporate Import</div>
+      <div class="tab" data-panel="customers" data-module="customer_management">Customers</div>
+      <div class="tab" data-panel="categories" data-module="customer_management">Sales Categories</div>
+      <div class="tab" data-panel="review" data-module="customer_management">Recipient Review</div>
+      <div class="tab" data-panel="import" data-module="customer_management">Corporate Import</div>
       <div class="tab" data-panel="legacy">Legacy Data</div>
       <div class="tab" data-panel="company">Company Settings</div>
+      <div class="tab" data-panel="flags">Feature Flags</div>
     </div>
 
     <!-- USERS -->
@@ -274,6 +275,21 @@
         <div class="msg" id="companySettingsMsg"></div>
       </div>
     </div>
+
+    <!-- FEATURE FLAGS -->
+    <div class="panel" id="panel-flags">
+      <div class="card">
+        <h2>Module feature flags</h2>
+        <p class="small">
+          Disabling a module hides it from navigation and blocks its API routes — it never deletes
+          or hides any data already recorded. Re-enabling immediately restores full access to
+          whatever was already there. Existing installations start with every module enabled.
+        </p>
+        <table><thead><tr><th>Module</th><th>Status</th><th></th></tr></thead>
+        <tbody id="flagsTable2"></tbody></table>
+        <div class="msg" id="flagsMsg"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -301,6 +317,38 @@ async function applyBranding(){
   } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
 }
 applyBranding();
+
+// ---------- visibility: role and feature-flag state tracked independently ----------
+// This page is entirely super_admin-gated already (see init()'s gate
+// check), so nothing here has an independent role check of its own — but
+// the same dual-state mechanism is used for consistency with every other
+// page, and so a role check could be added later without reintroducing
+// the "flag re-enable never un-hides" bug this replaces.
+function setFlagVisible(el, visible){
+  el.dataset.flagVisible = visible ? 'true' : 'false';
+  _recomputeVisibility(el);
+}
+function _recomputeVisibility(el){
+  const roleOk = el.dataset.roleVisible !== 'false';
+  const flagOk = el.dataset.flagVisible !== 'false';
+  el.classList.toggle('hidden', !(roleOk && flagOk));
+}
+
+// ---------- feature flags ----------
+// login_required, so called from init() after the super_admin session is
+// confirmed, and again after every toggle in the Feature Flags panel
+// below for an immediate same-page refresh. Safe to call repeatedly:
+// setFlagVisible always reflects the latest fetch in either direction.
+async function applyFeatureFlags(){
+  try{
+    const {data} = await api('/api/feature-flags');
+    const flags = {};
+    (Array.isArray(data) ? data : []).forEach(f=>{ flags[f.module_key] = f.enabled; });
+    document.querySelectorAll('[data-module]').forEach(el=>{
+      setFlagVisible(el, flags[el.dataset.module] !== false);
+    });
+  } catch(e){ /* fail safe: leave nav exactly as it was rather than hiding everything */ }
+}
 
 // ---------- tabs ----------
 document.querySelectorAll('.tab[data-panel]').forEach(t=>{
@@ -788,6 +836,55 @@ document.getElementById('removeLogoBtn').addEventListener('click', async ()=>{
   }
 });
 
+// ---------- feature flags ----------
+async function loadFeatureFlagsAdmin(){
+  const {data} = await api('/api/feature-flags');
+  const rows = (Array.isArray(data) ? data : []).map(f => `
+    <tr>
+      <td>${escapeHtml(f.label)}</td>
+      <td><span class="pill ${f.enabled?'pill-active':'pill-inactive'}">${f.enabled?'Enabled':'Disabled'}</span></td>
+      <td><button class="${f.enabled?'btn-danger':'btn-primary'}" data-toggle-flag="${f.module_key}" data-next="${!f.enabled}">${f.enabled?'Disable':'Enable'}</button></td>
+    </tr>`).join('');
+  document.getElementById('flagsTable2').innerHTML = rows || '<tr><td colspan="3" class="small">No modules configured.</td></tr>';
+
+  function describeChange(changed){
+    const names = changed.map(f=>f.label);
+    if(names.length <= 1) return `${names[0]} ${changed[0].enabled?'enabled':'disabled'}.`;
+    return `${names.join(', ')} ${changed[0].enabled?'enabled':'disabled'} together.`;
+  }
+
+  document.querySelectorAll('[data-toggle-flag]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const moduleKey = btn.dataset.toggleFlag;
+      const enabled = btn.dataset.next === 'true';
+      const msg = document.getElementById('flagsMsg');
+      const {status, data} = await api(`/api/feature-flags/${moduleKey}`, {method:'PATCH', body: JSON.stringify({enabled})});
+      if(status===200){
+        msg.textContent = describeChange(data.changed); msg.className = 'msg ok';
+        loadFeatureFlagsAdmin();
+        applyFeatureFlags();  // immediate refresh of this page's own nav, per the same-session re-enable requirement
+        return;
+      }
+      // Disabling a module other enabled modules depend on: the backend
+      // never leaves them enabled-but-broken on a bare "confirm" — the
+      // only way past this is an explicit atomic cascade disabling this
+      // module and every listed dependent together in one transaction.
+      if(status===400 && data.error && data.error.includes('cascade: true')){
+        if(confirm(data.error + '\n\nDisable them all together now?')){
+          const retry = await api(`/api/feature-flags/${moduleKey}`, {method:'PATCH', body: JSON.stringify({enabled, cascade: true})});
+          msg.textContent = retry.status===200 ? describeChange(retry.data.changed) : (retry.data.error||'Failed');
+          msg.className = 'msg ' + (retry.status===200?'ok':'err');
+          loadFeatureFlagsAdmin();
+          applyFeatureFlags();
+          return;
+        }
+        msg.textContent = ''; return;
+      }
+      msg.textContent = data.error || 'Failed to update module.'; msg.className = 'msg err';
+    });
+  });
+}
+
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
@@ -796,8 +893,12 @@ document.getElementById('removeLogoBtn').addEventListener('click', async ()=>{
     return;
   }
   document.getElementById('adminBody').classList.remove('hidden');
+  await applyFeatureFlags();
   await loadSalesCategoriesAdmin();
-  await Promise.all([loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue(), loadCompanySettings()]);
+  await Promise.all([
+    loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue(),
+    loadCompanySettings(), loadFeatureFlagsAdmin(),
+  ]);
 })();
 </script>
 </body>

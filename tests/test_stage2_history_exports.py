@@ -119,8 +119,13 @@ def test_viewer_cannot_write_via_underlying_apis(client, login_as, setup):
 # ---------- source-level structure of history.html ----------
 
 def test_history_page_has_two_tabs_in_order():
-    match = re.search(r'<div class="tabs">\s*<div class="tab active" data-tab="dispatch">Dispatch History</div>\s*'
-                       r'<div class="tab" data-tab="daily-figures">Daily Figures History</div>', HISTORY_HTML)
+    # Stage 4 added data-module="..." to each tab (feature-flag gating) —
+    # this just needs to stop caring about that attribute, not the order.
+    match = re.search(
+        r'<div class="tabs">\s*<div class="tab active" data-tab="dispatch"[^>]*>Dispatch History</div>\s*'
+        r'<div class="tab" data-tab="daily-figures"[^>]*>Daily Figures History</div>',
+        HISTORY_HTML,
+    )
     assert match, "expected Dispatch History then Daily Figures History tabs in that order"
 
 

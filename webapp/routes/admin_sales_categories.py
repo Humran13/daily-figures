@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from webapp.auth import current_user, login_required, roles_required
+from webapp.auth import current_user, login_required, roles_required, feature_required
 from webapp.extensions import db
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_SUPER_ADMIN
@@ -13,6 +13,7 @@ admin_sales_categories_bp = Blueprint(
 
 @admin_sales_categories_bp.route("", methods=["GET"])
 @login_required
+@feature_required("customer_management")
 def list_categories():
     include_inactive = request.args.get("include_inactive") == "1"
     query = SalesCategory.query.order_by(SalesCategory.display_order, SalesCategory.name)
@@ -23,6 +24,7 @@ def list_categories():
 
 @admin_sales_categories_bp.route("", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN)
+@feature_required("customer_management")
 def create_category():
     d = request.get_json(force=True) or {}
     name = (d.get("name") or "").strip()
@@ -45,6 +47,7 @@ def create_category():
 
 @admin_sales_categories_bp.route("/<int:category_id>", methods=["PATCH"])
 @roles_required(ROLE_SUPER_ADMIN)
+@feature_required("customer_management")
 def update_category(category_id):
     category = db.session.get(SalesCategory, category_id)
     if category is None:

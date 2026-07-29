@@ -53,6 +53,27 @@ def roles_required(*allowed_roles):
     return decorator
 
 
+def feature_required(module_key):
+    """
+    Blocks a route when its module has been disabled via Company Settings
+    > Feature Flags (Super Administrator only — see
+    webapp/services/feature_flag_service.py). Independent of and stacked
+    with login_required/roles_required: a feature being off is not a
+    permission question, so this never returns 401 — just a 403 naming the
+    disabled module. Disabling a module never touches its data; this only
+    blocks the route while the flag is off.
+    """
+    def decorator(view):
+        @functools.wraps(view)
+        def wrapped(*args, **kwargs):
+            from webapp.services import feature_flag_service
+            if not feature_flag_service.is_enabled(module_key):
+                return jsonify({"error": f"the '{module_key}' module is currently disabled"}), 403
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
 @auth_bp.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True) or {}
