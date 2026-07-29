@@ -145,6 +145,14 @@ def test_low_stock_threshold_can_be_cleared(client, setup):
     assert res.get_json()["low_stock_threshold"] is None
 
 
-def test_dashboard_page_loads(client):
+def test_dashboard_page_loads(client, setup):
     res = client.get("/dashboard.html")
     assert res.status_code == 200
+
+
+def test_dashboard_page_redirects_unauthenticated_to_login(client):
+    # Prior to Stage 1 this served the raw file to anyone; the page is now
+    # guarded server-side, not just by its own client-side "gate" div.
+    res = client.get("/dashboard.html")
+    assert res.status_code == 302
+    assert res.headers["Location"] == "/"

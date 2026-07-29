@@ -154,11 +154,14 @@ def test_recipient_totals_export_is_audited(client, setup, app):
         assert entry is not None
 
 
-def test_viewer_can_view_reports_but_not_manage_categories(client, setup, login_as):
+def test_viewer_cannot_view_reports_or_manage_categories(client, setup, login_as):
+    """Stage 1: /api/reports/* backs the Dashboard's aggregate views and is
+    now super_admin/manager only — Viewer no longer sees Dashboard at all,
+    so it no longer has access to the data behind it either."""
     client.post("/api/logout")
     login_as("viewer1", "password123", "viewer")
     res = client.get("/api/reports/recipient-totals?date_from=2026-07-28&date_to=2026-07-28&group_by=category")
-    assert res.status_code == 200
+    assert res.status_code == 403
 
     forbidden = client.post("/api/admin/sales-categories", json={"name": "New Cat"})
     assert forbidden.status_code == 403

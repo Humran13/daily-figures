@@ -152,7 +152,10 @@ def test_operator_cannot_create_adjustment(client, setup, login_as):
     assert res.status_code == 403
 
 
-def test_operator_can_upsert_daily_figure(client, setup, login_as):
+def test_operator_cannot_upsert_daily_figure_by_default(client, setup, login_as):
+    """Stage 1: Operator Daily-Figures editing defaults to OFF (role-wide
+    permission flags, all False until a Super Administrator enables one) —
+    see tests/test_stage1_roles_navigation.py for the full per-field matrix."""
     client.post("/api/logout")
     login_as("op1", "password123", "operator")
     res = client.post("/api/daily-figures", json={
@@ -161,7 +164,7 @@ def test_operator_can_upsert_daily_figure(client, setup, login_as):
         "return_": {"cartons": 0, "packs": 0, "pieces": 0},
         "production": {"cartons": 0, "packs": 0, "pieces": 0},
     })
-    assert res.status_code == 200
+    assert res.status_code == 403
 
 
 def test_viewer_cannot_upsert_daily_figure(client, setup, login_as):

@@ -98,7 +98,14 @@
     <div class="tabs">
       <div class="tab" data-tab="new">New Dispatch</div>
       <div class="tab active" data-tab="list">Dispatches</div>
-      <a href="/dashboard.html" class="tab" style="text-decoration:none;">Dashboard</a>
+      <a href="/dashboard.html" class="tab" id="dashboardLink" style="text-decoration:none;">Dashboard</a>
+    </div>
+    <!-- Operator/Viewer only: the exact 3-item operational nav, identical to
+         the one on index.html. Hidden for every other role. -->
+    <div class="tabs hidden" id="operatorNav">
+      <a href="/dispatch.html?tab=new" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
+      <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
     </div>
   </header>
 
@@ -473,6 +480,18 @@ function resetForm(){
   document.getElementById('dNotes').value = '';
   document.getElementById('saveMsg').textContent = '';
   renderLines();
+  applyViewerReadOnly();
+}
+
+// Viewer is read-only everywhere — the backend already rejects the write
+// (roles_required excludes viewer on create_dispatch), this just avoids
+// letting a Viewer fill out the whole form only to hit a raw error toast.
+function applyViewerReadOnly(){
+  if(!currentUser || currentUser.role !== 'viewer') return;
+  document.getElementById('saveDraftBtn').disabled = true;
+  document.getElementById('finalizeBtn').disabled = true;
+  document.getElementById('saveMsg').textContent = 'Read-only — your account cannot create or edit dispatches.';
+  document.getElementById('saveMsg').className = 'msg';
 }
 
 async function saveDispatch(finalize){
@@ -767,6 +786,9 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
     return;
   }
   currentUser = data.user;
+  const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
+  document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(data.user.role));
+  document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
   document.getElementById('appShell').classList.remove('hidden');
   await loadProducts();
   await loadSalesCategories();
@@ -779,8 +801,13 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
     await openDetail(parseInt(q.get('open'), 10));
     switchTab('detail');
   } else {
+    const requestedTab = q.get('tab');
+    // Operator/Viewer land on New Dispatch by default; every other role
+    // keeps today's default (Dispatches list) unless ?tab= says otherwise.
+    const defaultTab = isOperatorOrViewer ? 'new' : 'list';
+    const initialTab = (requestedTab === 'new' || requestedTab === 'list') ? requestedTab : defaultTab;
     applyFiltersFromUrl();
-    loadList();
+    switchTab(initialTab);
   }
 })();
 </script>

@@ -5,7 +5,8 @@ from webapp.extensions import db
 from webapp.models.daily_figure import DailyFigure, StockAdjustment
 from webapp.models.dispatch import SHIFTS
 from webapp.models.product import Product
-from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN
+from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
+from webapp.services import operator_permissions_service as permissions_svc
 from webapp.services import stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -48,6 +49,21 @@ def get_view(product_id):
     return jsonify(svc.daily_figure_view(product, date, shift))
 
 
+def _qty_or_zero(part):
+    if not part:
+        return {"cartons": 0, "packs": 0, "pieces": 0}
+    return {"cartons": part.get("cartons", 0), "packs": part.get("packs", 0), "pieces": part.get("pieces", 0)}
+
+
+def _qty_changed(submitted, current):
+    submitted = submitted or {}
+    return (
+        int(submitted.get("cartons", 0) or 0) != current["cartons"]
+        or int(submitted.get("packs", 0) or 0) != current["packs"]
+        or int(submitted.get("pieces", 0) or 0) != current["pieces"]
+    )
+
+
 @daily_figures_bp.route("", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 def upsert():
@@ -65,6 +81,21 @@ def upsert():
         return _error("product does not exist")
 
     before = svc.daily_figure_view(product, d["date"], d["shift"])
+
+    # Manager/Super Admin keep their existing unconditional write access.
+    # Operator is gated per field by the role-wide permission flags — Issued
+    # is never in this payload at all (it has no writable column anywhere),
+    # so there is nothing here that could ever touch it.
+    if user.role == ROLE_OPERATOR:
+        permissions = permissions_svc.get_permissions()
+        if before.get("opening_editable") and not permissions.can_edit_opening \
+                and _qty_changed(d.get("opening"), _qty_or_zero(before.get("opening"))):
+            return _error("you do not have permission to edit Opening stock", status=403)
+        if not permissions.can_edit_returns and _qty_changed(d.get("return_"), _qty_or_zero(before.get("return_"))):
+            return _error("you do not have permission to edit Returns", status=403)
+        if not permissions.can_edit_production and _qty_changed(d.get("production"), _qty_or_zero(before.get("production"))):
+            return _error("you do not have permission to edit Production", status=403)
+
     try:
         figure = svc.upsert_daily_figure(
             product=product, date=d["date"], shift=d["shift"],
@@ -115,10 +146,15 @@ def list_adjustments():
 
 
 @daily_figures_bp.route("/adjustments", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@login_required
 def create_adjustment():
-    d = request.get_json(force=True) or {}
     user = current_user()
+    if user.role == ROLE_VIEWER:
+        return jsonify({"error": "forbidden"}), 403
+    if user.role == ROLE_OPERATOR and not permissions_svc.get_permissions().can_create_adjustments:
+        return jsonify({"error": "you do not have permission to create stock adjustments"}), 403
+
+    d = request.get_json(force=True) or {}
     for f in ("product_id", "date", "shift", "delta_base_qty", "reason"):
         if not d.get(f) and d.get(f) != 0:
             return _error(f"missing field: {f}")

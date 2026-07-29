@@ -56,6 +56,8 @@ def create_app():
     from webapp.routes.admin_legacy import admin_legacy_bp
     from webapp.routes.reports import reports_bp
     from webapp.routes.dashboard import dashboard_bp
+    from webapp.routes.admin_operator_permissions import admin_operator_permissions_bp
+    from webapp.routes.pages import pages_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_products_bp)
@@ -68,6 +70,8 @@ def create_app():
     app.register_blueprint(admin_legacy_bp)
     app.register_blueprint(reports_bp)
     app.register_blueprint(dashboard_bp)
+    app.register_blueprint(admin_operator_permissions_bp)
+    app.register_blueprint(pages_bp)
 
     @app.route("/api/health")
     def health():

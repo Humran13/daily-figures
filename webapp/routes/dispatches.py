@@ -1,4 +1,5 @@
 from flask import Blueprint, Response, jsonify, request
+from sqlalchemy import or_
 
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
@@ -62,8 +63,38 @@ def _filtered_dispatch_query(args):
         user = db.session.get(User, int(args["created_by"]))
         filters_applied["created_by"] = user.username if user else args["created_by"]
     if args.get("product_id"):
-        query = query.join(DispatchLine).filter(DispatchLine.product_id == int(args["product_id"]))
+        # A correlated EXISTS, not a join — a dispatch with several lines
+        # for this product (nothing in the schema forbids that; see
+        # DispatchLine's model docstring) must still contribute exactly one
+        # row here. A join(DispatchLine) would multiply the Dispatch row
+        # once per matching line, corrupting count()/pagination/ordering and
+        # causing every export format to repeat that dispatch's lines once
+        # per match.
+        pid = int(args["product_id"])
+        query = query.filter(
+            db.session.query(DispatchLine.id)
+            .filter(DispatchLine.dispatch_id == Dispatch.id, DispatchLine.product_id == pid)
+            .exists()
+        )
         filters_applied["product_id"] = args["product_id"]
+    if args.get("customer_name"):
+        # Server-side, full-table search — runs before pagination, unlike the
+        # old client-side substring filter that only ever saw the currently
+        # loaded page. Matches against BOTH the historical/temporary-customer
+        # name snapshot recorded on the dispatch (so renames, merges, and
+        # long-gone temporary customers stay searchable exactly as they
+        # appeared at the time) and the customer's current live name (so a
+        # customer found by their present name still turns up even on older
+        # dispatches whose snapshot predates a rename).
+        needle = args["customer_name"].strip()
+        if needle:
+            query = query.outerjoin(Customer, Dispatch.customer_id == Customer.id).filter(
+                or_(
+                    Dispatch.customer_name_snapshot.ilike(f"%{needle}%"),
+                    Customer.name.ilike(f"%{needle}%"),
+                )
+            )
+            filters_applied["customer_name"] = needle
 
     return query, filters_applied
 

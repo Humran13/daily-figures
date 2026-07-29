@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>History &amp; Exports — Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:560px; margin:0 auto; min-height:100vh; background:var(--paper); }
+  header{ background:var(--ink); color:var(--paper); padding:18px 20px 14px; position:sticky; top:0; z-index:10; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  .tabs{ display:flex; gap:0; margin-top:14px; border-bottom:1px solid #333d4d; }
+  .tab{ flex:1; text-align:center; padding:9px 0; font-size:13px; font-weight:600; color:#8A94A6; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active{ color:var(--paper); border-bottom-color:var(--amber); }
+  main{ padding:16px; padding-bottom:60px; }
+  .hidden{ display:none !important; }
+  .hint{ font-size:11px; color:var(--ink-soft); }
+  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .filters input, .filters select{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; background:white; }
+  .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:8px; font-weight:700; }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
+  .btn-small{ padding:8px 12px; font-size:12px; }
+  .quick-filters button.active{ background:var(--teal); color:white; }
+  .export-row{ display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .date-group{ margin-bottom:14px; }
+  .date-group-head{ display:flex; justify-content:space-between; align-items:center; padding:10px 4px; cursor:pointer; }
+  .date-group-head .date{ font-weight:700; font-size:14px; }
+  .date-group-head .summary{ font-size:11px; color:var(--ink-soft); }
+  .date-group-head .chev{ transition:transform .15s ease; color:var(--ink-soft); }
+  .date-group.collapsed .chev{ transform:rotate(-90deg); }
+  .date-group.collapsed .date-group-body{ display:none; }
+  .dispatch-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; cursor:pointer; }
+  .dispatch-row .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .dispatch-row .num{ font-family:var(--mono); font-weight:700; font-size:13px; }
+  .dispatch-row .meta{ font-size:12px; color:var(--ink-soft); }
+  .entry-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; }
+  .entry-row .meta{ font-size:11px; color:var(--ink-soft); }
+  .entry-row .name{ font-weight:700; font-size:14px; margin:2px 0; }
+  .entry-row .nums{ font-family:var(--mono); font-size:12px; color:var(--ink-soft); }
+  .issued-link{ text-decoration:underline; cursor:pointer; background:none; color:var(--teal-dark); font-size:inherit; padding:0; font-weight:700; }
+  .pill{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .pill-draft{ background:#FCEfd7; color:#8a5a12; }
+  .pill-finalized{ background:#E4F3EC; color:var(--teal-dark); }
+  .pill-void{ background:#F3E4E4; color:var(--red); }
+  .empty-state{ text-align:center; padding:50px 20px; color:var(--ink-soft); }
+  .gate{ padding:60px 20px; text-align:center; color:white; }
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.6); z-index:60; display:flex; align-items:flex-end; justify-content:center; }
+  .modal-sheet{ background:var(--paper); width:100%; max-width:520px; max-height:82vh; overflow-y:auto; border-radius:18px 18px 0 0; padding:20px; }
+  .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
+  .modal-close{ float:right; background:none; color:var(--ink-soft); font-size:20px; padding:0 4px; }
+  .contrib-row{ display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; }
+  .contrib-row .meta{ color:var(--ink-soft); font-size:11px; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Sign in from the main app first.</div>
+
+<div class="shell hidden" id="appShell">
+  <header>
+    <p class="eyebrow">History &amp; Exports</p>
+    <h1>History &amp; Exports</h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="dispatch">Dispatch History</div>
+      <div class="tab" data-tab="daily-figures">Daily Figures History</div>
+    </div>
+    <!-- Operator/Viewer only — identical to the block on dispatch.html/index.html. -->
+    <div class="tabs hidden" id="operatorNav">
+      <a href="/dispatch.html?tab=new" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
+      <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
+    </div>
+    <!-- Manager/Super Admin/Viewer-with-full-access: unobtrusive way back;
+         this page isn't part of their existing nav (unchanged per Stage 1),
+         it's simply reachable. -->
+    <div class="tabs" id="adminTierNav">
+      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
+      <a href="/dispatch.html" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/dashboard.html" class="tab hidden" id="dashboardLink" style="text-decoration:none;">Dashboard</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- ================= DISPATCH HISTORY ================= -->
+    <div id="tab-dispatch">
+      <div class="quick-filters">
+        <button class="btn-ghost btn-small" data-quick="today">Today</button>
+        <button class="btn-ghost btn-small" data-quick="yesterday">Yesterday</button>
+        <button class="btn-ghost btn-small" data-quick="week">This week</button>
+        <button class="btn-ghost btn-small" data-quick="month">This month</button>
+      </div>
+      <div class="filters">
+        <input id="fDate" type="date" title="Exact date">
+        <input id="fDateFrom" type="date" title="From date">
+        <input id="fDateTo" type="date" title="To date">
+        <select id="fSalesCategory"><option value="">Any sales category</option></select>
+        <input id="fCustomer" placeholder="Customer">
+        <input id="fProduct" placeholder="Product">
+        <input id="fNumber" placeholder="Dispatch #">
+        <input id="fInvoice" placeholder="Invoice #">
+        <select id="fShift">
+          <option value="">Any shift</option>
+          <option value="Day">Day</option>
+          <option value="Night">Night</option>
+        </select>
+        <select id="fStatus">
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="finalized">Finalized</option>
+          <option value="void">Void</option>
+        </select>
+        <select id="fCreatedBy" class="hidden"><option value="">Any user</option></select>
+        <button class="btn-ghost btn-small" id="clearFiltersBtn">Clear all</button>
+      </div>
+      <div class="export-row">
+        <span class="hint">Export current results:</span>
+        <a href="#" id="exportCsv" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
+        <a href="#" id="exportXlsx" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
+        <a href="#" id="exportPdf" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
+      </div>
+      <div id="dispatchList"></div>
+    </div>
+
+    <!-- ================= DAILY FIGURES HISTORY ================= -->
+    <div id="tab-daily-figures" class="hidden">
+      <div class="quick-filters">
+        <button class="btn-ghost btn-small" data-hquick="today">Today</button>
+        <button class="btn-ghost btn-small" data-hquick="yesterday">Yesterday</button>
+        <button class="btn-ghost btn-small" data-hquick="week">This week</button>
+        <button class="btn-ghost btn-small" data-hquick="month">This month</button>
+      </div>
+      <div class="filters">
+        <input id="hDate" type="date" title="Exact date">
+        <input id="hDateFrom" type="date" title="From date">
+        <input id="hDateTo" type="date" title="To date">
+        <select id="hShift">
+          <option value="">Any shift</option>
+          <option value="Day">Day</option>
+          <option value="Night">Night</option>
+        </select>
+        <input id="hProduct" placeholder="Product">
+        <button class="btn-ghost btn-small" id="hClearBtn">Clear all</button>
+      </div>
+      <div class="export-row">
+        <span class="hint">Export current results:</span>
+        <a href="#" id="exportCsvBtn" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
+        <a href="#" id="exportXlsxBtn" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
+        <a href="#" id="exportPdfBtn" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
+      </div>
+      <div id="histList"></div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-backdrop hidden" id="issuedModal">
+  <div class="modal-sheet">
+    <button class="modal-close" id="issuedModalClose">&times;</button>
+    <h3 id="issuedModalTitle">Issued breakdown</h3>
+    <div id="issuedModalBody"></div>
+  </div>
+</div>
+
+<script>
+let currentUser = null;
+let productsCache = [];
+let salesCategoriesCache = [];
+
+async function api(path, opts){
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await res.json().catch(()=>({}));
+  return {status: res.status, data};
+}
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function statusPill(status){
+  return `<span class="pill pill-${status}">${status}</span>`;
+}
+function dateStr(offsetDays){
+  const d = new Date();
+  d.setDate(d.getDate()+offsetDays);
+  return d.toISOString().slice(0,10);
+}
+
+// ---------- top-level tabs ----------
+function switchTab(name){
+  document.querySelectorAll('.tabs .tab[data-tab]').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  document.getElementById('tab-dispatch').classList.toggle('hidden', name!=='dispatch');
+  document.getElementById('tab-daily-figures').classList.toggle('hidden', name!=='daily-figures');
+  if(name==='dispatch') loadDispatchHistory();
+  if(name==='daily-figures') renderDailyFiguresHistory();
+}
+document.querySelectorAll('.tabs .tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
+
+// ================= DISPATCH HISTORY =================
+// Reuses GET /api/dispatches (same filters as dispatch.html's own list tab,
+// plus server-side customer_name search — see below) and
+// GET /api/dispatches/export.<fmt> verbatim — no new backend logic beyond
+// that one added search parameter.
+
+function dispatchFilterParams(){
+  const params = new URLSearchParams();
+  const map = {
+    fDate: 'date', fDateFrom: 'date_from', fDateTo: 'date_to',
+    fNumber: 'dispatch_number', fInvoice: 'invoice_number',
+    fShift: 'shift', fStatus: 'status', fCreatedBy: 'created_by',
+    fSalesCategory: 'sales_category_id',
+  };
+  for(const [id, param] of Object.entries(map)){
+    const el = document.getElementById(id);
+    if(el && el.value) params.set(param, el.value);
+  }
+  const productText = document.getElementById('fProduct').value.trim().toLowerCase();
+  if(productText){
+    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
+    if(matches.length===1) params.set('product_id', matches[0].id);
+  }
+  // Server-side, full-result-set search (partial, case-insensitive, covers
+  // both historical/temporary-customer snapshots and current customer
+  // names) — sent to the backend, not filtered against whatever page of
+  // results happens to already be loaded.
+  const customerText = document.getElementById('fCustomer').value.trim();
+  if(customerText) params.set('customer_name', customerText);
+  return params;
+}
+
+function groupByDate(results){
+  const groups = {};
+  results.forEach(d=>{ (groups[d.date] = groups[d.date] || []).push(d); });
+  return Object.keys(groups).sort((a,b)=> a<b?1:-1).map(date=>({date, items: groups[date]}));
+}
+
+async function loadDispatchHistory(){
+  const params = dispatchFilterParams();
+  const {data} = await api('/api/dispatches?limit=200&' + params.toString());
+  let results = (data && data.results) || [];
+
+  ['exportCsv','exportXlsx','exportPdf'].forEach((linkId, i)=>{
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(linkId).href = '/api/dispatches/export.'+fmt+'?'+params.toString();
+  });
+
+  const list = document.getElementById('dispatchList');
+  if(results.length===0){
+    list.innerHTML = '<div class="empty-state">No dispatches match these filters.</div>';
+    return;
+  }
+
+  const groups = groupByDate(results);
+  list.innerHTML = groups.map(g => {
+    const finalizedCount = g.items.filter(d=>d.status==='finalized').length;
+    return `
+    <div class="date-group">
+      <div class="date-group-head" data-toggle-group>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} dispatch${g.items.length===1?'':'es'} · ${finalizedCount} finalized</div></div>
+        <span class="chev">▾</span>
+      </div>
+      <div class="date-group-body">
+        ${g.items.map(d => `
+          <div class="dispatch-row" data-open="${d.id}">
+            <div class="top">
+              <span class="num">#${escapeHtml(d.dispatch_number)}</span>
+              ${statusPill(d.status)}
+            </div>
+            <div class="meta">${d.shift} · <span class="issued-link" data-customer="${d.customer_id}">${escapeHtml(d.customer_name||'—')}</span>
+              ${d.sales_category_name ? ` · <span class="issued-link" data-category="${d.sales_category_id}">${escapeHtml(d.sales_category_name)}</span>` : ' · <span class="hint">Uncategorized</span>'}
+              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-toggle-group]').forEach(head=>{
+    head.addEventListener('click', (e)=>{
+      if(e.target.closest('[data-open]')) return;
+      head.closest('.date-group').classList.toggle('collapsed');
+    });
+  });
+  // Read-only here by design — opening a dispatch always goes to the
+  // Dispatch module itself, which is the only place corrections happen.
+  list.querySelectorAll('[data-open]').forEach(el=>{
+    el.addEventListener('click', ()=>{ window.location.href = `/dispatch.html?open=${el.dataset.open}`; });
+  });
+  list.querySelectorAll('[data-customer]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      document.getElementById('fCustomer').value = el.textContent.trim();
+      loadDispatchHistory();
+    });
+  });
+  list.querySelectorAll('[data-category]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      document.getElementById('fSalesCategory').value = el.dataset.category;
+      loadDispatchHistory();
+    });
+  });
+}
+
+document.querySelectorAll('[data-quick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-quick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('fDate').value = '';
+    const q = btn.dataset.quick;
+    if(q==='today'){ document.getElementById('fDateFrom').value = dateStr(0); document.getElementById('fDateTo').value = dateStr(0); }
+    if(q==='yesterday'){ document.getElementById('fDateFrom').value = dateStr(-1); document.getElementById('fDateTo').value = dateStr(-1); }
+    if(q==='week'){ document.getElementById('fDateFrom').value = dateStr(-6); document.getElementById('fDateTo').value = dateStr(0); }
+    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('fDateFrom').value = d.toISOString().slice(0,10); document.getElementById('fDateTo').value = dateStr(0); }
+    loadDispatchHistory();
+  });
+});
+['fDate','fDateFrom','fDateTo','fProduct','fNumber','fInvoice','fShift','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>loadDispatchHistory());
+  document.getElementById(id).addEventListener('change', ()=>loadDispatchHistory());
+});
+// Customer search now hits the server on every keystroke (full-result-set
+// search, not a client-side filter of the loaded page) — debounced so
+// normal typing doesn't fire a request per character.
+let customerSearchTimer;
+document.getElementById('fCustomer').addEventListener('input', ()=>{
+  clearTimeout(customerSearchTimer);
+  customerSearchTimer = setTimeout(()=>loadDispatchHistory(), 250);
+});
+document.getElementById('fCustomer').addEventListener('change', ()=>loadDispatchHistory());
+document.getElementById('clearFiltersBtn').addEventListener('click', ()=>{
+  ['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fShift').value=''; document.getElementById('fStatus').value=''; document.getElementById('fCreatedBy').value='';
+  document.getElementById('fSalesCategory').value='';
+  document.querySelectorAll('[data-quick]').forEach(b=>b.classList.remove('active'));
+  loadDispatchHistory();
+});
+
+async function loadUserFilterOptions(){
+  if(!currentUser || currentUser.role !== 'super_admin') return;
+  const {data} = await api('/api/admin/users');
+  const select = document.getElementById('fCreatedBy');
+  select.classList.remove('hidden');
+  select.innerHTML = '<option value="">Any user</option>' +
+    (Array.isArray(data)?data:[]).map(u=>`<option value="${u.id}">${escapeHtml(u.username)}</option>`).join('');
+}
+function loadFilterCategoryOptions(){
+  const select = document.getElementById('fSalesCategory');
+  select.innerHTML = '<option value="">Any sales category</option>' +
+    salesCategoriesCache.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+}
+
+function applyDispatchFiltersFromUrl(q){
+  if(q.get('customer_name')) document.getElementById('fCustomer').value = q.get('customer_name');
+  if(q.get('dispatch_number')) document.getElementById('fNumber').value = q.get('dispatch_number');
+  if(q.get('date')) document.getElementById('fDate').value = q.get('date');
+  if(q.get('invoice_number')) document.getElementById('fInvoice').value = q.get('invoice_number');
+  if(q.get('sales_category_id')) document.getElementById('fSalesCategory').value = q.get('sales_category_id');
+}
+
+// ================= DAILY FIGURES HISTORY =================
+// Reuses GET /api/daily-figures/history and GET /api/daily-figures/export.<fmt>
+// verbatim, including the date/shift/product filters the backend already
+// supports (index.html's own History tab just never exposed date/shift in
+// its UI — no backend change needed here).
+
+function qtyLabel(part){
+  if(!part) return '—';
+  if(part.cartons === undefined) return String(part.base_qty);
+  return (part.packs !== undefined && part.packs !== null)
+    ? `${part.cartons}c ${part.packs}p ${part.pieces}pc`
+    : `${part.cartons}c ${part.pieces}pc`;
+}
+
+function dailyFiguresFilterParams(){
+  const params = new URLSearchParams();
+  params.set('limit', '200');
+  const map = {hDate: 'date', hDateFrom: 'date_from', hDateTo: 'date_to', hShift: 'shift'};
+  for(const [id, param] of Object.entries(map)){
+    const el = document.getElementById(id);
+    if(el && el.value) params.set(param, el.value);
+  }
+  const productText = document.getElementById('hProduct').value.trim().toLowerCase();
+  if(productText){
+    const match = productsCache.find(p=>p.name.toLowerCase().includes(productText));
+    if(match) params.set('product_id', match.id);
+  }
+  return params;
+}
+
+function groupHistoryByDate(results){
+  const groups = {};
+  results.forEach(e=>{ (groups[e.date] = groups[e.date] || []).push(e); });
+  return Object.keys(groups).sort((a,b)=> a<b?1:-1).map(date=>({date, items: groups[date]}));
+}
+
+async function renderDailyFiguresHistory(){
+  const params = dailyFiguresFilterParams();
+  const rows = await api('/api/daily-figures/history?' + params.toString());
+  const results = Array.isArray(rows.data) ? rows.data : [];
+  const list = document.getElementById('histList');
+
+  ['exportCsvBtn','exportXlsxBtn','exportPdfBtn'].forEach((id,i)=>{
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(id).href = '/api/daily-figures/export.'+fmt+'?'+params.toString();
+  });
+
+  if(results.length===0){
+    list.innerHTML = '<div class="empty-state">No entries match these filters.</div>';
+    return;
+  }
+
+  const groups = groupHistoryByDate(results);
+  list.innerHTML = groups.map(g => `
+    <div class="date-group">
+      <div class="date-group-head" data-toggle-hgroup>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} product line${g.items.length===1?'':'s'}</div></div>
+        <span class="chev">▾</span>
+      </div>
+      <div class="date-group-body">
+        ${g.items.map(e => `
+          <div class="entry-row">
+            <div class="meta">${e.shift}</div>
+            <div class="name">${escapeHtml(e.product_name)}</div>
+            <div class="nums">Prod ${qtyLabel(e.production)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued)}</span> · Return ${qtyLabel(e.return_)} · Closing ${qtyLabel(e.closing)}</div>
+          </div>`).join('')}
+      </div>
+    </div>`).join('');
+
+  list.querySelectorAll('[data-toggle-hgroup]').forEach(head=>{
+    head.addEventListener('click', ()=>head.closest('.date-group').classList.toggle('collapsed'));
+  });
+  list.querySelectorAll('[data-drill]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const [productId, date, shift] = el.dataset.drill.split('|');
+      const product = productsCache.find(p=>String(p.id)===productId) || {id: parseInt(productId,10), name: ''};
+      openIssuedBreakdown(product, date, shift);
+    });
+  });
+}
+
+document.querySelectorAll('[data-hquick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('hDate').value = '';
+    const q = btn.dataset.hquick;
+    if(q==='today'){ document.getElementById('hDateFrom').value = dateStr(0); document.getElementById('hDateTo').value = dateStr(0); }
+    if(q==='yesterday'){ document.getElementById('hDateFrom').value = dateStr(-1); document.getElementById('hDateTo').value = dateStr(-1); }
+    if(q==='week'){ document.getElementById('hDateFrom').value = dateStr(-6); document.getElementById('hDateTo').value = dateStr(0); }
+    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('hDateFrom').value = d.toISOString().slice(0,10); document.getElementById('hDateTo').value = dateStr(0); }
+    renderDailyFiguresHistory();
+  });
+});
+['hDate','hDateFrom','hDateTo','hShift','hProduct'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>renderDailyFiguresHistory());
+  document.getElementById(id).addEventListener('change', ()=>renderDailyFiguresHistory());
+});
+document.getElementById('hClearBtn').addEventListener('click', ()=>{
+  document.getElementById('hDate').value=''; document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value='';
+  document.getElementById('hShift').value=''; document.getElementById('hProduct').value='';
+  document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.remove('active'));
+  renderDailyFiguresHistory();
+});
+
+// Read-only breakdown — same modal/behavior as index.html's own Enter tab,
+// including its links straight back to the contributing Dispatch record.
+async function openIssuedBreakdown(product, date, shift){
+  const {data: detail} = await api(`/api/daily-figures/issued-detail?product_id=${product.id}&date=${date}&shift=${shift}`);
+  document.getElementById('issuedModalTitle').textContent = `${product.name} — Issued, ${date} ${shift}`;
+  const body = document.getElementById('issuedModalBody');
+  const dispatchRows = (detail.dispatches||[]).map(d => `
+    <div class="contrib-row">
+      <div>
+        <div><a href="/dispatch.html?customer_id=${d.customer_id||''}&customer_name=${encodeURIComponent(d.customer_name||'')}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(d.customer_name||'—')}</a>${d.sales_category_name ? ` · <a href="/dispatch.html?sales_category_id=${d.sales_category_id||''}" style="color:var(--ink-soft);text-decoration:underline;font-size:11px;">${escapeHtml(d.sales_category_name)}</a>` : ''}</div>
+        <div class="meta"><a href="/dispatch.html?dispatch_number=${encodeURIComponent(d.dispatch_number)}" style="color:var(--teal-dark);">Dispatch #${d.dispatch_number} &rarr;</a></div>
+      </div>
+      <div>${d.cartons}c ${d.packs}p ${d.pieces}pc</div>
+    </div>`).join('');
+  const adjustmentRows = (detail.adjustments||[]).map(a => `
+    <div class="contrib-row">
+      <div><div>Adjustment</div><div class="meta">${escapeHtml(a.reason)}</div></div>
+      <div>${a.delta_base_qty>0?'+':''}${a.delta_base_qty}</div>
+    </div>`).join('');
+  body.innerHTML = (dispatchRows||'') + (adjustmentRows||'') ||
+    '<p class="hint">No finalized dispatches or adjustments contribute to this total.</p>';
+  document.getElementById('issuedModal').classList.remove('hidden');
+}
+document.getElementById('issuedModalClose').addEventListener('click', ()=>{
+  document.getElementById('issuedModal').classList.add('hidden');
+});
+
+function applyDailyFiguresFiltersFromUrl(q){
+  if(q.get('product')) document.getElementById('hProduct').value = q.get('product');
+}
+
+// ---------- boot ----------
+(async function init(){
+  const {data} = await api('/api/session');
+  if(!data.authed || !['super_admin','manager','operator','viewer'].includes((data.user||{}).role)){
+    document.getElementById('gate').classList.remove('hidden');
+    return;
+  }
+  currentUser = data.user;
+  const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
+  document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
+  document.getElementById('adminTierNav').classList.toggle('hidden', isOperatorOrViewer);
+  document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(data.user.role));
+  document.getElementById('appShell').classList.remove('hidden');
+
+  const {data: products} = await api('/api/admin/products');
+  productsCache = Array.isArray(products) ? products : [];
+  const {data: categories} = await api('/api/admin/sales-categories');
+  salesCategoriesCache = Array.isArray(categories) ? categories : [];
+  loadFilterCategoryOptions();
+  await loadUserFilterOptions();
+
+  const q = new URLSearchParams(window.location.search);
+  applyDispatchFiltersFromUrl(q);
+  applyDailyFiguresFiltersFromUrl(q);
+
+  if(q.get('tab') === 'daily-figures'){
+    switchTab('daily-figures');
+  } else {
+    switchTab('dispatch');
+  }
+})();
+</script>
+</body>
+</html>

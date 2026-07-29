@@ -130,9 +130,18 @@
     <div class="tabs">
       <div class="tab active" data-tab="entry">Enter</div>
       <div class="tab" data-tab="history">History &amp; Export</div>
-      <a href="/dashboard.html" class="tab" style="text-decoration:none;">Dashboard</a>
-      <a href="/dispatch.html" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/dashboard.html" class="tab" id="dashboardLink" style="text-decoration:none;">Dashboard</a>
+      <a href="/dispatch.html" class="tab" id="dispatchLink" style="text-decoration:none;">Dispatch</a>
       <a href="/admin.html" class="tab hidden" id="adminLink" style="text-decoration:none;">Admin</a>
+    </div>
+    <!-- Operator/Viewer only: the exact 3-item operational nav (Dispatch,
+         Daily Figures, History & Exports), identical on every page they can
+         reach. Hidden for every other role — their existing nav above is
+         untouched. -->
+    <div class="tabs hidden" id="operatorNav">
+      <a href="/dispatch.html?tab=new" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
+      <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
     </div>
   </header>
   <main>
@@ -188,6 +197,10 @@ let products = [];
 let currentIdx = 0;
 let sessionValues = {};
 let currentUser = null;
+// Role-wide Operator Daily-Figures permission flags, fetched once at boot
+// (not on every render) — see fetchOperatorPermissions(). Manager/Super
+// Admin never consult this; Viewer is never granted anything from it.
+let operatorPermissions = {can_edit_opening:false, can_edit_production:false, can_edit_returns:false, can_create_adjustments:false};
 
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function escapeHtml(s){
@@ -231,16 +244,17 @@ function qtyLabel(part){
 }
 function hasPackTierFromParts(part){ return part.packs !== undefined && part.packs !== null; }
 
-function qtyInputsHtml(prefix, rule, vals){
+function qtyInputsHtml(prefix, rule, vals, readOnly){
   vals = vals || {cartons:0, packs:0, pieces:0};
+  const dis = readOnly ? 'disabled' : '';
   const packsField = hasPackTier(rule)
-    ? `<div class="qty-field"><label>Packs</label><input type="number" min="0" inputmode="numeric" id="${prefix}Packs" value="${vals.packs||0}"></div>`
+    ? `<div class="qty-field"><label>Packs</label><input type="number" min="0" inputmode="numeric" id="${prefix}Packs" value="${vals.packs||0}" ${dis}></div>`
     : '';
   return `
     <div class="qty-row">
-      <div class="qty-field"><label>Cartons</label><input type="number" min="0" inputmode="numeric" id="${prefix}Cartons" value="${vals.cartons||0}"></div>
+      <div class="qty-field"><label>Cartons</label><input type="number" min="0" inputmode="numeric" id="${prefix}Cartons" value="${vals.cartons||0}" ${dis}></div>
       ${packsField}
-      <div class="qty-field"><label>Pieces</label><input type="number" min="0" inputmode="numeric" id="${prefix}Pieces" value="${vals.pieces||0}"></div>
+      <div class="qty-field"><label>Pieces</label><input type="number" min="0" inputmode="numeric" id="${prefix}Pieces" value="${vals.pieces||0}" ${dis}></div>
     </div>`;
 }
 function readQtyInputs(prefix, rule){
@@ -303,7 +317,16 @@ async function renderEntryCard(){
     production: view.production,
   };
 
-  const canAdjust = currentUser && ['super_admin','manager'].includes(currentUser.role);
+  const role = currentUser && currentUser.role;
+  const isElevated = role === 'super_admin' || role === 'manager';
+  const isViewer = role === 'viewer';
+  // Manager/Super Admin: always editable (unchanged). Operator: gated by
+  // the role-wide permission flags. Viewer: never editable, regardless of
+  // the flags — read-only across Daily Figures always wins.
+  const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);
+  const canEditReturns = isElevated || (role === 'operator' && operatorPermissions.can_edit_returns);
+  const canEditProduction = isElevated || (role === 'operator' && operatorPermissions.can_edit_production);
+  const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments);
 
   card.innerHTML = `
     <div class="card">
@@ -313,16 +336,16 @@ async function renderEntryCard(){
         <span class="lbl">Opening Stock</span>
         <span class="val qty-readout" id="openingReadout">${qtyLabel(view.opening)}</span>
       </div>
-      ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening)}</div>` : ''}
+      ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
 
       <div class="num-field"><label>Return <span class="hint">(stock returned unused)</span></label></div>
-      ${qtyInputsHtml('ret', rule, vals.return_)}
+      ${qtyInputsHtml('ret', rule, vals.return_, !canEditReturns)}
 
       <div class="num-field" style="margin-top:14px;"><label>Production <span class="hint">(made this shift)</span></label></div>
-      ${qtyInputsHtml('prod', rule, vals.production)}
+      ${qtyInputsHtml('prod', rule, vals.production, !canEditProduction)}
 
       <div class="stock-readout" style="margin-top:18px;">
-        <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
+        <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto — generated from finalized Dispatch records)</span></span>
         <span>
           <span class="val qty-readout">${qtyLabel(view.issued)}</span>
           <button class="issued-link" id="issuedBreakdownBtn">view</button>
@@ -331,9 +354,10 @@ async function renderEntryCard(){
       </div>
 
       <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
+      ${isViewer ? `<p class="hint" style="margin:8px 0;">Read-only — your account cannot edit Daily Figures.</p>` : ''}
       <div class="nav-row">
         ${currentIdx>0 ? `<button class="btn btn-ghost" id="backBtn">Back</button>` : ''}
-        <button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>
+        <button class="btn btn-primary" id="saveNextBtn" ${isViewer ? 'disabled' : ''}>Save &amp; Next</button>
       </div>
       <button class="btn-skip" id="skipBtn">Skip — no activity for this product</button>
     </div>
@@ -563,7 +587,18 @@ async function attemptLogin(){
   const password = document.getElementById('passwordInput').value;
   const res = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password})});
   const data = await res.json();
-  if(data.ok){ await boot(data.user); }
+  if(data.ok){
+    // Operator/Viewer land on Dispatch (New Dispatch tab) immediately after
+    // login. This only fires right after a fresh login — navigating back to
+    // "/" later (e.g. via the operator nav's "Daily Figures" link) goes
+    // through init()/boot() below instead, which does not redirect, so the
+    // link actually works.
+    if(['operator','viewer'].includes(data.user.role)){
+      window.location.href = '/dispatch.html?tab=new';
+      return;
+    }
+    await boot(data.user);
+  }
   else { document.getElementById('loginErr').textContent = data.error || 'Invalid username or password'; }
 }
 document.getElementById('loginBtn').addEventListener('click', attemptLogin);
@@ -573,7 +608,11 @@ function applyUser(user){
   if(!user) return;
   currentUser = user;
   document.getElementById('userInfo').textContent = `${user.username} · ${user.role.replace('_',' ')}`;
+  const isOperatorOrViewer = ['operator','viewer'].includes(user.role);
   document.getElementById('adminLink').classList.toggle('hidden', user.role !== 'super_admin');
+  document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(user.role));
+  document.getElementById('dispatchLink').classList.toggle('hidden', isOperatorOrViewer);
+  document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
 }
 
 async function boot(user){
@@ -581,6 +620,12 @@ async function boot(user){
   document.getElementById('appShell').classList.remove('hidden');
   document.getElementById('dateInput').value = todayStr();
   applyUser(user);
+  // Fetched once here, not on every render — only Operator's UI depends on
+  // these flags (Manager/Super Admin are always unlocked, Viewer is always
+  // locked regardless of them).
+  if(user.role === 'operator'){
+    operatorPermissions = await apiGet('/api/admin/operator-daily-figure-permissions');
+  }
   await loadProducts();
   renderEntryCard();
 

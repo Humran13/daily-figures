@@ -9,8 +9,9 @@ by sales category or by recipient.
 """
 from flask import Blueprint, Response, jsonify, request
 
-from webapp.auth import current_user, login_required
+from webapp.auth import current_user, roles_required
 from webapp.extensions import db
+from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
 from webapp.services import stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -23,7 +24,7 @@ def _error(e, status=400):
 
 
 @reports_bp.route("/summary", methods=["GET"])
-@login_required
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
 def summary():
     date_from = request.args.get("date_from")
     date_to = request.args.get("date_to")
@@ -34,7 +35,7 @@ def summary():
 
 
 @reports_bp.route("/summary/export.<fmt>", methods=["GET"])
-@login_required
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
 def export_summary(fmt):
     date_from = request.args.get("date_from")
     date_to = request.args.get("date_to")
@@ -89,7 +90,7 @@ def _recipient_totals_args():
 
 
 @reports_bp.route("/recipient-totals", methods=["GET"])
-@login_required
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
 def recipient_totals():
     """
     Total Issued and dispatch count grouped by sales category or by
@@ -106,7 +107,7 @@ def recipient_totals():
 
 
 @reports_bp.route("/recipient-totals/export.<fmt>", methods=["GET"])
-@login_required
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
 def export_recipient_totals(fmt):
     try:
         date_from, date_to, group_by = _recipient_totals_args()
