@@ -9,6 +9,8 @@ from webapp.models.daily_figure import DailyFigure, StockAdjustment, LegacyMigra
 from webapp.models.operator_daily_figure_permissions import OperatorDailyFigurePermissions
 from webapp.models.company_settings import CompanySettings
 from webapp.models.feature_flag import FeatureFlag
+from webapp.models.return_record import ReturnRecord, ReturnLine
+from webapp.models.production_record import ProductionRecord, ProductionLine
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -17,4 +19,6 @@ __all__ = [
     "OperatorDailyFigurePermissions",
     "CompanySettings",
     "FeatureFlag",
+    "ReturnRecord", "ReturnLine",
+    "ProductionRecord", "ProductionLine",
 ]

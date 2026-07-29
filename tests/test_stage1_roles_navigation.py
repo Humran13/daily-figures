@@ -226,68 +226,71 @@ def test_permission_changes_are_audited(client, login_as, app):
         assert d["after"]["can_edit_returns"] is True
 
 
-def test_operator_cannot_edit_returns_by_default(client, login_as, setup):
+# Stage 5 moved Return/Production entry to the dedicated Returns Book /
+# Production Book — Daily Figures only ever displays them now, for every
+# role, exactly like Issued already was. The can_edit_returns/
+# can_edit_production flags still exist on the OperatorDailyFigurePermissions
+# model (their admin API below is unchanged), but no longer gate anything
+# in the Daily Figures upsert route: there is nothing left there for them
+# to permit. See tests/test_returns.py and tests/test_production.py for the
+# role/permission checks that now apply to creating/finalizing/voiding a
+# Returns/Production record instead.
+
+def test_operator_cannot_influence_return_via_daily_figures_payload(client, login_as, setup):
     pid = setup["product"]["id"]
     # setup already logged in as super_admin "root" — reuse that session.
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
-        "return_": {"cartons": 0, "packs": 0, "pieces": 0},
-        "production": {"cartons": 0, "packs": 0, "pieces": 0},
     })
 
     login_as("op1", "password123", "operator")
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Night",
         "return_": {"cartons": 1, "packs": 0, "pieces": 0},
-        "production": {"cartons": 0, "packs": 0, "pieces": 0},
     })
-    assert res.status_code == 403
+    assert res.status_code == 200
+    assert res.get_json()["return_"]["base_qty"] == 0
 
 
-def test_operator_cannot_edit_production_by_default(client, login_as, setup):
+def test_operator_cannot_influence_production_via_daily_figures_payload(client, login_as, setup):
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
-        "return_": {"cartons": 0, "packs": 0, "pieces": 0},
-        "production": {"cartons": 0, "packs": 0, "pieces": 0},
     })
 
     login_as("op1", "password123", "operator")
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Night",
-        "return_": {"cartons": 0, "packs": 0, "pieces": 0},
         "production": {"cartons": 1, "packs": 0, "pieces": 0},
     })
-    assert res.status_code == 403
+    assert res.status_code == 200
+    assert res.get_json()["production"]["base_qty"] == 0
 
 
-def test_enabling_one_field_permission_allows_only_that_field(client, login_as, setup):
+def test_operator_permission_flags_no_longer_gate_return_or_production_in_daily_figures(client, login_as, setup):
+    """Even with both flags explicitly enabled, return_/production posted
+    through Daily Figures still has zero effect — proving the removal is
+    complete and not merely permission-gated."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
-        "return_": {"cartons": 0, "packs": 0, "pieces": 0},
-        "production": {"cartons": 0, "packs": 0, "pieces": 0},
     })
     assert client.patch("/api/admin/operator-daily-figure-permissions",
-                         json={"can_edit_returns": True}).status_code == 200
+                         json={"can_edit_returns": True, "can_edit_production": True}).status_code == 200
 
     login_as("op1", "password123", "operator")
-    ok = client.post("/api/daily-figures", json={
+    res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Night",
         "return_": {"cartons": 2, "packs": 0, "pieces": 0},
-        "production": {"cartons": 0, "packs": 0, "pieces": 0},
+        "production": {"cartons": 1, "packs": 0, "pieces": 0},
     })
-    assert ok.status_code == 200
-
-    bad = client.post("/api/daily-figures", json={
-        "product_id": pid, "date": "2026-07-28", "shift": "Night",
-        "return_": {"cartons": 2, "packs": 0, "pieces": 0},  # unchanged, fine
-        "production": {"cartons": 1, "packs": 0, "pieces": 0},  # changed, still not permitted
-    })
-    assert bad.status_code == 403
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["return_"]["base_qty"] == 0
+    assert body["production"]["base_qty"] == 0
 
 
 def test_operator_can_create_adjustment_when_permitted(client, login_as, setup):

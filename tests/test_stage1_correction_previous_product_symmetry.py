@@ -124,13 +124,20 @@ def test_previous_product_warns_before_discarding_unsaved_changes():
     assert "if(!confirm(" in body and "return;" in body  # cancelling must stop navigation
 
 
-def test_has_unsaved_changes_checks_return_production_and_editable_opening():
+def test_has_unsaved_changes_checks_only_editable_opening():
+    """
+    Stage 5 moved Return/Production entry to their own Books — Daily
+    Figures no longer has editable inputs for either, so
+    hasUnsavedChanges() has nothing left to check but Opening Stock (and
+    only when it's actually editable, i.e. a product's first-ever period).
+    """
     match = re.search(r"function hasUnsavedChanges\(rule, view\)\{(.*?)\n\}", INDEX_HTML, re.DOTALL)
     assert match, "hasUnsavedChanges helper is missing"
     body = match.group(1)
-    assert "readQtyInputs('ret', rule)" in body
-    assert "readQtyInputs('prod', rule)" in body
-    assert "view.opening_editable && differs(readQtyInputs('opening', rule)" in body
+    assert "readQtyInputs('ret', rule)" not in body
+    assert "readQtyInputs('prod', rule)" not in body
+    assert "if(!view.opening_editable) return false;" in body
+    assert "differs(readQtyInputs('opening', rule), view.opening)" in body
 
 
 def test_save_and_next_workflow_completely_unchanged():

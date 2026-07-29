@@ -23,6 +23,29 @@ def _finalize_dispatch(client, product_id, customer_id, date, shift, cartons, pa
     return created
 
 
+def _finalize_return(client, product_id, date, cartons, packs, pieces):
+    """As of Stage 5, Return is sourced from the finalized Returns Book, not
+    from the daily-figures POST — see webapp/services/stock_service.py's
+    return_base_qty()."""
+    created = client.post("/api/returns", json={
+        "date": date, "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
+    }).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    return created
+
+
+def _finalize_production(client, product_id, date, shift, cartons, packs, pieces):
+    """As of Stage 5, Production is sourced from the finalized Production
+    Book, not from the daily-figures POST — see
+    webapp/services/stock_service.py's production_base_qty()."""
+    created = client.post("/api/production", json={
+        "date": date, "shift": shift,
+        "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
+    }).get_json()
+    client.post(f"/api/production/{created['id']}/finalize")
+    return created
+
+
 def test_first_entry_requires_opening(client, setup):
     res = client.post("/api/daily-figures", json={
         "product_id": setup["product"]["id"], "date": "2026-07-28", "shift": "Day",
@@ -98,9 +121,9 @@ def test_closing_formula(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},   # 1000
-        "return_": {"cartons": 0, "packs": 5, "pieces": 0},     # 50
-        "production": {"cartons": 1, "packs": 0, "pieces": 0},  # 100
     })
+    _finalize_return(client, pid, "2026-07-28", 0, 5, 0)                                            # 50
+    _finalize_production(client, pid, "2026-07-28", "Day", 1, 0, 0)                                 # 100
     _finalize_dispatch(client, pid, setup["customer"]["id"], "2026-07-28", "Day", 0, 2, 0, "DF-4")  # 20 issued
 
     view = client.get(f"/api/daily-figures/{pid}?date=2026-07-28&shift=Day").get_json()

@@ -12,6 +12,7 @@ from webapp.services.audit_service import record_audit
 from webapp.services.dispatch_service import DispatchError
 from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services.packaging import PackagingError
+from webapp.services.quantity_format import qty_label
 
 dispatches_bp = Blueprint("dispatches", __name__, url_prefix="/api/dispatches")
 
@@ -123,15 +124,28 @@ def export_dispatches(fmt):
     query, filters_applied = _filtered_dispatch_query(request.args)
     dispatches = query.order_by(Dispatch.date.desc(), Dispatch.id.desc()).limit(5000).all()
 
+    # A single business-friendly "Quantity" column per line — cartons+packs+
+    # pieces per that product's own configured packaging (e.g. "3c 2p 5pc"
+    # for a product with a pack tier, "3c 5pc" for one without), the same
+    # convention the app already shows on screen. This is a presentation
+    # correction, not a conversion-logic rewrite: no quantity is computed
+    # here, only formatted (see webapp/services/quantity_format.py).
+    #
+    # No raw base-unit/"total pieces" figure appears anywhere in this normal,
+    # business-facing export — a mixed-product base-unit sum isn't even a
+    # meaningful number (cartons of one product summed with another's), and
+    # the Stage 5 correction is explicit that this never belongs in a report
+    # ordinary users see. There is currently no separate admin-only
+    # diagnostic export in this app; if one is ever genuinely needed, it
+    # should be its own clearly-labeled endpoint, not a bonus row bolted
+    # onto this one.
     columns = [
         ("date", "Date"), ("shift", "Shift"), ("dispatch_number", "Dispatch No."),
         ("invoice_number", "Invoice No."), ("sales_category", "Sales Category"),
         ("customer_name", "Customer"), ("status", "Status"),
-        ("product_name", "Product"), ("cartons", "Cartons"), ("packs", "Packs"), ("pieces", "Pieces"),
-        ("base_unit_qty", "Total Pieces"),
+        ("product_name", "Product"), ("quantity", "Quantity"),
     ]
     rows = []
-    total_pieces = 0
     for d in dispatches:
         customer_name = d.customer_name_snapshot or (d.customer.name if d.customer else "")
         category_name = d.sales_category_name_snapshot or "Uncategorized"
@@ -141,15 +155,12 @@ def export_dispatches(fmt):
                 "invoice_number": d.invoice_number or "", "sales_category": category_name,
                 "customer_name": customer_name,
                 "status": d.status, "product_name": line.product.name if line.product else "",
-                "cartons": line.cartons, "packs": line.packs, "pieces": line.pieces,
-                "base_unit_qty": line.base_unit_qty,
+                "quantity": qty_label(line.cartons, line.packs, line.pieces, line.packaging_rule),
             })
-            total_pieces += line.base_unit_qty
-    totals = {"date": "", "product_name": "TOTAL", "base_unit_qty": total_pieces}
 
     try:
         content = build_export(fmt, title="Dispatch Transactions", filters=filters_applied,
-                                generated_by=current_user().username, columns=columns, rows=rows, totals=totals,
+                                generated_by=current_user().username, columns=columns, rows=rows,
                                 **branding_service.export_kwargs())
     except ValueError as e:
         return _error(e)

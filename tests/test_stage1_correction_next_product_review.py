@@ -135,15 +135,14 @@ def test_editable_workflow_handlers_unchanged():
     assert "if(skipBtn) skipBtn.addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });" in INDEX_HTML
 
 
-# 8. Operator with a specific enabled edit permission gets the editable workflow, not read-only nav
+# 8. isFullyReadOnly is false only when this is a first-ever entry the
+# current role is allowed to set Opening Stock on — Stage 5 removed the
+# separate Return/Production edit flags entirely (both are now always
+# read-only, sourced from their own Books, for every role), so read-only
+# no longer branches on three separately-negated permission flags.
 
-def test_is_fully_read_only_false_when_any_edit_flag_enabled():
-    match = re.search(r"const isFullyReadOnly = isViewer \|\|\s*\(role === 'operator' && (.*?)\);", INDEX_HTML, re.DOTALL)
+def test_is_fully_read_only_depends_only_on_opening_editability_and_permission():
+    match = re.search(r"const isFullyReadOnly = isViewer \|\| !\((.*?)\);", INDEX_HTML)
     assert match
     condition = match.group(1)
-    # All three must be negated (ANDed together) for the operator branch to
-    # be true — i.e. read-only only when *none* of the three are enabled.
-    assert "!operatorPermissions.can_edit_opening" in condition
-    assert "!operatorPermissions.can_edit_returns" in condition
-    assert "!operatorPermissions.can_edit_production" in condition
-    assert " || " not in condition  # must be an AND of negatives, not an OR
+    assert condition == "view.opening_editable && canEditOpening"

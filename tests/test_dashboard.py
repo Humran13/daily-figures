@@ -36,9 +36,13 @@ def test_dashboard_stock_summary_reflects_todays_activity(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": today, "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
-        "return_": {"cartons": 0, "packs": 0, "pieces": 0},
-        "production": {"cartons": 1, "packs": 0, "pieces": 0},
     })
+    # Production is sourced from the finalized Production Book as of Stage 5.
+    prod = client.post("/api/production", json={
+        "date": today, "shift": "Day",
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
     d = client.post("/api/dispatches", json={
         "dispatch_number": "DASH-1", "date": today, "shift": "Day", "customer_id": setup["customer"]["id"],
         "lines": [{"product_id": pid, "cartons": 0, "packs": 2, "pieces": 0}],

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dispatch — Daily Figures</title>
+<title>Production — Daily Figures</title>
 <style>
   :root{
     --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
@@ -39,10 +39,6 @@
   .btn-small{ padding:8px 12px; font-size:12px; border-radius:8px; }
   .nav-row{ display:flex; gap:10px; margin-top:6px; }
   .nav-row > button{ flex:1; }
-  .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:20; }
-  .autocomplete-item{ padding:10px; font-size:14px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
-  .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
-  .autocomplete-item .cat{ font-size:11px; color:var(--ink-soft); }
   .line-card{ background:var(--paper-dim); border-radius:12px; padding:12px; margin-bottom:10px; }
   .line-card .head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
   .line-card .name{ font-weight:700; font-size:14px; }
@@ -59,11 +55,10 @@
   .pill-draft{ background:#FCEfd7; color:#8a5a12; }
   .pill-finalized{ background:#E4F3EC; color:var(--teal-dark); }
   .pill-void{ background:#F3E4E4; color:var(--red); }
-  .issued-link{ text-decoration:underline; cursor:pointer; }
-  .dispatch-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; cursor:pointer; }
-  .dispatch-row .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
-  .dispatch-row .num{ font-family:var(--mono); font-weight:700; font-size:13px; }
-  .dispatch-row .meta{ font-size:12px; color:var(--ink-soft); }
+  .row-item{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; cursor:pointer; }
+  .row-item .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .row-item .num{ font-family:var(--mono); font-weight:700; font-size:13px; }
+  .row-item .meta{ font-size:12px; color:var(--ink-soft); }
   .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
   .filters input, .filters select{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; }
   .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
@@ -101,19 +96,19 @@
       <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
       <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
     </div>
-    <p class="eyebrow">Dispatch Book</p>
-    <h1>Dispatch <a href="/">&larr; Daily Figures</a></h1>
+    <p class="eyebrow">Production Book</p>
+    <h1>Production <a href="/">&larr; Daily Figures</a></h1>
     <div class="tabs">
-      <div class="tab" data-tab="new">New Dispatch</div>
-      <div class="tab active" data-tab="list">Dispatches</div>
+      <div class="tab" data-tab="new">New Production</div>
+      <div class="tab active" data-tab="list">Production</div>
       <a href="/dashboard.html" class="tab" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
     </div>
     <!-- Operator/Viewer only: the full 5-item operational nav, identical to
-         the one on every other operational page. Hidden for every other role. -->
+         the block on every other operational page. Hidden for every other role. -->
     <div class="tabs hidden" id="operatorNav">
-      <a href="/dispatch.html?tab=new" class="tab" style="text-decoration:none;">Dispatch</a>
+      <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
       <a href="/returns.html?tab=new" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
-      <a href="/production.html?tab=new" class="tab" data-module="production" style="text-decoration:none;">Production</a>
+      <a href="/production.html?tab=new" class="tab" style="text-decoration:none;">Production</a>
       <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
       <a href="/history.html" class="tab" data-module="history_exports" style="text-decoration:none;">History &amp; Exports</a>
     </div>
@@ -132,23 +127,18 @@
         <input id="fDate" type="date" title="Exact date">
         <input id="fDateFrom" type="date" title="From date">
         <input id="fDateTo" type="date" title="To date">
-        <select id="fSalesCategory"><option value="">Any sales category</option></select>
-        <input id="fCustomer" placeholder="Customer">
-        <input id="fProduct" placeholder="Product">
-        <input id="fNumber" placeholder="Dispatch #">
-        <input id="fInvoice" placeholder="Invoice #">
         <select id="fShift">
           <option value="">Any shift</option>
           <option value="Day">Day</option>
           <option value="Night">Night</option>
         </select>
+        <input id="fProduct" placeholder="Product">
         <select id="fStatus">
           <option value="">All statuses</option>
           <option value="draft">Draft</option>
           <option value="finalized">Finalized</option>
           <option value="void">Void</option>
         </select>
-        <select id="fCreatedBy" class="hidden"><option value="">Any user</option></select>
         <button class="btn-ghost btn-small" id="clearFiltersBtn">Clear all</button>
       </div>
       <div class="export-row no-print">
@@ -157,41 +147,19 @@
         <a href="#" id="exportXlsx" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
         <a href="#" id="exportPdf" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
       </div>
-      <div id="dispatchList"></div>
+      <div id="productionList"></div>
     </div>
 
     <!-- NEW / EDIT -->
     <div id="tab-new" class="hidden">
       <div class="card">
         <div class="row2">
-          <div class="field"><label>Date</label><input type="date" id="dDate"></div>
+          <div class="field"><label>Date</label><input type="date" id="pDate"></div>
           <div class="field"><label>Shift</label>
-            <select id="dShift"><option value="Day">Day</option><option value="Night">Night</option></select>
+            <select id="pShift"><option value="Day">Day</option><option value="Night">Night</option></select>
           </div>
         </div>
-        <div class="field">
-          <label>Sales Category</label>
-          <select id="dSalesCategory">
-            <option value="">Select a category…</option>
-          </select>
-        </div>
-        <div class="field" id="recipientFieldWrap" style="display:none;">
-          <label>Recipient</label>
-          <input id="dCustomerSearch" placeholder="Type to search…" autocomplete="off" disabled>
-          <div class="autocomplete-list hidden" id="customerResults"></div>
-          <div class="hint" id="customerSelectedHint"></div>
-        </div>
-        <div class="field hidden" id="tempNameFieldWrap">
-          <label>Temporary / New Customer Name</label>
-          <input id="dTempCustomerName" placeholder="e.g. Walk-in Customer, Unknown Customer, or a new name">
-          <div class="msg" id="tempNameMsg"></div>
-        </div>
-        <div class="row2">
-          <div class="field"><label>Dispatch No.</label><input id="dNumber" placeholder="e.g. 18601"></div>
-          <div class="field"><label>Invoice No. <span style="font-weight:400;">(optional)</span></label><input id="dInvoice"></div>
-        </div>
-        <div class="msg" id="numberMsg"></div>
-        <div class="field"><label>Notes <span style="font-weight:400;">(optional)</span></label><textarea id="dNotes"></textarea></div>
+        <div class="field"><label>Remarks <span style="font-weight:400;">(optional)</span></label><textarea id="pRemarks"></textarea></div>
       </div>
 
       <div class="card">
@@ -214,8 +182,6 @@
       <div class="card no-print">
         <button class="btn-ghost btn-small" id="backToListBtn">&larr; Back to list</button>
       </div>
-      <!-- Hidden on screen (the header above already shows branding);
-           shown only in @media print, since header/.tabs are hidden there. -->
       <div class="print-letterhead" id="printLetterhead"></div>
       <div class="card" id="detailHeader"></div>
       <div class="card" id="detailLines"></div>
@@ -229,12 +195,8 @@
 <script>
 let currentUser = null;
 let productsCache = [];
-let salesCategoriesCache = [];
-let currentLines = []; // [{product_id, product_name, rule, cartons, packs, pieces}]
-let editingDispatchId = null; // set when reopening a draft for edit
-let selectedCustomer = null; // {id, name}
-let selectedCategory = null; // {id, name}
-const OTHER_NEW_CUSTOMER = '__other_new__';
+let currentLines = [];
+let editingProductionId = null;
 
 function toast(msg){
   const t = document.getElementById('toast');
@@ -252,7 +214,6 @@ function escapeHtml(s){
 }
 
 // ---------- company branding ----------
-// Public, unauthenticated endpoint — fetched exactly once per page load.
 let brandingCache = null;
 async function applyBranding(){
   try{
@@ -275,10 +236,6 @@ function renderPrintLetterhead(){
 applyBranding();
 
 // ---------- visibility: role and feature-flag state tracked independently ----------
-// An element is visible only when BOTH its role check and its feature
-// flag say so — each recorded on the element itself (defaulting to
-// "allowed" when never set by that side) so either can update
-// independently, any number of times, without one undoing the other.
 function setRoleVisible(el, visible){
   el.dataset.roleVisible = visible ? 'true' : 'false';
   _recomputeVisibility(el);
@@ -294,11 +251,6 @@ function _recomputeVisibility(el){
 }
 
 // ---------- feature flags ----------
-// login_required, so called from init() after a session is confirmed —
-// once per boot, never per-interaction. Safe to call again later too:
-// setFlagVisible always reflects the latest fetch in either direction, so
-// a module coming back on is correctly re-shown for any role still
-// allowed to see it.
 let featureFlagsCache = null;
 async function applyFeatureFlags(){
   try{
@@ -324,106 +276,6 @@ document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click
   switchTab(t.dataset.tab);
 }));
 
-// ---------- sales category -> recipient (two-step) ----------
-async function loadSalesCategories(){
-  const {data} = await api('/api/admin/sales-categories');
-  salesCategoriesCache = Array.isArray(data) ? data : [];
-  const select = document.getElementById('dSalesCategory');
-  select.innerHTML = '<option value="">Select a category…</option>' +
-    salesCategoriesCache.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-}
-
-function resetRecipientOnly(){
-  // Changing category must not lose date/dispatch-number/notes/product lines.
-  selectedCustomer = null;
-  document.getElementById('dCustomerSearch').value = '';
-  document.getElementById('customerSelectedHint').textContent = '';
-  document.getElementById('customerResults').classList.add('hidden');
-  document.getElementById('dTempCustomerName').value = '';
-  document.getElementById('tempNameMsg').textContent = '';
-  document.getElementById('tempNameFieldWrap').classList.add('hidden');
-}
-
-document.getElementById('dSalesCategory').addEventListener('change', (e)=>{
-  const id = e.target.value;
-  selectedCategory = id ? salesCategoriesCache.find(c => String(c.id) === id) : null;
-  resetRecipientOnly();
-  const recipientField = document.getElementById('recipientFieldWrap');
-  const input = document.getElementById('dCustomerSearch');
-  if(selectedCategory){
-    recipientField.style.display = '';
-    input.disabled = false;
-    input.placeholder = `Search ${selectedCategory.name} recipients…`;
-  } else {
-    recipientField.style.display = 'none';
-    input.disabled = true;
-  }
-});
-
-let customerSearchTimer;
-document.getElementById('dCustomerSearch').addEventListener('input', (e)=>{
-  selectedCustomer = null;
-  document.getElementById('customerSelectedHint').textContent = '';
-  clearTimeout(customerSearchTimer);
-  if(!selectedCategory) return;
-  const q = e.target.value.trim();
-  customerSearchTimer = setTimeout(async ()=>{
-    const params = new URLSearchParams({sales_category_id: selectedCategory.id});
-    if(q) params.set('q', q);
-    const {data} = await api(`/api/admin/customers?${params.toString()}`);
-    const results = document.getElementById('customerResults');
-    const items = Array.isArray(data) ? data : [];
-    results.innerHTML = items.map(c=>`<div class="autocomplete-item" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.is_temporary ? ' <span class="cat">(unverified)</span>' : ''}</div>`).join('')
-      + `<div class="autocomplete-item" data-other="1" style="font-weight:700;color:var(--teal-dark);">+ Other / New Customer</div>`;
-    results.classList.remove('hidden');
-    results.querySelectorAll('[data-id]').forEach(el=>{
-      el.addEventListener('click', ()=>{
-        selectedCustomer = {id: parseInt(el.dataset.id,10), name: el.dataset.name};
-        document.getElementById('dCustomerSearch').value = el.dataset.name;
-        document.getElementById('customerSelectedHint').textContent = `Selected · ${selectedCategory.name}`;
-        document.getElementById('tempNameFieldWrap').classList.add('hidden');
-        results.classList.add('hidden');
-      });
-    });
-    const otherEl = results.querySelector('[data-other]');
-    if(otherEl){
-      otherEl.addEventListener('click', ()=>{
-        selectedCustomer = null;
-        document.getElementById('dCustomerSearch').value = '';
-        document.getElementById('customerSelectedHint').textContent = '';
-        document.getElementById('tempNameFieldWrap').classList.remove('hidden');
-        document.getElementById('dTempCustomerName').focus();
-        results.classList.add('hidden');
-      });
-    }
-  }, 200);
-});
-document.addEventListener('click', (e)=>{
-  if(!e.target.closest('#dCustomerSearch') && !e.target.closest('#customerResults')){
-    document.getElementById('customerResults').classList.add('hidden');
-  }
-});
-
-// ---------- temporary / new customer name ----------
-let tempNameCheckTimer;
-document.getElementById('dTempCustomerName').addEventListener('input', (e)=>{
-  clearTimeout(tempNameCheckTimer);
-  const name = e.target.value.trim();
-  const msg = document.getElementById('tempNameMsg');
-  if(!name){ msg.textContent=''; return; }
-  tempNameCheckTimer = setTimeout(async ()=>{
-    const {data} = await api(`/api/admin/customers/check-duplicate?name=${encodeURIComponent(name)}`);
-    const matches = (data && data.matches) || [];
-    if(matches.length){
-      msg.innerHTML = `Similar existing recipient(s): ${matches.map(m=>escapeHtml(m.name)).join(', ')}. ` +
-        `You can continue with this new name, or search for one of these above instead.`;
-      msg.className = 'msg err';
-    } else {
-      msg.textContent = ''; msg.className = 'msg';
-    }
-  }, 250);
-});
-
 // ---------- products & lines ----------
 async function loadProducts(){
   const {data} = await api('/api/admin/products');
@@ -437,7 +289,7 @@ document.getElementById('addProductSelect').addEventListener('change', (e)=>{
   const id = parseInt(e.target.value, 10);
   if(!id) return;
   const product = productsCache.find(p=>p.id===id);
-  if(currentLines.some(l=>l.product_id===id)){ toast('Already on this dispatch — edit the existing line.'); e.target.value=''; return; }
+  if(currentLines.some(l=>l.product_id===id)){ toast('Already on this production entry — edit the existing line.'); e.target.value=''; return; }
   currentLines.push({product_id: id, product_name: product.name, rule: product.packaging_rule, cartons:0, packs:0, pieces:0});
   e.target.value = '';
   renderLines();
@@ -480,12 +332,6 @@ function renderLines(){
   container.querySelectorAll('[data-remove]').forEach(btn=>{
     btn.addEventListener('click', ()=>{ currentLines.splice(parseInt(btn.dataset.remove,10),1); renderLines(); });
   });
-  // Quantity inputs update currentLines and just that line's hint text directly —
-  // never rebuild the DOM here. Rebuilding on every keystroke destroyed and
-  // recreated the input element mid-typing; restoring focus afterwards required
-  // setting selectionStart/selectionEnd, which type="number" inputs don't
-  // support, so the cursor silently reset to position 0 and each new digit was
-  // inserted before the previous one (typing "85" produced "58").
   container.querySelectorAll('[data-qty]').forEach(input=>{
     input.addEventListener('input', ()=>{
       const idx = parseInt(input.dataset.qty, 10);
@@ -498,11 +344,6 @@ function renderLines(){
   });
 }
 
-// A quantity field showing exactly "0" clears itself on focus so typing
-// starts clean (left-to-right, no leftover leading zero); an empty field
-// reverts to displaying "0" on blur once it's no longer focused. The
-// underlying value (currentLines[idx][unit]) is already 0 in both of these
-// cases, so neither handler needs to touch state — display-only.
 function attachZeroClearBehavior(input){
   input.addEventListener('focus', ()=>{
     if(input.value === '0') input.value = '';
@@ -519,84 +360,46 @@ function updateLineHint(idx){
   if(hintEl) hintEl.textContent = `${ruleHint(line.rule)} — total ${lineTotalPieces(line)} pieces`;
 }
 
-// ---------- dispatch number duplicate check ----------
-let numberCheckTimer;
-document.getElementById('dNumber').addEventListener('input', (e)=>{
-  clearTimeout(numberCheckTimer);
-  const number = e.target.value.trim();
-  const msg = document.getElementById('numberMsg');
-  if(!number){ msg.textContent=''; return; }
-  numberCheckTimer = setTimeout(async ()=>{
-    const {data} = await api(`/api/dispatches/check-number?number=${encodeURIComponent(number)}`);
-    if(data.conflict && data.conflict.id !== editingDispatchId){
-      msg.textContent = `Already used by dispatch #${data.conflict.id} (${data.conflict.date}, ${data.conflict.customer_name || ''}).`;
-      msg.className = 'msg err';
-    } else {
-      msg.textContent = '';
-    }
-  }, 250);
-});
-
 // ---------- save ----------
 function resetForm(){
-  editingDispatchId = null;
-  selectedCustomer = null;
-  selectedCategory = null;
+  editingProductionId = null;
   currentLines = [];
-  document.getElementById('dDate').value = todayStr();
-  document.getElementById('dShift').value = 'Day';
-  document.getElementById('dSalesCategory').value = '';
-  document.getElementById('recipientFieldWrap').style.display = 'none';
-  resetRecipientOnly();
-  document.getElementById('dNumber').value = '';
-  document.getElementById('dInvoice').value = '';
-  document.getElementById('dNotes').value = '';
+  document.getElementById('pDate').value = todayStr();
+  document.getElementById('pShift').value = 'Day';
+  document.getElementById('pRemarks').value = '';
   document.getElementById('saveMsg').textContent = '';
   renderLines();
   applyViewerReadOnly();
 }
 
-// Viewer is read-only everywhere — the backend already rejects the write
-// (roles_required excludes viewer on create_dispatch), this just avoids
-// letting a Viewer fill out the whole form only to hit a raw error toast.
 function applyViewerReadOnly(){
   if(!currentUser || currentUser.role !== 'viewer') return;
   document.getElementById('saveDraftBtn').disabled = true;
   document.getElementById('finalizeBtn').disabled = true;
-  document.getElementById('saveMsg').textContent = 'Read-only — your account cannot create or edit dispatches.';
+  document.getElementById('saveMsg').textContent = 'Read-only — your account cannot create or edit production entries.';
   document.getElementById('saveMsg').className = 'msg';
 }
 
-async function saveDispatch(finalize){
+async function saveProduction(finalize){
   const msg = document.getElementById('saveMsg');
-  const tempName = document.getElementById('dTempCustomerName').value.trim();
-  if(!selectedCategory){ msg.textContent='Select a sales category first.'; msg.className='msg err'; return; }
-  if(!selectedCustomer && !tempName){ msg.textContent='Select a recipient, or enter a temporary/new customer name.'; msg.className='msg err'; return; }
-  const number = document.getElementById('dNumber').value.trim();
-  if(!number){ msg.textContent='Dispatch number is required.'; msg.className='msg err'; return; }
   if(currentLines.length===0){ msg.textContent='Add at least one product.'; msg.className='msg err'; return; }
 
   const body = {
-    dispatch_number: number,
-    date: document.getElementById('dDate').value,
-    shift: document.getElementById('dShift').value,
-    sales_category_id: selectedCategory.id,
-    customer_id: selectedCustomer ? selectedCustomer.id : null,
-    new_customer_name: selectedCustomer ? null : tempName,
-    invoice_number: document.getElementById('dInvoice').value || null,
-    notes: document.getElementById('dNotes').value || null,
+    date: document.getElementById('pDate').value,
+    shift: document.getElementById('pShift').value,
+    remarks: document.getElementById('pRemarks').value || null,
     lines: currentLines.map(l => ({product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces})),
   };
 
-  const {status, data} = await api('/api/dispatches', {method:'POST', body: JSON.stringify(body)});
+  const {status, data} = await api('/api/production', {method:'POST', body: JSON.stringify(body)});
   if(status !== 201){
-    msg.textContent = data.error || 'Could not save dispatch.';
+    msg.textContent = data.error || 'Could not save production entry.';
     msg.className = 'msg err';
     return;
   }
 
   if(finalize){
-    const fin = await api(`/api/dispatches/${data.id}/finalize`, {method:'POST'});
+    const fin = await api(`/api/production/${data.id}/finalize`, {method:'POST'});
     if(fin.status !== 200){
       toast('Saved as draft, but finalizing failed: ' + (fin.data.error||''));
       openDetail(data.id);
@@ -605,12 +408,12 @@ async function saveDispatch(finalize){
     }
   }
 
-  toast(finalize ? 'Dispatch finalized.' : 'Draft saved.');
+  toast(finalize ? 'Production finalized.' : 'Draft saved.');
   resetForm();
   switchTab('list');
 }
-document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveDispatch(false));
-document.getElementById('finalizeBtn').addEventListener('click', ()=>saveDispatch(true));
+document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveProduction(false));
+document.getElementById('finalizeBtn').addEventListener('click', ()=>saveProduction(true));
 
 // ---------- list ----------
 function statusPill(status){
@@ -621,9 +424,7 @@ function currentFilterParams(){
   const params = new URLSearchParams();
   const map = {
     fDate: 'date', fDateFrom: 'date_from', fDateTo: 'date_to',
-    fNumber: 'dispatch_number', fInvoice: 'invoice_number',
-    fShift: 'shift', fStatus: 'status', fCreatedBy: 'created_by',
-    fSalesCategory: 'sales_category_id',
+    fShift: 'shift', fStatus: 'status',
   };
   for(const [id, param] of Object.entries(map)){
     const el = document.getElementById(id);
@@ -657,48 +458,43 @@ document.querySelectorAll('[data-quick]').forEach(btn=>{
 
 function groupByDate(results){
   const groups = {};
-  results.forEach(d=>{ (groups[d.date] = groups[d.date] || []).push(d); });
+  results.forEach(r=>{ (groups[r.date] = groups[r.date] || []).push(r); });
   return Object.keys(groups).sort((a,b)=> a<b?1:-1).map(date=>({date, items: groups[date]}));
 }
 
 async function loadList(){
   const params = currentFilterParams();
-  const {data} = await api('/api/dispatches?limit=200&' + params.toString());
+  const {data} = await api('/api/production?limit=200&' + params.toString());
   let results = (data && data.results) || [];
-
-  const customerFilter = document.getElementById('fCustomer').value.trim().toLowerCase();
-  if(customerFilter) results = results.filter(d => (d.customer_name||'').toLowerCase().includes(customerFilter));
 
   ['exportCsv','exportXlsx','exportPdf'].forEach((linkId, i)=>{
     const fmt = ['csv','xlsx','pdf'][i];
-    document.getElementById(linkId).href = '/api/dispatches/export.'+fmt+'?'+params.toString();
+    document.getElementById(linkId).href = '/api/production/export.'+fmt+'?'+params.toString();
   });
 
-  const list = document.getElementById('dispatchList');
+  const list = document.getElementById('productionList');
   if(results.length===0){
-    list.innerHTML = '<div class="empty-state">No dispatches match these filters.</div>';
+    list.innerHTML = '<div class="empty-state">No production entries match these filters.</div>';
     return;
   }
 
   const groups = groupByDate(results);
   list.innerHTML = groups.map(g => {
-    const finalizedCount = g.items.filter(d=>d.status==='finalized').length;
+    const finalizedCount = g.items.filter(r=>r.status==='finalized').length;
     return `
     <div class="date-group">
       <div class="date-group-head" data-toggle-group>
-        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} dispatch${g.items.length===1?'':'es'} · ${finalizedCount} finalized</div></div>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} entr${g.items.length===1?'y':'ies'} · ${finalizedCount} finalized</div></div>
         <span class="chev">▾</span>
       </div>
       <div class="date-group-body">
-        ${g.items.map(d => `
-          <div class="dispatch-row" data-open="${d.id}">
+        ${g.items.map(r => `
+          <div class="row-item" data-open="${r.id}">
             <div class="top">
-              <span class="num">#${escapeHtml(d.dispatch_number)}</span>
-              ${statusPill(d.status)}
+              <span class="num">Production #${r.id}</span>
+              ${statusPill(r.status)}
             </div>
-            <div class="meta">${d.shift} · <span class="issued-link" data-customer="${d.customer_id}">${escapeHtml(d.customer_name||'—')}</span>
-              ${d.sales_category_name ? ` · <span class="issued-link" data-category="${d.sales_category_id}">${escapeHtml(d.sales_category_name)}</span>` : ' · <span class="hint">Uncategorized</span>'}
-              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}</div>
+            <div class="meta">${r.shift}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -713,99 +509,37 @@ async function loadList(){
   list.querySelectorAll('[data-open]').forEach(el=>{
     el.addEventListener('click', ()=>{ openDetail(parseInt(el.dataset.open,10)); switchTab('detail'); });
   });
-  list.querySelectorAll('[data-customer]').forEach(el=>{
-    el.addEventListener('click', (e)=>{
-      e.stopPropagation();
-      document.getElementById('fCustomer').value = el.textContent.trim();
-      loadList();
-    });
-  });
-  list.querySelectorAll('[data-category]').forEach(el=>{
-    el.addEventListener('click', (e)=>{
-      e.stopPropagation();
-      document.getElementById('fSalesCategory').value = el.dataset.category;
-      loadList();
-    });
-  });
 }
 
-async function loadUserFilterOptions(){
-  if(!currentUser || currentUser.role !== 'super_admin') return;
-  const {data} = await api('/api/admin/users');
-  const select = document.getElementById('fCreatedBy');
-  select.classList.remove('hidden');
-  select.innerHTML = '<option value="">Any user</option>' +
-    (Array.isArray(data)?data:[]).map(u=>`<option value="${u.id}">${escapeHtml(u.username)}</option>`).join('');
-}
-
-function loadFilterCategoryOptions(){
-  const select = document.getElementById('fSalesCategory');
-  select.innerHTML = '<option value="">Any sales category</option>' +
-    salesCategoriesCache.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-}
-
-['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice','fShift','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
+['fDate','fDateFrom','fDateTo','fShift','fProduct','fStatus'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>loadList());
   document.getElementById(id).addEventListener('change', ()=>loadList());
 });
 document.getElementById('clearFiltersBtn').addEventListener('click', ()=>{
-  ['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('fShift').value=''; document.getElementById('fStatus').value=''; document.getElementById('fCreatedBy').value='';
-  document.getElementById('fSalesCategory').value='';
+  ['fDate','fDateFrom','fDateTo','fProduct'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fShift').value=''; document.getElementById('fStatus').value='';
   document.querySelectorAll('[data-quick]').forEach(b=>b.classList.remove('active'));
   loadList();
 });
 
-function applyFiltersFromUrl(){
-  const q = new URLSearchParams(window.location.search);
-  if(q.get('customer_name')) document.getElementById('fCustomer').value = q.get('customer_name');
-  if(q.get('dispatch_number')) document.getElementById('fNumber').value = q.get('dispatch_number');
-  if(q.get('date')) document.getElementById('fDate').value = q.get('date');
-  if(q.get('invoice_number')) document.getElementById('fInvoice').value = q.get('invoice_number');
-  if(q.get('sales_category_id')) document.getElementById('fSalesCategory').value = q.get('sales_category_id');
-  if(q.get('customer_id')) document.getElementById('fCustomer').value = q.get('customer_name') || '';
-}
-
 // ---------- detail ----------
-let currentDetail = null;
-
 async function openDetail(id){
-  const {data} = await api(`/api/dispatches/${id}`);
-  currentDetail = data;
+  const {data} = await api(`/api/production/${id}`);
   document.getElementById('detailHeader').innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <span class="num" style="font-family:var(--mono);font-weight:700;">#${escapeHtml(data.dispatch_number)}</span>
+      <span class="num" style="font-family:var(--mono);font-weight:700;">Production #${data.id}</span>
       ${statusPill(data.status)}
     </div>
-    <div class="hint"><span class="issued-link" data-goto-date="${data.date}">${data.date}</span> · ${data.shift}</div>
-    <div style="margin-top:8px;"><strong class="issued-link" data-goto-customer="${escapeHtml(data.customer_name||'')}">${escapeHtml(data.customer_name||'—')}</strong></div>
-    <div class="hint">${data.sales_category_name ? `<span class="issued-link" data-goto-category="${data.sales_category_id}">${escapeHtml(data.sales_category_name)}</span>` : 'Uncategorized'}</div>
-    ${data.invoice_number ? `<div class="hint">Invoice: ${escapeHtml(data.invoice_number)}</div>` : ''}
-    ${data.notes ? `<div class="hint" style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(data.notes)}</div>` : ''}
+    <div class="hint">${data.date} · ${data.shift}</div>
+    ${data.remarks ? `<div class="hint" style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(data.remarks)}</div>` : ''}
     ${data.void_reason ? `<div class="hint" style="color:var(--red);margin-top:6px;">Voided: ${escapeHtml(data.void_reason)}</div>` : ''}
   `;
   document.getElementById('detailLines').innerHTML = data.lines.map(l => `
     <div class="detail-line">
-      <a href="/?tab=history&product=${encodeURIComponent(l.product_name)}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(l.product_name)}</a>
+      <span>${escapeHtml(l.product_name)}</span>
       <span style="font-family:var(--mono);">${l.cartons}c ${l.packs}p ${l.pieces}pc</span>
     </div>
   `).join('');
-
-  const goDate = document.querySelector('[data-goto-date]');
-  if(goDate) goDate.addEventListener('click', ()=>{
-    document.getElementById('fDate').value = goDate.dataset.gotoDate;
-    switchTab('list'); loadList();
-  });
-  const goCustomer = document.querySelector('[data-goto-customer]');
-  if(goCustomer && goCustomer.dataset.gotoCustomer) goCustomer.addEventListener('click', ()=>{
-    document.getElementById('fCustomer').value = goCustomer.dataset.gotoCustomer;
-    switchTab('list'); loadList();
-  });
-  const goCategory = document.querySelector('[data-goto-category]');
-  if(goCategory) goCategory.addEventListener('click', ()=>{
-    document.getElementById('fSalesCategory').value = goCategory.dataset.gotoCategory;
-    switchTab('list'); loadList();
-  });
 
   const actions = document.getElementById('detailActions');
   const buttons = [];
@@ -816,7 +550,6 @@ async function openDetail(id){
     if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
     if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="void">Void</button>`);
   }
-  buttons.push(`<button class="btn btn-ghost" data-action="duplicate">Duplicate</button>`);
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
@@ -828,22 +561,15 @@ async function openDetail(id){
       const action = btn.dataset.action;
       if(action === 'print'){ window.print(); return; }
       if(action === 'finalize'){
-        const r = await api(`/api/dispatches/${data.id}/finalize`, {method:'POST'});
+        const r = await api(`/api/production/${data.id}/finalize`, {method:'POST'});
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
       if(action === 'reopen' || action === 'void'){
-        const reason = prompt(`Reason to ${action} this dispatch:`);
+        const reason = prompt(`Reason to ${action} this production entry:`);
         if(!reason) return;
-        const r = await api(`/api/dispatches/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
+        const r = await api(`/api/production/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
         if(r.status===200){ toast(action==='reopen' ? 'Reopened.' : 'Voided.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
-        return;
-      }
-      if(action === 'duplicate'){
-        const number = prompt('New dispatch number for the copy:');
-        if(!number) return;
-        const r = await api(`/api/dispatches/${data.id}/duplicate`, {method:'POST', body: JSON.stringify({dispatch_number: number})});
-        if(r.status===201){ toast('Duplicated as a new draft.'); openDetail(r.data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
     });
@@ -865,9 +591,6 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
   await applyFeatureFlags();
   document.getElementById('appShell').classList.remove('hidden');
   await loadProducts();
-  await loadSalesCategories();
-  await loadFilterCategoryOptions();
-  await loadUserFilterOptions();
   resetForm();
 
   const q = new URLSearchParams(window.location.search);
@@ -876,11 +599,8 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
     switchTab('detail');
   } else {
     const requestedTab = q.get('tab');
-    // Operator/Viewer land on New Dispatch by default; every other role
-    // keeps today's default (Dispatches list) unless ?tab= says otherwise.
     const defaultTab = isOperatorOrViewer ? 'new' : 'list';
     const initialTab = (requestedTab === 'new' || requestedTab === 'list') ? requestedTab : defaultTab;
-    applyFiltersFromUrl();
     switchTab(initialTab);
   }
 })();

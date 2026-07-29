@@ -11,6 +11,7 @@ from webapp.services import operator_permissions_service as permissions_svc
 from webapp.services import stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
+from webapp.services.quantity_format import qty_label
 from webapp.services.stock_service import StockError
 
 daily_figures_bp = Blueprint("daily_figures", __name__, url_prefix="/api/daily-figures")
@@ -71,10 +72,19 @@ def _qty_changed(submitted, current):
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("daily_figures")
 def upsert():
+    """
+    Opening Stock is the only quantity Daily Figures still accepts
+    directly (for a product's very first-ever period). Return and
+    Production are no longer part of this payload as of Stage 5 — both are
+    entered in the Returns Book / Production Book and read here live (see
+    stock_service.daily_figure_view()); any 'return_'/'production' keys a
+    caller still sends are ignored, never stored, exactly like Issued
+    already was before this stage.
+    """
     d = request.get_json(force=True) or {}
     user = current_user()
 
-    for f in ("product_id", "date", "shift", "return_", "production"):
+    for f in ("product_id", "date", "shift"):
         if f not in d:
             return _error(f"missing field: {f}")
     if d["shift"] not in SHIFTS:
@@ -86,25 +96,21 @@ def upsert():
 
     before = svc.daily_figure_view(product, d["date"], d["shift"])
 
-    # Manager/Super Admin keep their existing unconditional write access.
-    # Operator is gated per field by the role-wide permission flags — Issued
-    # is never in this payload at all (it has no writable column anywhere),
-    # so there is nothing here that could ever touch it.
+    # Manager/Super Admin keep their existing unconditional write access to
+    # Opening Stock. Operator is gated by the role-wide permission flag.
+    # Issued/Returns/Production are never writable here at all (nothing in
+    # this payload can touch any of them), so there is nothing further to
+    # check for those.
     if user.role == ROLE_OPERATOR:
         permissions = permissions_svc.get_permissions()
         if before.get("opening_editable") and not permissions.can_edit_opening \
                 and _qty_changed(d.get("opening"), _qty_or_zero(before.get("opening"))):
-            return _error("you do not have permission to edit Opening stock", status=403)
-        if not permissions.can_edit_returns and _qty_changed(d.get("return_"), _qty_or_zero(before.get("return_"))):
-            return _error("you do not have permission to edit Returns", status=403)
-        if not permissions.can_edit_production and _qty_changed(d.get("production"), _qty_or_zero(before.get("production"))):
-            return _error("you do not have permission to edit Production", status=403)
+            return _error("you do not have permission to edit Opening Stock", status=403)
 
     try:
         figure = svc.upsert_daily_figure(
             product=product, date=d["date"], shift=d["shift"],
-            opening=d.get("opening"), return_=d["return_"], production=d["production"],
-            notes=d.get("notes"), user=user,
+            opening=d.get("opening"), notes=d.get("notes"), user=user,
         )
     except StockError as e:
         db.session.rollback()
@@ -218,10 +224,19 @@ def history():
     return jsonify([svc.daily_figure_view(row.product, row.date, row.shift) for row in rows])
 
 
-def _qty_part(part, key):
-    if not part or "cartons" not in part:
+def _qty_str(part, rule):
+    """
+    One business-friendly quantity string per product ("3c 2p 5pc" / "3c
+    5pc"), reusing the exact same packaging-rule-aware formatter the
+    frontend already displays on screen — never a raw base-unit "Total
+    Pieces" figure as the primary column, and never a second, duplicated
+    conversion. A negative/unset closing shows its warning text instead.
+    """
+    if not part:
         return ""
-    return part[key]
+    if "cartons" not in part:
+        return part.get("warning", "")
+    return qty_label(part["cartons"], part.get("packs", 0), part["pieces"], rule)
 
 
 @daily_figures_bp.route("/export.<fmt>", methods=["GET"])
@@ -233,23 +248,20 @@ def export_daily_figures(fmt):
 
     columns = [
         ("date", "Date"), ("shift", "Shift"), ("product_name", "Product"),
-        ("opening_cartons", "Opening Cartons"), ("opening_packs", "Opening Packs"), ("opening_pieces", "Opening Pieces"),
-        ("return_cartons", "Return Cartons"), ("return_packs", "Return Packs"), ("return_pieces", "Return Pieces"),
-        ("production_cartons", "Production Cartons"), ("production_packs", "Production Packs"), ("production_pieces", "Production Pieces"),
-        ("issued_cartons", "Issued Cartons"), ("issued_packs", "Issued Packs"), ("issued_pieces", "Issued Pieces"),
-        ("closing_cartons", "Closing Cartons"), ("closing_packs", "Closing Packs"), ("closing_pieces", "Closing Pieces"),
-        ("notes", "Notes"),
+        ("opening_stock", "Opening Stock"), ("return_qty", "Return"), ("production_qty", "Production"),
+        ("issued_qty", "Issued"), ("closing_stock", "Closing Stock"), ("notes", "Notes"),
     ]
     rows = []
     for row in rows_db:
         view = svc.daily_figure_view(row.product, row.date, row.shift)
+        rule = view["packaging_rule"]
         rows.append({
             "date": view["date"], "shift": view["shift"], "product_name": view["product_name"],
-            "opening_cartons": _qty_part(view["opening"], "cartons"), "opening_packs": _qty_part(view["opening"], "packs"), "opening_pieces": _qty_part(view["opening"], "pieces"),
-            "return_cartons": _qty_part(view["return_"], "cartons"), "return_packs": _qty_part(view["return_"], "packs"), "return_pieces": _qty_part(view["return_"], "pieces"),
-            "production_cartons": _qty_part(view["production"], "cartons"), "production_packs": _qty_part(view["production"], "packs"), "production_pieces": _qty_part(view["production"], "pieces"),
-            "issued_cartons": _qty_part(view["issued"], "cartons"), "issued_packs": _qty_part(view["issued"], "packs"), "issued_pieces": _qty_part(view["issued"], "pieces"),
-            "closing_cartons": _qty_part(view["closing"], "cartons"), "closing_packs": _qty_part(view["closing"], "packs"), "closing_pieces": _qty_part(view["closing"], "pieces"),
+            "opening_stock": _qty_str(view["opening"], rule),
+            "return_qty": _qty_str(view["return_"], rule),
+            "production_qty": _qty_str(view["production"], rule),
+            "issued_qty": _qty_str(view["issued"], rule),
+            "closing_stock": _qty_str(view["closing"], rule),
             "notes": view["notes"] or "",
         })
 

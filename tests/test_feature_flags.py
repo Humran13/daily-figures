@@ -5,7 +5,10 @@ transitive dependency enforcement (block-or-cascade on disable, hard
 rejection on enable), "disabling never deletes data", and audit logging.
 
 Dependency graph under test: dispatch -> customer_management,
-daily_figures -> dispatch, reporting -> [dispatch, daily_figures].
+returns -> customer_management, daily_figures -> dispatch,
+reporting -> [dispatch, daily_figures]. Production has no dependency (see
+webapp/services/feature_flag_service.py's module docstring for the Stage 5
+reasoning behind the returns/production dependency choices).
 """
 import pytest
 
@@ -34,7 +37,10 @@ def test_all_modules_enabled_by_default(client, login_as):
     login_as("root", "password123", "super_admin")
     flags = client.get("/api/feature-flags").get_json()
     modules = {f["module_key"] for f in flags}
-    assert modules == {"dispatch", "daily_figures", "history_exports", "dashboard", "customer_management", "reporting"}
+    assert modules == {
+        "dispatch", "daily_figures", "history_exports", "dashboard",
+        "customer_management", "reporting", "returns", "production",
+    }
     assert all(f["enabled"] for f in flags)
 
 
@@ -179,16 +185,21 @@ def test_disabling_customer_management_cascades_to_dispatch_and_its_dependents(c
     res = client.patch("/api/feature-flags/customer_management", json={"enabled": False, "cascade": True})
     assert res.status_code == 200
     changed_keys = {f["module_key"] for f in res.get_json()["changed"]}
-    assert changed_keys == {"customer_management", "dispatch", "daily_figures", "reporting"}
+    # Returns also requires Customer Management (its "returned by" field
+    # reuses the same customer search as Dispatch's recipient field), so it
+    # cascades here too — see feature_flag_service.py's module docstring.
+    assert changed_keys == {"customer_management", "dispatch", "daily_figures", "reporting", "returns"}
     assert all(f["enabled"] is False for f in res.get_json()["changed"])
     flags = _flags(client)
     assert flags["customer_management"] is False
     assert flags["dispatch"] is False
     assert flags["daily_figures"] is False
     assert flags["reporting"] is False
+    assert flags["returns"] is False
     # untouched by this cascade
     assert flags["dashboard"] is True
     assert flags["history_exports"] is True
+    assert flags["production"] is True
 
 
 def test_disabling_dispatch_blocked_without_cascade_while_daily_figures_and_reporting_enabled(client, login_as):
@@ -285,6 +296,7 @@ def test_full_reenable_chain_in_dependency_order_works(client, login_as):
     client.patch("/api/feature-flags/customer_management", json={"enabled": False, "cascade": True})
     assert client.patch("/api/feature-flags/customer_management", json={"enabled": True}).status_code == 200
     assert client.patch("/api/feature-flags/dispatch", json={"enabled": True}).status_code == 200
+    assert client.patch("/api/feature-flags/returns", json={"enabled": True}).status_code == 200
     assert client.patch("/api/feature-flags/daily_figures", json={"enabled": True}).status_code == 200
     assert client.patch("/api/feature-flags/reporting", json={"enabled": True}).status_code == 200
     assert all(_flags(client).values())
@@ -298,7 +310,7 @@ def test_cascade_change_is_all_or_nothing_in_one_response(client, login_as):
     login_as("root", "password123", "super_admin")
     res = client.patch("/api/feature-flags/customer_management", json={"enabled": False, "cascade": True})
     assert res.status_code == 200
-    assert len(res.get_json()["changed"]) == 4
+    assert len(res.get_json()["changed"]) == 5  # customer_management, dispatch, returns, daily_figures, reporting
 
 
 def test_blocked_dependency_change_leaves_every_flag_unchanged(client, login_as):
@@ -359,12 +371,13 @@ def test_dispatch_page_redirects_when_dispatch_disabled(client, login_as):
     login_as("root", "password123", "super_admin")
     # Cascading dispatch off also takes daily_figures with it (a real
     # dependent) — so the fallback correctly skips straight past "/" to
-    # the next still-enabled module page rather than landing on one that
-    # would immediately bounce the user again.
+    # the next still-enabled module page (Returns, unaffected by dispatch's
+    # own cascade) rather than landing on one that would immediately bounce
+    # the user again.
     client.patch("/api/feature-flags/dispatch", json={"enabled": False, "cascade": True})
     res = client.get("/dispatch.html")
     assert res.status_code == 302
-    assert res.headers["Location"] == "/history.html"
+    assert res.headers["Location"] == "/returns.html"
 
 
 def test_history_page_redirects_when_history_exports_disabled(client, login_as):
@@ -399,9 +412,16 @@ def test_login_page_reachable_unauthenticated_even_when_all_other_modules_disabl
     assert res.status_code == 200
 
 
-def test_all_three_operational_pages_disabled_returns_503_not_a_loop(client, login_as):
+def test_all_operational_pages_disabled_returns_503_not_a_loop(client, login_as):
+    """Every module page in the fallback chain (daily_figures, dispatch,
+    returns, production, history_exports — see pages.py's MODULE_PAGES) has
+    to be off before this can happen; with 5 pages instead of the original
+    3, disabling just dispatch+history_exports now correctly falls through
+    to Returns instead — see test_dispatch_page_redirects_when_dispatch_disabled."""
     login_as("root", "password123", "super_admin")
     client.patch("/api/feature-flags/dispatch", json={"enabled": False, "cascade": True})
+    client.patch("/api/feature-flags/returns", json={"enabled": False})
+    client.patch("/api/feature-flags/production", json={"enabled": False})
     client.patch("/api/feature-flags/history_exports", json={"enabled": False})
     res = client.get("/dispatch.html")
     assert res.status_code == 503
@@ -444,14 +464,19 @@ def test_feature_flags_migration_up_and_down(tmp_path, monkeypatch):
     conn.close()
     assert rows == [
         ("customer_management", 1), ("daily_figures", 1), ("dashboard", 1),
-        ("dispatch", 1), ("history_exports", 1), ("reporting", 1),
+        ("dispatch", 1), ("history_exports", 1), ("production", 1),
+        ("reporting", 1), ("returns", 1),
     ]
 
     with flask_app.app_context():
-        downgrade(revision="8d16f14e2b4a")  # this migration's down_revision
+        downgrade(revision="8d16f14e2b4a")  # e8a1576c5404's own down_revision — reverts both feature-flag migrations
 
     conn = sqlite3.connect(db_path)
     remaining = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert "feature_flags" not in remaining
+    assert "return_records" not in remaining
+    assert "return_lines" not in remaining
+    assert "production_records" not in remaining
+    assert "production_lines" not in remaining
     assert "entries" in remaining

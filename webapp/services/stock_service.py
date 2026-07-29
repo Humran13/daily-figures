@@ -7,7 +7,9 @@ units. Nothing here uses floating point.
 """
 from webapp.extensions import db
 from webapp.models.daily_figure import DailyFigure, StockAdjustment
-from webapp.models.dispatch import STATUS_FINALIZED, Dispatch, DispatchLine
+from webapp.models.dispatch import SHIFT_DAY, STATUS_FINALIZED, Dispatch, DispatchLine
+from webapp.models.production_record import ProductionLine, ProductionRecord
+from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.models.sales_category import SalesCategory
 from webapp.services.customer_service import resolve_canonical, resolve_customer_ids_for_filter
 from webapp.services.packaging import PackagingError, from_base_units, normalize, to_base_units
@@ -74,9 +76,64 @@ def issued_base_qty(product_id, date, shift):
     return dispatch_issued_base_qty(product_id, date, shift) + adjustment_total_base_qty(product_id, date, shift)
 
 
+def returns_finalized_base_qty(product_id, date):
+    total = (
+        db.session.query(db.func.coalesce(db.func.sum(ReturnLine.base_unit_qty), 0))
+        .join(ReturnRecord, ReturnRecord.id == ReturnLine.return_id)
+        .filter(
+            ReturnRecord.status == STATUS_FINALIZED,
+            ReturnRecord.date == date,
+            ReturnLine.product_id == product_id,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def production_finalized_base_qty(product_id, date, shift):
+    total = (
+        db.session.query(db.func.coalesce(db.func.sum(ProductionLine.base_unit_qty), 0))
+        .join(ProductionRecord, ProductionRecord.id == ProductionLine.production_id)
+        .filter(
+            ProductionRecord.status == STATUS_FINALIZED,
+            ProductionRecord.date == date,
+            ProductionRecord.shift == shift,
+            ProductionLine.product_id == product_id,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def return_base_qty(product_id, date, shift, legacy_stored=0):
+    """
+    Returns is a day-only workflow (see the Stage 5 spec's shift rules): a
+    finalized Returns Book entry only ever contributes to that date's Day
+    Daily Figures, never Night. `legacy_stored` is whatever was written
+    directly onto a DailyFigure row before Returns became its own book —
+    pre-Stage-5 data (including any historical Night value, which the old
+    workflow allowed) is preserved exactly as before; only the NEW,
+    book-sourced contribution is restricted to Day.
+    """
+    finalized = returns_finalized_base_qty(product_id, date) if shift == SHIFT_DAY else 0
+    return legacy_stored + finalized
+
+
+def production_base_qty(product_id, date, shift, legacy_stored=0):
+    """
+    Production has always been shift-based, so there is no Day-only
+    restriction here — just add whatever the Production Book has finalized
+    for this exact date+shift to whatever was legacy-stored on the
+    DailyFigure row before Production became its own book.
+    """
+    return legacy_stored + production_finalized_base_qty(product_id, date, shift)
+
+
 def closing_base_qty(figure):
     issued = issued_base_qty(figure.product_id, figure.date, figure.shift)
-    return figure.opening_base_qty + figure.return_base_qty + figure.production_base_qty - issued
+    return_total = return_base_qty(figure.product_id, figure.date, figure.shift, figure.return_base_qty)
+    production_total = production_base_qty(figure.product_id, figure.date, figure.shift, figure.production_base_qty)
+    return figure.opening_base_qty + return_total + production_total - issued
 
 
 def _split_or_none(base_qty, rule):
@@ -96,18 +153,18 @@ def daily_figure_view(product, date, shift):
     figure = DailyFigure.query.filter_by(product_id=product.id, date=date, shift=shift).first()
 
     issued = issued_base_qty(product.id, date, shift)
+    legacy_return = figure.return_base_qty if figure is not None else 0
+    legacy_production = figure.production_base_qty if figure is not None else 0
+    return_base = return_base_qty(product.id, date, shift, legacy_return)
+    production_base = production_base_qty(product.id, date, shift, legacy_production)
 
     if figure is not None:
         opening_base = figure.opening_base_qty
-        return_base = figure.return_base_qty
-        production_base = figure.production_base_qty
         opening_editable = get_prior_closing_base_qty(product.id, date, shift, exclude_id=figure.id) is None
         notes = figure.notes
     else:
         prior = get_prior_closing_base_qty(product.id, date, shift)
         opening_base = prior if prior is not None else 0
-        return_base = 0
-        production_base = 0
         opening_editable = prior is None
         notes = None
 
@@ -122,8 +179,18 @@ def daily_figure_view(product, date, shift):
         "opening_editable": opening_editable,
         "packaging_rule": rule.to_dict() if rule else None,
         "opening": {"base_qty": opening_base, **(_split_or_none(opening_base, rule) or {})} if rule else None,
-        "return_": {"base_qty": return_base, **(_split_or_none(return_base, rule) or {})} if rule else None,
-        "production": {"base_qty": production_base, **(_split_or_none(production_base, rule) or {})} if rule else None,
+        "return_": {
+            "base_qty": return_base,
+            **(_split_or_none(return_base, rule) or {}),
+            "from_returns_book": returns_finalized_base_qty(product.id, date) if shift == SHIFT_DAY else 0,
+            "legacy": legacy_return,
+        } if rule else None,
+        "production": {
+            "base_qty": production_base,
+            **(_split_or_none(production_base, rule) or {}),
+            "from_production_book": production_finalized_base_qty(product.id, date, shift),
+            "legacy": legacy_production,
+        } if rule else None,
         "issued": {
             "base_qty": issued,
             **(_split_or_none(issued, rule) or {}),
@@ -135,11 +202,16 @@ def daily_figure_view(product, date, shift):
     }
 
 
-def upsert_daily_figure(*, product, date, shift, opening, return_, production, notes, user):
+def upsert_daily_figure(*, product, date, shift, opening, notes, user):
     """
-    opening/return_/production are each {cartons, packs, pieces} dicts (or
-    None to leave opening as-is when it's locked to the prior period's
-    closing). Raises StockError for anything the user needs to fix.
+    opening is a {cartons, packs, pieces} dict (or None to leave opening
+    as-is when it's locked to the prior period's closing) — the only
+    quantity Daily Figures still accepts directly. Return and Production
+    are no longer entered here: Stage 5 moved them to the dedicated
+    Returns Book / Production Book, and they're always read live from
+    there (see return_base_qty()/production_base_qty() above) — Daily
+    Figures is a calculated summary for both, the same way Issued already
+    was. Raises StockError for anything the user needs to fix.
     """
     rule = product.current_packaging_rule()
     if rule is None:
@@ -161,12 +233,6 @@ def upsert_daily_figure(*, product, date, shift, opening, return_, production, n
                 raise StockError("Opening stock is required for this product's first-ever entry")
             oc, op, opc = normalize(opening.get("cartons", 0), opening.get("packs", 0), opening.get("pieces", 0), rule)
             opening_base = to_base_units(oc, op, opc, rule)
-
-        rc, rp, rpc = normalize(return_.get("cartons", 0), return_.get("packs", 0), return_.get("pieces", 0), rule)
-        return_base = to_base_units(rc, rp, rpc, rule)
-
-        pc, pp, ppc = normalize(production.get("cartons", 0), production.get("packs", 0), production.get("pieces", 0), rule)
-        production_base = to_base_units(pc, pp, ppc, rule)
     except PackagingError as e:
         raise StockError(str(e)) from e
 
@@ -185,10 +251,6 @@ def upsert_daily_figure(*, product, date, shift, opening, return_, production, n
             figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
         figure.opening_base_qty = opening_base
 
-    figure.return_cartons, figure.return_packs, figure.return_pieces = rc, rp, rpc
-    figure.return_base_qty = return_base
-    figure.production_cartons, figure.production_packs, figure.production_pieces = pc, pp, ppc
-    figure.production_base_qty = production_base
     figure.packaging_rule_id = rule.id
     figure.notes = notes
     figure.updated_by = user.id
@@ -239,6 +301,42 @@ def adjustment_total_base_qty_range(product_id, date_from, date_to):
     return int(total or 0)
 
 
+def returns_finalized_base_qty_range(product_id, date_from, date_to):
+    """
+    Whole-range total, shift-agnostic — ReturnRecord has no shift column at
+    all (see return_base_qty()'s docstring on why), so unlike Issued/
+    Production there is nothing to filter by here.
+    """
+    total = (
+        db.session.query(db.func.coalesce(db.func.sum(ReturnLine.base_unit_qty), 0))
+        .join(ReturnRecord, ReturnRecord.id == ReturnLine.return_id)
+        .filter(
+            ReturnRecord.status == STATUS_FINALIZED,
+            ReturnRecord.date >= date_from,
+            ReturnRecord.date <= date_to,
+            ReturnLine.product_id == product_id,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def production_finalized_base_qty_range(product_id, date_from, date_to):
+    """Whole-range total across both shifts — matches total_production below, which also sums both shifts' DailyFigure rows together."""
+    total = (
+        db.session.query(db.func.coalesce(db.func.sum(ProductionLine.base_unit_qty), 0))
+        .join(ProductionRecord, ProductionRecord.id == ProductionLine.production_id)
+        .filter(
+            ProductionRecord.status == STATUS_FINALIZED,
+            ProductionRecord.date >= date_from,
+            ProductionRecord.date <= date_to,
+            ProductionLine.product_id == product_id,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
 def date_range_summary(date_from, date_to):
     """
     One row per product touched during [date_from, date_to]: total
@@ -262,14 +360,16 @@ def date_range_summary(date_from, date_to):
         )
         total_issued = dispatch_issued_base_qty_range(product.id, date_from, date_to) + \
             adjustment_total_base_qty_range(product.id, date_from, date_to)
+        total_return = sum(r.return_base_qty for r in rows) + \
+            returns_finalized_base_qty_range(product.id, date_from, date_to)
+        total_production = sum(r.production_base_qty for r in rows) + \
+            production_finalized_base_qty_range(product.id, date_from, date_to)
 
-        if not rows and total_issued == 0:
+        if not rows and total_issued == 0 and total_return == 0 and total_production == 0:
             continue
 
         rule = product.current_packaging_rule()
         opening_base = rows[0].opening_base_qty if rows else 0
-        total_return = sum(r.return_base_qty for r in rows)
-        total_production = sum(r.production_base_qty for r in rows)
         closing_base = opening_base + total_return + total_production - total_issued
 
         results.append({

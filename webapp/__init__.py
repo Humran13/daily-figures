@@ -61,6 +61,8 @@ def create_app():
     from webapp.routes.branding import branding_bp
     from webapp.routes.admin_company_settings import admin_company_settings_bp
     from webapp.routes.feature_flags import feature_flags_bp
+    from webapp.routes.returns import returns_bp
+    from webapp.routes.production import production_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_products_bp)
@@ -78,6 +80,8 @@ def create_app():
     app.register_blueprint(branding_bp)
     app.register_blueprint(admin_company_settings_bp)
     app.register_blueprint(feature_flags_bp)
+    app.register_blueprint(returns_bp)
+    app.register_blueprint(production_bp)
 
     @app.route("/api/health")
     def health():

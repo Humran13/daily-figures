@@ -37,7 +37,11 @@ FIRST_AUTHORIZED_PAGE = {
 
 # Ordered fallback chain for "the module this page needs is off — where
 # else could this user reasonably go?"
-MODULE_PAGES = [("daily_figures", "/"), ("dispatch", "/dispatch.html"), ("history_exports", "/history.html")]
+MODULE_PAGES = [
+    ("daily_figures", "/"), ("dispatch", "/dispatch.html"),
+    ("returns", "/returns.html"), ("production", "/production.html"),
+    ("history_exports", "/history.html"),
+]
 
 _DISABLED_MODULE_MESSAGE = "This module is currently disabled. Contact your administrator."
 
@@ -104,6 +108,16 @@ def _guard_flag_and_auth(filename, module_key):
 @pages_bp.route("/dispatch.html")
 def dispatch_page():
     return _guard_flag_only("dispatch.html", "dispatch")
+
+
+@pages_bp.route("/returns.html")
+def returns_page():
+    return _guard_flag_only("returns.html", "returns")
+
+
+@pages_bp.route("/production.html")
+def production_page():
+    return _guard_flag_only("production.html", "production")
 
 
 @pages_bp.route("/dashboard.html")

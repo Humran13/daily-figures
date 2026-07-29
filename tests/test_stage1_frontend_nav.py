@@ -23,11 +23,14 @@ def _operator_nav_block(source):
 
 
 @pytest.mark.parametrize("source", [DISPATCH_HTML, INDEX_HTML], ids=["dispatch.html", "index.html"])
-def test_operator_nav_has_exactly_three_items_in_order(source):
+def test_operator_nav_has_five_items_in_order(source):
+    """Stage 5 extended this from 3 items (Dispatch, Daily Figures, History
+    & Exports) to 5, inserting Returns and Production between Dispatch and
+    Daily Figures — see the Stage 5 spec's navigation section."""
     block = _operator_nav_block(source)
     links = re.findall(r'>([^<]+)</a>', block)
     labels = [l.strip().replace("&amp;", "&") for l in links]
-    assert labels == ["Dispatch", "Daily Figures", "History & Exports"]
+    assert labels == ["Dispatch", "Returns", "Production", "Daily Figures", "History & Exports"]
 
 
 @pytest.mark.parametrize("source", [DISPATCH_HTML, INDEX_HTML], ids=["dispatch.html", "index.html"])
@@ -86,9 +89,13 @@ def test_viewer_readonly_lock_present_on_dispatch_html():
 
 
 def test_daily_figures_fields_gated_per_role_and_permission_flags():
+    # Stage 5 moved Return/Production entry to their own Books — Daily
+    # Figures only ever displays them now (exactly like Issued already was),
+    # so canEditReturns/canEditProduction no longer exist here; only Opening
+    # Stock and the stock-adjustment action remain gated this way.
     assert "const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);" in INDEX_HTML
-    assert "const canEditReturns = isElevated || (role === 'operator' && operatorPermissions.can_edit_returns);" in INDEX_HTML
-    assert "const canEditProduction = isElevated || (role === 'operator' && operatorPermissions.can_edit_production);" in INDEX_HTML
+    assert "const canEditReturns" not in INDEX_HTML
+    assert "const canEditProduction" not in INDEX_HTML
     assert "const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments);" in INDEX_HTML
 
 

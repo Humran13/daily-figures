@@ -118,15 +118,17 @@ def test_viewer_cannot_write_via_underlying_apis(client, login_as, setup):
 
 # ---------- source-level structure of history.html ----------
 
-def test_history_page_has_two_tabs_in_order():
-    # Stage 4 added data-module="..." to each tab (feature-flag gating) —
-    # this just needs to stop caring about that attribute, not the order.
+def test_history_page_has_four_tabs_in_order():
+    # Stage 5 inserted Returns History and Production History between
+    # Dispatch History and Daily Figures History.
     match = re.search(
         r'<div class="tabs">\s*<div class="tab active" data-tab="dispatch"[^>]*>Dispatch History</div>\s*'
+        r'<div class="tab" data-tab="returns"[^>]*>Returns History</div>\s*'
+        r'<div class="tab" data-tab="production"[^>]*>Production History</div>\s*'
         r'<div class="tab" data-tab="daily-figures"[^>]*>Daily Figures History</div>',
         HISTORY_HTML,
     )
-    assert match, "expected Dispatch History then Daily Figures History tabs in that order"
+    assert match, "expected Dispatch/Returns/Production/Daily Figures History tabs in that order"
 
 
 def test_dispatch_history_tab_has_all_required_filters():
@@ -177,7 +179,7 @@ def test_history_page_has_operator_nav_and_admin_tier_nav():
     assert 'id="adminTierNav"' in HISTORY_HTML
     op_nav = re.search(r'<div class="tabs hidden" id="operatorNav">.*?</div>', HISTORY_HTML, re.DOTALL).group(0)
     labels = [l.strip().replace("&amp;", "&") for l in re.findall(r'>([^<]+)</a>', op_nav)]
-    assert labels == ["Dispatch", "Daily Figures", "History & Exports"]
+    assert labels == ["Dispatch", "Returns", "Production", "Daily Figures", "History & Exports"]
 
 
 def test_dispatch_html_and_index_html_link_to_new_history_page():

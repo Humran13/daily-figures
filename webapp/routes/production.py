@@ -1,0 +1,329 @@
+from flask import Blueprint, Response, jsonify, request
+
+from webapp.auth import current_user, feature_required, login_required, roles_required
+from webapp.extensions import db
+from webapp.models.dispatch import SHIFTS
+from webapp.models.production_record import STATUS_DRAFT, ProductionLine, ProductionRecord
+from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
+from webapp.services import branding_service, production_service as svc
+from webapp.services.audit_service import record_audit
+from webapp.services.export_service import MIME_TYPES, build_export
+from webapp.services.packaging import PackagingError
+from webapp.services.production_service import ProductionError
+from webapp.services.quantity_format import qty_label
+
+production_bp = Blueprint("production", __name__, url_prefix="/api/production")
+
+
+def _error(e, status=400):
+    return jsonify({"error": str(e)}), status
+
+
+def _filtered_production_query(args):
+    """Same EXISTS-subquery-for-product_id shape as dispatches.py/returns.py —
+    never a join, so a production entry with several lines for one product
+    can't multiply the parent row."""
+    query = ProductionRecord.query
+    filters_applied = {}
+
+    if args.get("date"):
+        query = query.filter(ProductionRecord.date == args["date"])
+        filters_applied["date"] = args["date"]
+    if args.get("date_from"):
+        query = query.filter(ProductionRecord.date >= args["date_from"])
+        filters_applied["date_from"] = args["date_from"]
+    if args.get("date_to"):
+        query = query.filter(ProductionRecord.date <= args["date_to"])
+        filters_applied["date_to"] = args["date_to"]
+    if args.get("shift"):
+        query = query.filter(ProductionRecord.shift == args["shift"])
+        filters_applied["shift"] = args["shift"]
+    if args.get("status"):
+        query = query.filter(ProductionRecord.status == args["status"])
+        filters_applied["status"] = args["status"]
+    if args.get("created_by"):
+        query = query.filter(ProductionRecord.created_by == int(args["created_by"]))
+        user = db.session.get(User, int(args["created_by"]))
+        filters_applied["created_by"] = user.username if user else args["created_by"]
+    if args.get("product_id"):
+        pid = int(args["product_id"])
+        query = query.filter(
+            db.session.query(ProductionLine.id)
+            .filter(ProductionLine.production_id == ProductionRecord.id, ProductionLine.product_id == pid)
+            .exists()
+        )
+        filters_applied["product_id"] = args["product_id"]
+
+    return query, filters_applied
+
+
+@production_bp.route("", methods=["GET"])
+@login_required
+@feature_required("production")
+def list_production():
+    query, _ = _filtered_production_query(request.args)
+    query = query.order_by(ProductionRecord.date.desc(), ProductionRecord.id.desc())
+    limit = min(int(request.args.get("limit", 50)), 200)
+    offset = int(request.args.get("offset", 0))
+    total = query.count()
+    rows = query.offset(offset).limit(limit).all()
+    return jsonify({"total": total, "results": [r.to_dict(include_lines=False) for r in rows]})
+
+
+@production_bp.route("/export.<fmt>", methods=["GET"])
+@login_required
+@feature_required("production")
+def export_production(fmt):
+    query, filters_applied = _filtered_production_query(request.args)
+    records = query.order_by(ProductionRecord.date.desc(), ProductionRecord.id.desc()).limit(5000).all()
+
+    columns = [
+        ("date", "Date"), ("shift", "Shift"), ("status", "Status"),
+        ("product_name", "Product"), ("quantity", "Quantity"), ("remarks", "Remarks"),
+    ]
+    rows = []
+    for r in records:
+        for line in r.lines:
+            rows.append({
+                "date": r.date, "shift": r.shift, "status": r.status,
+                "product_name": line.product.name if line.product else "",
+                "quantity": qty_label(line.cartons, line.packs, line.pieces, line.packaging_rule),
+                "remarks": r.remarks or "",
+            })
+
+    try:
+        content = build_export(fmt, title="Production", filters=filters_applied,
+                                generated_by=current_user().username, columns=columns, rows=rows,
+                                **branding_service.export_kwargs())
+    except ValueError as e:
+        return _error(e)
+
+    record_audit(current_user(), "export", "production", after={"format": fmt, "filters": filters_applied, "row_count": len(rows)})
+    db.session.commit()
+    return Response(content, mimetype=MIME_TYPES[fmt],
+                     headers={"Content-Disposition": f"attachment; filename=production.{fmt}"})
+
+
+@production_bp.route("/<int:production_id>", methods=["GET"])
+@login_required
+@feature_required("production")
+def get_production(production_id):
+    record = db.session.get(ProductionRecord, production_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(record.to_dict())
+
+
+@production_bp.route("", methods=["POST"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
+@feature_required("production")
+def create_production():
+    d = request.get_json(force=True) or {}
+    user = current_user()
+
+    required = ["date", "shift", "lines"]
+    for f in required:
+        if not d.get(f):
+            return _error(f"missing field: {f}")
+    if d["shift"] not in SHIFTS:
+        return _error(f"shift must be one of {SHIFTS}")
+
+    try:
+        record = svc.create_production(
+            date=d["date"], shift=d["shift"], remarks=d.get("remarks"), lines=d["lines"], user=user,
+        )
+    except (ProductionError, PackagingError) as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "create", "production", entity_id=record.id, after=record.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict()), 201
+
+
+def _load_editable_production(production_id, user):
+    record = db.session.get(ProductionRecord, production_id)
+    if record is None:
+        return None, (jsonify({"error": "not found"}), 404)
+    if not svc.can_edit(record, user):
+        return None, (jsonify({"error": "forbidden"}), 403)
+    return record, None
+
+
+@production_bp.route("/<int:production_id>", methods=["PATCH"])
+@login_required
+@feature_required("production")
+def update_production(production_id):
+    user = current_user()
+    record, err = _load_editable_production(production_id, user)
+    if err:
+        return err
+    if record.status != STATUS_DRAFT:
+        return _error("only a draft production entry's header can be edited directly — reopen it first", 409)
+
+    d = request.get_json(force=True) or {}
+    before = record.to_dict()
+    if d.get("shift") is not None and d["shift"] not in SHIFTS:
+        return _error(f"shift must be one of {SHIFTS}")
+    try:
+        svc.update_header(record, date=d.get("date"), shift=d.get("shift"), remarks=d.get("remarks"), user=user)
+    except ProductionError as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "update", "production", entity_id=record.id, before=before, after=record.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict())
+
+
+@production_bp.route("/<int:production_id>/lines", methods=["POST"])
+@login_required
+@feature_required("production")
+def add_line(production_id):
+    user = current_user()
+    record, err = _load_editable_production(production_id, user)
+    if err:
+        return err
+    if record.status != STATUS_DRAFT:
+        return _error("lines can only be added to a draft production entry — reopen it first", 409)
+
+    d = request.get_json(force=True) or {}
+    try:
+        line_data = svc.build_line(
+            d.get("product_id"), d.get("cartons", 0), d.get("packs", 0), d.get("pieces", 0),
+            line_notes=d.get("line_notes"),
+        )
+    except (ProductionError, PackagingError) as e:
+        return _error(e)
+
+    line = ProductionLine(production_id=record.id, **line_data)
+    db.session.add(line)
+    record.updated_by = user.id
+    db.session.flush()
+
+    record_audit(user, "add_line", "production", entity_id=record.id, after=line.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict()), 201
+
+
+@production_bp.route("/<int:production_id>/lines/<int:line_id>", methods=["PATCH"])
+@login_required
+@feature_required("production")
+def update_line(production_id, line_id):
+    user = current_user()
+    record, err = _load_editable_production(production_id, user)
+    if err:
+        return err
+    if record.status != STATUS_DRAFT:
+        return _error("lines can only be edited on a draft production entry — reopen it first", 409)
+
+    line = db.session.get(ProductionLine, line_id)
+    if line is None or line.production_id != record.id:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    before = line.to_dict()
+    try:
+        line_data = svc.build_line(
+            d.get("product_id", line.product_id),
+            d.get("cartons", line.cartons), d.get("packs", line.packs), d.get("pieces", line.pieces),
+            line_notes=d.get("line_notes", line.line_notes),
+        )
+    except (ProductionError, PackagingError) as e:
+        return _error(e)
+
+    for key, value in line_data.items():
+        setattr(line, key, value)
+    record.updated_by = user.id
+
+    record_audit(user, "update_line", "production", entity_id=record.id, before=before, after=line.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict())
+
+
+@production_bp.route("/<int:production_id>/lines/<int:line_id>", methods=["DELETE"])
+@login_required
+@feature_required("production")
+def remove_line(production_id, line_id):
+    user = current_user()
+    record, err = _load_editable_production(production_id, user)
+    if err:
+        return err
+    if record.status != STATUS_DRAFT:
+        return _error("lines can only be removed from a draft production entry — reopen it first", 409)
+
+    line = db.session.get(ProductionLine, line_id)
+    if line is None or line.production_id != record.id:
+        return jsonify({"error": "not found"}), 404
+    if len(record.lines) <= 1:
+        return _error("a production entry needs at least one product line — delete it instead by voiding it")
+
+    before = line.to_dict()
+    db.session.delete(line)
+    record.updated_by = user.id
+
+    record_audit(user, "remove_line", "production", entity_id=record.id, before=before)
+    db.session.commit()
+    return jsonify(record.to_dict())
+
+
+@production_bp.route("/<int:production_id>/finalize", methods=["POST"])
+@login_required
+@feature_required("production")
+def finalize(production_id):
+    user = current_user()
+    record, err = _load_editable_production(production_id, user)
+    if err:
+        return err
+
+    before = record.to_dict()
+    try:
+        svc.finalize_production(record, user)
+    except ProductionError as e:
+        return _error(e)
+
+    record_audit(user, "finalize", "production", entity_id=record.id, before=before, after=record.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict())
+
+
+@production_bp.route("/<int:production_id>/reopen", methods=["POST"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("production")
+def reopen(production_id):
+    user = current_user()
+    record = db.session.get(ProductionRecord, production_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    before = record.to_dict()
+    try:
+        svc.reopen_production(record, user, d.get("reason"))
+    except ProductionError as e:
+        return _error(e)
+
+    record_audit(user, "reopen", "production", entity_id=record.id, before=before, after=record.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict())
+
+
+@production_bp.route("/<int:production_id>/void", methods=["POST"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("production")
+def void(production_id):
+    user = current_user()
+    record = db.session.get(ProductionRecord, production_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    before = record.to_dict()
+    try:
+        svc.void_production(record, user, d.get("reason"))
+    except ProductionError as e:
+        return _error(e)
+
+    record_audit(user, "void", "production", entity_id=record.id, before=before, after=record.to_dict())
+    db.session.commit()
+    return jsonify(record.to_dict())

@@ -2,18 +2,19 @@ from datetime import datetime, timezone
 
 from webapp.extensions import db
 
-# The modules this app actually has as distinct sections today. The
-# original commercial-reuse plan mentioned "Inventory" and "Production" as
-# possible future modules, but neither exists as a distinct section in
-# this codebase (Production is a field inside Daily Figures, not a module
-# of its own) — flagging something that doesn't exist would just be dead
-# UI, so this list only covers real, currently-reachable app sections.
+# The modules this app actually has as distinct sections today. As of
+# Stage 5, Returns and Production are their own dedicated books/modules
+# (Dispatch/Returns/Production all feed Daily Figures) rather than fields
+# entered directly on Daily Figures — see webapp/models/return_record.py,
+# webapp/models/production_record.py.
 MODULE_DISPATCH = "dispatch"
 MODULE_DAILY_FIGURES = "daily_figures"
 MODULE_HISTORY_EXPORTS = "history_exports"
 MODULE_DASHBOARD = "dashboard"
 MODULE_CUSTOMER_MANAGEMENT = "customer_management"
 MODULE_REPORTING = "reporting"
+MODULE_RETURNS = "returns"
+MODULE_PRODUCTION = "production"
 
 MODULES = [
     MODULE_DISPATCH,
@@ -22,6 +23,8 @@ MODULES = [
     MODULE_DASHBOARD,
     MODULE_CUSTOMER_MANAGEMENT,
     MODULE_REPORTING,
+    MODULE_RETURNS,
+    MODULE_PRODUCTION,
 ]
 
 MODULE_LABELS = {
@@ -31,6 +34,8 @@ MODULE_LABELS = {
     MODULE_DASHBOARD: "Dashboard",
     MODULE_CUSTOMER_MANAGEMENT: "Customer Management",
     MODULE_REPORTING: "Reporting",
+    MODULE_RETURNS: "Returns",
+    MODULE_PRODUCTION: "Production",
 }
 
 

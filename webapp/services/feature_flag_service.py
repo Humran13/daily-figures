@@ -12,15 +12,31 @@ simple" per the original request):
 
 - Dispatch requires Customer Management (recipient search/selection uses
   the customer admin API).
+- Returns requires Customer Management for the same reason: recording who
+  returned stock ("returned by") reuses the same customer search API as
+  Dispatch's recipient field, rather than a second lookup table.
 - Daily Figures requires Dispatch (Issued totals are derived from
   finalized Dispatch records).
+- Daily Figures deliberately does NOT require Returns or Production. Both
+  are aggregated straight from their own tables at read time (see
+  webapp/services/stock_service.py's return_base_qty()/production_base_qty()),
+  not through the Returns/Production route layer — so Daily Figures keeps
+  computing correct (possibly zero) totals whether or not either module's
+  flag is currently on. Disabling Returns or Production only blocks that
+  module's own create/edit routes and nav entry; any stock it already
+  contributed keeps counting in Daily Figures, and re-enabling never
+  requires touching Daily Figures.
+- Production has no dependency of its own: it has no recipient field and
+  no other cross-module lookup.
 - Reporting requires both Dispatch and Daily Figures (its two report
   types — recipient totals, date-range summary — draw from each
-  respectively).
-- History & Exports has no hard dependency: its two sections (Dispatch
-  History, Daily Figures History) are independently sourced, and the
-  frontend already hides/shows each section on its own rather than the
-  whole module needing to come down when only one source is off.
+  respectively). It does not need Returns/Production for the same reason
+  Daily Figures doesn't.
+- History & Exports has no hard dependency: each of its sections (Dispatch
+  History, Returns History, Production History, Daily Figures History) is
+  independently sourced, and the frontend already hides/shows each section
+  on its own rather than the whole module needing to come down when only
+  one source is off.
 - Dashboard has no hard dependency for the same reason: it degrades
   (fewer populated panels) rather than becoming actively broken when a
   data source module is off.
@@ -41,6 +57,7 @@ from webapp.services.audit_service import record_audit
 
 REQUIRES = {
     "dispatch": ["customer_management"],
+    "returns": ["customer_management"],
     "daily_figures": ["dispatch"],
     "reporting": ["dispatch", "daily_figures"],
 }

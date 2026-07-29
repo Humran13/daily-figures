@@ -14,6 +14,8 @@ PAGES = {
     "history.html": (STATIC_DIR / "history.html").read_text(encoding="utf-8"),
     "dashboard.html": (STATIC_DIR / "dashboard.html").read_text(encoding="utf-8"),
     "admin.html": (STATIC_DIR / "admin.html").read_text(encoding="utf-8"),
+    "returns.html": (STATIC_DIR / "returns.html").read_text(encoding="utf-8"),
+    "production.html": (STATIC_DIR / "production.html").read_text(encoding="utf-8"),
 }
 
 

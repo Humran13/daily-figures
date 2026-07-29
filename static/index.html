@@ -139,12 +139,14 @@
       <a href="/dispatch.html" class="tab" id="dispatchLink" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
       <a href="/admin.html" class="tab hidden" id="adminLink" style="text-decoration:none;">Admin</a>
     </div>
-    <!-- Operator/Viewer only: the exact 3-item operational nav (Dispatch,
-         Daily Figures, History & Exports), identical on every page they can
-         reach. Hidden for every other role — their existing nav above is
-         untouched. -->
+    <!-- Operator/Viewer only: the full 5-item operational nav (Dispatch,
+         Returns, Production, Daily Figures, History & Exports), identical on
+         every page they can reach. Hidden for every other role — their
+         existing nav above is untouched. -->
     <div class="tabs hidden" id="operatorNav">
       <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
+      <a href="/returns.html?tab=new" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
+      <a href="/production.html?tab=new" class="tab" data-module="production" style="text-decoration:none;">Production</a>
       <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
       <a href="/history.html" class="tab" data-module="history_exports" style="text-decoration:none;">History &amp; Exports</a>
     </div>
@@ -334,29 +336,22 @@ async function renderEntryCard(){
 
   const view = await apiGet(`/api/daily-figures/${product.id}?date=${date}&shift=${shift}`);
   const rule = view.packaging_rule;
-  const vals = sessionValues[product.id] || {
-    return_: view.return_,
-    production: view.production,
-  };
 
   const role = currentUser && currentUser.role;
   const isElevated = role === 'super_admin' || role === 'manager';
   const isViewer = role === 'viewer';
   // Manager/Super Admin: always editable (unchanged). Operator: gated by
-  // the role-wide permission flags. Viewer: never editable, regardless of
-  // the flags — read-only across Daily Figures always wins.
+  // the role-wide permission flag. Viewer: never editable, regardless of
+  // the flag — read-only across Daily Figures always wins.
   const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);
-  const canEditReturns = isElevated || (role === 'operator' && operatorPermissions.can_edit_returns);
-  const canEditProduction = isElevated || (role === 'operator' && operatorPermissions.can_edit_production);
   const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments);
-  // Fully read-only: Viewer always, or an Operator with none of the three
-  // Daily-Figures edit flags on. Distinct from canAdjust, which is its own,
-  // separately-gated action — an Operator permitted only to adjust Issued
-  // still sees this form as read-only (nothing here writes Opening/Return/
-  // Production), just with the Adjust control also available.
-  const isFullyReadOnly = isViewer ||
-    (role === 'operator' && !operatorPermissions.can_edit_opening &&
-     !operatorPermissions.can_edit_returns && !operatorPermissions.can_edit_production);
+  // Opening Stock (only on a product's first-ever period) is the only
+  // quantity Daily Figures still accepts directly — Return and Production
+  // are entered in the Returns Book / Production Book and shown here
+  // read-only, exactly like Issued already was. So there is nothing left
+  // to save unless this is that first-ever entry and the current role is
+  // allowed to set it.
+  const isFullyReadOnly = isViewer || !(view.opening_editable && canEditOpening);
 
   card.innerHTML = `
     <div class="card">
@@ -368,13 +363,17 @@ async function renderEntryCard(){
       </div>
       ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
 
-      <div class="num-field"><label>Return <span class="hint">(stock returned unused)</span></label></div>
-      ${qtyInputsHtml('ret', rule, vals.return_, !canEditReturns)}
+      <div class="stock-readout" style="margin-top:14px;">
+        <span class="lbl">Return <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Returns Book)</span></span>
+        <span class="val qty-readout">${qtyLabel(view.return_)}</span>
+      </div>
 
-      <div class="num-field" style="margin-top:14px;"><label>Production <span class="hint">(made this shift)</span></label></div>
-      ${qtyInputsHtml('prod', rule, vals.production, !canEditProduction)}
+      <div class="stock-readout" style="margin-top:14px;">
+        <span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Production Book)</span></span>
+        <span class="val qty-readout">${qtyLabel(view.production)}</span>
+      </div>
 
-      <div class="stock-readout" style="margin-top:18px;">
+      <div class="stock-readout" style="margin-top:14px;">
         <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto — generated from finalized Dispatch records)</span></span>
         <span>
           <span class="val qty-readout">${qtyLabel(view.issued)}</span>
@@ -384,7 +383,8 @@ async function renderEntryCard(){
       </div>
 
       <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
-      ${isFullyReadOnly ? `<p class="hint" style="margin:8px 0;">Read-only — values are managed automatically or by an authorized manager.</p>` : ''}
+      <p class="hint" style="margin:8px 0;">Closing Stock = Opening Stock + Production + Returns &minus; Issued</p>
+      ${isFullyReadOnly ? `<p class="hint" style="margin:8px 0;">Read-only — Return and Production are recorded in their own Books; Daily Figures only displays the result.</p>` : ''}
       <div class="nav-row">
         ${isFullyReadOnly ? `
           ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
@@ -400,9 +400,7 @@ async function renderEntryCard(){
 
   function updatePreview(){
     const o = view.opening_editable ? toBaseUnits(...Object.values(readQtyInputs('opening', rule)), rule) : view.opening.base_qty;
-    const r = toBaseUnits(...Object.values(readQtyInputs('ret', rule)), rule);
-    const p = toBaseUnits(...Object.values(readQtyInputs('prod', rule)), rule);
-    const closingBase = o + r + p - view.issued.base_qty;
+    const closingBase = o + view.return_.base_qty + view.production.base_qty - view.issued.base_qty;
     document.getElementById('closingPreview').textContent = closingBase + ' pieces';
   }
   card.querySelectorAll('input').forEach(el=>{
@@ -415,10 +413,10 @@ async function renderEntryCard(){
   const adjustBtn = document.getElementById('adjustIssuedBtn');
   if(adjustBtn) adjustBtn.addEventListener('click', ()=>adjustIssued(product, date, shift));
 
-  // Editable workflow (Save & Next / Skip) — unchanged for Manager/Super
-  // Admin/permitted-Operator. Neither element exists in the DOM when
-  // isFullyReadOnly, so there is nothing to wire up and no path that could
-  // ever call saveCurrentAndAdvance().
+  // Editable workflow (Save & Next / Skip) — only ever reachable for a
+  // product's first-ever entry (Opening Stock). Neither element exists in
+  // the DOM when isFullyReadOnly, so there is nothing to wire up and no
+  // path that could ever call saveCurrentAndAdvance().
   const saveNextBtn = document.getElementById('saveNextBtn');
   if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));
   const skipBtn = document.getElementById('skipBtn');
@@ -443,25 +441,23 @@ async function renderEntryCard(){
 }
 
 function hasUnsavedChanges(rule, view){
+  // Opening Stock is the only editable field left on this card — Return
+  // and Production are always read-only readouts now (sourced from their
+  // own Books), so there is nothing else that could ever have an unsaved
+  // change.
+  if(!view.opening_editable) return false;
   const differs = (current, saved) => {
     saved = saved || {cartons: 0, packs: 0, pieces: 0};
     return current.cartons !== (saved.cartons || 0) || current.packs !== (saved.packs || 0) || current.pieces !== (saved.pieces || 0);
   };
-  if(differs(readQtyInputs('ret', rule), view.return_)) return true;
-  if(differs(readQtyInputs('prod', rule), view.production)) return true;
-  if(view.opening_editable && differs(readQtyInputs('opening', rule), view.opening)) return true;
-  return false;
+  return differs(readQtyInputs('opening', rule), view.opening);
 }
 
 async function saveCurrentAndAdvance(product, date, shift, rule, view){
-  const return_ = readQtyInputs('ret', rule);
-  const production = readQtyInputs('prod', rule);
   const opening = view.opening_editable ? readQtyInputs('opening', rule) : null;
 
-  sessionValues[product.id] = {return_, production};
-
   const {status, data} = await apiPost('/api/daily-figures', {
-    product_id: product.id, date, shift, opening, return_, production,
+    product_id: product.id, date, shift, opening,
   });
   if(status !== 200){
     toast(data.error || 'Could not save — check the values');

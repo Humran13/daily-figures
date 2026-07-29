@@ -75,11 +75,15 @@
     <h1>History &amp; Exports</h1>
     <div class="tabs">
       <div class="tab active" data-tab="dispatch" data-module="dispatch">Dispatch History</div>
+      <div class="tab" data-tab="returns" data-module="returns">Returns History</div>
+      <div class="tab" data-tab="production" data-module="production">Production History</div>
       <div class="tab" data-tab="daily-figures" data-module="daily_figures">Daily Figures History</div>
     </div>
     <!-- Operator/Viewer only — identical to the block on dispatch.html/index.html. -->
     <div class="tabs hidden" id="operatorNav">
       <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
+      <a href="/returns.html?tab=new" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
+      <a href="/production.html?tab=new" class="tab" data-module="production" style="text-decoration:none;">Production</a>
       <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
       <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
     </div>
@@ -89,6 +93,8 @@
     <div class="tabs" id="adminTierNav">
       <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
       <a href="/dispatch.html" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
+      <a href="/returns.html" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
+      <a href="/production.html" class="tab" data-module="production" style="text-decoration:none;">Production</a>
       <a href="/dashboard.html" class="tab hidden" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
     </div>
   </header>
@@ -132,6 +138,72 @@
         <a href="#" id="exportPdf" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
       </div>
       <div id="dispatchList"></div>
+    </div>
+
+    <!-- ================= RETURNS HISTORY ================= -->
+    <div id="tab-returns" class="hidden">
+      <div class="quick-filters">
+        <button class="btn-ghost btn-small" data-rquick="today">Today</button>
+        <button class="btn-ghost btn-small" data-rquick="yesterday">Yesterday</button>
+        <button class="btn-ghost btn-small" data-rquick="week">This week</button>
+        <button class="btn-ghost btn-small" data-rquick="month">This month</button>
+      </div>
+      <div class="filters">
+        <input id="rDate" type="date" title="Exact date">
+        <input id="rDateFrom" type="date" title="From date">
+        <input id="rDateTo" type="date" title="To date">
+        <input id="rReturnedBy" placeholder="Returned by">
+        <input id="rProduct" placeholder="Product">
+        <select id="rStatus">
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="finalized">Finalized</option>
+          <option value="void">Void</option>
+        </select>
+        <button class="btn-ghost btn-small" id="rClearFiltersBtn">Clear all</button>
+      </div>
+      <div class="export-row">
+        <span class="hint">Export current results:</span>
+        <a href="#" id="rExportCsv" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
+        <a href="#" id="rExportXlsx" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
+        <a href="#" id="rExportPdf" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
+      </div>
+      <div id="returnsList"></div>
+    </div>
+
+    <!-- ================= PRODUCTION HISTORY ================= -->
+    <div id="tab-production" class="hidden">
+      <div class="quick-filters">
+        <button class="btn-ghost btn-small" data-pquick="today">Today</button>
+        <button class="btn-ghost btn-small" data-pquick="yesterday">Yesterday</button>
+        <button class="btn-ghost btn-small" data-pquick="week">This week</button>
+        <button class="btn-ghost btn-small" data-pquick="month">This month</button>
+      </div>
+      <div class="filters">
+        <input id="pDate" type="date" title="Exact date">
+        <input id="pDateFrom" type="date" title="From date">
+        <input id="pDateTo" type="date" title="To date">
+        <select id="pShift">
+          <option value="">Any shift</option>
+          <option value="Day">Day</option>
+          <option value="Night">Night</option>
+        </select>
+        <input id="pProduct" placeholder="Product">
+        <select id="pStatus">
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="finalized">Finalized</option>
+          <option value="void">Void</option>
+        </select>
+        <button class="btn-ghost btn-small" id="pClearFiltersBtn">Clear all</button>
+      </div>
+      <div class="export-row">
+        <span class="hint">Export current results:</span>
+        <a href="#" id="pExportCsv" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
+        <a href="#" id="pExportXlsx" class="btn-small btn-ghost" style="text-decoration:none;">Excel</a>
+        <a href="#" id="pExportPdf" class="btn-small btn-ghost" style="text-decoration:none;">PDF</a>
+      </div>
+      <div id="productionList"></div>
     </div>
 
     <!-- ================= DAILY FIGURES HISTORY ================= -->
@@ -257,8 +329,12 @@ function dateStr(offsetDays){
 function switchTab(name){
   document.querySelectorAll('.tabs .tab[data-tab]').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   document.getElementById('tab-dispatch').classList.toggle('hidden', name!=='dispatch');
+  document.getElementById('tab-returns').classList.toggle('hidden', name!=='returns');
+  document.getElementById('tab-production').classList.toggle('hidden', name!=='production');
   document.getElementById('tab-daily-figures').classList.toggle('hidden', name!=='daily-figures');
   if(name==='dispatch') loadDispatchHistory();
+  if(name==='returns') loadReturnsHistory();
+  if(name==='production') loadProductionHistory();
   if(name==='daily-figures') renderDailyFiguresHistory();
 }
 document.querySelectorAll('.tabs .tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
@@ -423,6 +499,175 @@ function applyDispatchFiltersFromUrl(q){
   if(q.get('sales_category_id')) document.getElementById('fSalesCategory').value = q.get('sales_category_id');
 }
 
+// ================= RETURNS HISTORY =================
+// Reuses GET /api/returns and GET /api/returns/export.<fmt> verbatim — same
+// EXISTS-subquery product_id filtering as Dispatch History, so a return
+// with several lines for one product never produces duplicate parent rows.
+
+function returnsFilterParams(){
+  const params = new URLSearchParams();
+  const map = {rDate: 'date', rDateFrom: 'date_from', rDateTo: 'date_to', rStatus: 'status', rReturnedBy: 'returned_by'};
+  for(const [id, param] of Object.entries(map)){
+    const el = document.getElementById(id);
+    if(el && el.value) params.set(param, el.value);
+  }
+  const productText = document.getElementById('rProduct').value.trim().toLowerCase();
+  if(productText){
+    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
+    if(matches.length===1) params.set('product_id', matches[0].id);
+  }
+  return params;
+}
+
+async function loadReturnsHistory(){
+  const params = returnsFilterParams();
+  const {data} = await api('/api/returns?limit=200&' + params.toString());
+  const results = (data && data.results) || [];
+
+  ['rExportCsv','rExportXlsx','rExportPdf'].forEach((linkId,i)=>{
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(linkId).href = '/api/returns/export.'+fmt+'?'+params.toString();
+  });
+
+  const list = document.getElementById('returnsList');
+  if(results.length===0){
+    list.innerHTML = '<div class="empty-state">No returns match these filters.</div>';
+    return;
+  }
+  const groups = groupByDate(results);
+  list.innerHTML = groups.map(g => {
+    const finalizedCount = g.items.filter(r=>r.status==='finalized').length;
+    return `
+    <div class="date-group">
+      <div class="date-group-head" data-toggle-rgroup>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} return${g.items.length===1?'':'s'} · ${finalizedCount} finalized</div></div>
+        <span class="chev">▾</span>
+      </div>
+      <div class="date-group-body">
+        ${g.items.map(r => `
+          <div class="dispatch-row" data-open-return="${r.id}">
+            <div class="top"><span class="num">Return #${r.id}</span>${statusPill(r.status)}</div>
+            <div class="meta">${escapeHtml(r.returned_by_name||'—')}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-toggle-rgroup]').forEach(head=>{
+    head.addEventListener('click', (e)=>{ if(e.target.closest('[data-open-return]')) return; head.closest('.date-group').classList.toggle('collapsed'); });
+  });
+  // Read-only here — opening a return always goes to the Returns module,
+  // the only place corrections happen (same convention as Dispatch History).
+  list.querySelectorAll('[data-open-return]').forEach(el=>{
+    el.addEventListener('click', ()=>{ window.location.href = `/returns.html?open=${el.dataset.openReturn}`; });
+  });
+}
+
+document.querySelectorAll('[data-rquick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-rquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('rDate').value = '';
+    const q = btn.dataset.rquick;
+    if(q==='today'){ document.getElementById('rDateFrom').value = dateStr(0); document.getElementById('rDateTo').value = dateStr(0); }
+    if(q==='yesterday'){ document.getElementById('rDateFrom').value = dateStr(-1); document.getElementById('rDateTo').value = dateStr(-1); }
+    if(q==='week'){ document.getElementById('rDateFrom').value = dateStr(-6); document.getElementById('rDateTo').value = dateStr(0); }
+    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('rDateFrom').value = d.toISOString().slice(0,10); document.getElementById('rDateTo').value = dateStr(0); }
+    loadReturnsHistory();
+  });
+});
+['rDate','rDateFrom','rDateTo','rReturnedBy','rProduct','rStatus'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>loadReturnsHistory());
+  document.getElementById(id).addEventListener('change', ()=>loadReturnsHistory());
+});
+document.getElementById('rClearFiltersBtn').addEventListener('click', ()=>{
+  ['rDate','rDateFrom','rDateTo','rReturnedBy','rProduct'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('rStatus').value='';
+  document.querySelectorAll('[data-rquick]').forEach(b=>b.classList.remove('active'));
+  loadReturnsHistory();
+});
+
+// ================= PRODUCTION HISTORY =================
+// Reuses GET /api/production and GET /api/production/export.<fmt> verbatim
+// — same EXISTS-subquery product_id filtering as Dispatch/Returns History.
+
+function productionFilterParams(){
+  const params = new URLSearchParams();
+  const map = {pDate: 'date', pDateFrom: 'date_from', pDateTo: 'date_to', pShift: 'shift', pStatus: 'status'};
+  for(const [id, param] of Object.entries(map)){
+    const el = document.getElementById(id);
+    if(el && el.value) params.set(param, el.value);
+  }
+  const productText = document.getElementById('pProduct').value.trim().toLowerCase();
+  if(productText){
+    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
+    if(matches.length===1) params.set('product_id', matches[0].id);
+  }
+  return params;
+}
+
+async function loadProductionHistory(){
+  const params = productionFilterParams();
+  const {data} = await api('/api/production?limit=200&' + params.toString());
+  const results = (data && data.results) || [];
+
+  ['pExportCsv','pExportXlsx','pExportPdf'].forEach((linkId,i)=>{
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(linkId).href = '/api/production/export.'+fmt+'?'+params.toString();
+  });
+
+  const list = document.getElementById('productionList');
+  if(results.length===0){
+    list.innerHTML = '<div class="empty-state">No production entries match these filters.</div>';
+    return;
+  }
+  const groups = groupByDate(results);
+  list.innerHTML = groups.map(g => {
+    const finalizedCount = g.items.filter(r=>r.status==='finalized').length;
+    return `
+    <div class="date-group">
+      <div class="date-group-head" data-toggle-pgroup>
+        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} entr${g.items.length===1?'y':'ies'} · ${finalizedCount} finalized</div></div>
+        <span class="chev">▾</span>
+      </div>
+      <div class="date-group-body">
+        ${g.items.map(r => `
+          <div class="dispatch-row" data-open-production="${r.id}">
+            <div class="top"><span class="num">Production #${r.id}</span>${statusPill(r.status)}</div>
+            <div class="meta">${r.shift}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-toggle-pgroup]').forEach(head=>{
+    head.addEventListener('click', (e)=>{ if(e.target.closest('[data-open-production]')) return; head.closest('.date-group').classList.toggle('collapsed'); });
+  });
+  list.querySelectorAll('[data-open-production]').forEach(el=>{
+    el.addEventListener('click', ()=>{ window.location.href = `/production.html?open=${el.dataset.openProduction}`; });
+  });
+}
+
+document.querySelectorAll('[data-pquick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-pquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('pDate').value = '';
+    const q = btn.dataset.pquick;
+    if(q==='today'){ document.getElementById('pDateFrom').value = dateStr(0); document.getElementById('pDateTo').value = dateStr(0); }
+    if(q==='yesterday'){ document.getElementById('pDateFrom').value = dateStr(-1); document.getElementById('pDateTo').value = dateStr(-1); }
+    if(q==='week'){ document.getElementById('pDateFrom').value = dateStr(-6); document.getElementById('pDateTo').value = dateStr(0); }
+    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('pDateFrom').value = d.toISOString().slice(0,10); document.getElementById('pDateTo').value = dateStr(0); }
+    loadProductionHistory();
+  });
+});
+['pDate','pDateFrom','pDateTo','pShift','pProduct','pStatus'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', ()=>loadProductionHistory());
+  document.getElementById(id).addEventListener('change', ()=>loadProductionHistory());
+});
+document.getElementById('pClearFiltersBtn').addEventListener('click', ()=>{
+  ['pDate','pDateFrom','pDateTo','pProduct'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('pShift').value=''; document.getElementById('pStatus').value='';
+  document.querySelectorAll('[data-pquick]').forEach(b=>b.classList.remove('active'));
+  loadProductionHistory();
+});
+
 // ================= DAILY FIGURES HISTORY =================
 // Reuses GET /api/daily-figures/history and GET /api/daily-figures/export.<fmt>
 // verbatim, including the date/shift/product filters the backend already
@@ -584,8 +829,9 @@ function applyDailyFiguresFiltersFromUrl(q){
   applyDispatchFiltersFromUrl(q);
   applyDailyFiguresFiltersFromUrl(q);
 
-  if(q.get('tab') === 'daily-figures'){
-    switchTab('daily-figures');
+  const requestedTab = q.get('tab');
+  if(['daily-figures','returns','production'].includes(requestedTab)){
+    switchTab(requestedTab);
   } else {
     switchTab('dispatch');
   }

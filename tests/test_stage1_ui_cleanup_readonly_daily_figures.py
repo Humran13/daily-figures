@@ -44,12 +44,12 @@ def test_primary_tabs_container_wraps_both_old_tabs():
 # ---------- fully read-only state (Viewer always; Operator with no edit flags) ----------
 
 def test_fully_read_only_condition_covers_viewer_and_unpermitted_operator():
-    match = re.search(r"const isFullyReadOnly = isViewer \|\|\s*\(role === 'operator'.*?\);", INDEX_HTML, re.DOTALL)
+    # Stage 5 removed the separate Return/Production edit flags — Daily
+    # Figures now only ever accepts Opening Stock directly (on a product's
+    # first-ever period), so isFullyReadOnly collapses to "Viewer, or
+    # anyone not allowed/able to edit Opening Stock right now".
+    match = re.search(r"const isFullyReadOnly = isViewer \|\| !\(view\.opening_editable && canEditOpening\);", INDEX_HTML)
     assert match, "isFullyReadOnly definition not found"
-    body = match.group(0)
-    assert "!operatorPermissions.can_edit_opening" in body
-    assert "!operatorPermissions.can_edit_returns" in body
-    assert "!operatorPermissions.can_edit_production" in body
 
 
 def test_save_and_skip_buttons_not_rendered_when_fully_read_only():
@@ -62,7 +62,9 @@ def test_save_and_skip_buttons_not_rendered_when_fully_read_only():
 
 
 def test_read_only_message_matches_required_text():
-    assert "Read-only — values are managed automatically or by an authorized manager." in INDEX_HTML
+    # Updated in Stage 5: Return/Production now explicitly point at their
+    # own Books rather than a vague "managed automatically" message.
+    assert "Read-only — Return and Production are recorded in their own Books; Daily Figures only displays the result." in INDEX_HTML
 
 
 def test_no_save_request_possible_when_buttons_absent():
@@ -110,9 +112,11 @@ def test_adjust_button_remains_independently_gated_not_tied_to_fully_read_only()
 # ---------- per-field editability untouched by this UI cleanup ----------
 
 def test_per_field_permission_gating_still_intact():
+    # Only Opening Stock is still gated this way as of Stage 5 — Return and
+    # Production no longer have edit permissions to gate at all.
     assert "const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);" in INDEX_HTML
-    assert "const canEditReturns = isElevated || (role === 'operator' && operatorPermissions.can_edit_returns);" in INDEX_HTML
-    assert "const canEditProduction = isElevated || (role === 'operator' && operatorPermissions.can_edit_production);" in INDEX_HTML
+    assert "canEditReturns" not in INDEX_HTML
+    assert "canEditProduction" not in INDEX_HTML
 
 
 def test_operator_with_one_permitted_field_still_gets_save_controls():

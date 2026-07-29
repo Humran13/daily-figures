@@ -31,7 +31,7 @@ def test_dispatch_export_csv_contains_finalized_line(client, setup):
     assert b"Dispatch Transactions" in res.data
     assert b"EXP-1" in res.data
     assert b"Dalca" in res.data
-    assert b"234" in res.data  # total pieces for that line
+    assert b"2c 3p 4pc" in res.data  # business-friendly quantity string for that line, not a raw base-unit figure
 
 
 def test_dispatch_export_respects_status_filter(client, setup):
@@ -121,9 +121,13 @@ def test_summary_report_aggregates_across_range(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-27", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
-        "return_": {"cartons": 0, "packs": 0, "pieces": 0},
-        "production": {"cartons": 1, "packs": 0, "pieces": 0},
     })
+    # Production is sourced from the finalized Production Book as of Stage 5.
+    prod = client.post("/api/production", json={
+        "date": "2026-07-27", "shift": "Day",
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
     _finalize_dispatch(client, pid, setup["customer"]["id"], "2026-07-28", "Day", 0, 2, 0, "SUM-1")
 
     res = client.get("/api/reports/summary?date_from=2026-07-27&date_to=2026-07-28")
