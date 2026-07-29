@@ -127,7 +127,7 @@
   <header>
     <p class="eyebrow" id="userInfo">Production Log</p>
     <h1>Daily Figures <span class="logout" id="logoutBtn">Log out</span></h1>
-    <div class="tabs">
+    <div class="tabs" id="primaryTabs">
       <div class="tab active" data-tab="entry">Enter</div>
       <div class="tab" data-tab="history">History &amp; Export</div>
       <a href="/dashboard.html" class="tab" id="dashboardLink" style="text-decoration:none;">Dashboard</a>
@@ -327,6 +327,14 @@ async function renderEntryCard(){
   const canEditReturns = isElevated || (role === 'operator' && operatorPermissions.can_edit_returns);
   const canEditProduction = isElevated || (role === 'operator' && operatorPermissions.can_edit_production);
   const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments);
+  // Fully read-only: Viewer always, or an Operator with none of the three
+  // Daily-Figures edit flags on. Distinct from canAdjust, which is its own,
+  // separately-gated action — an Operator permitted only to adjust Issued
+  // still sees this form as read-only (nothing here writes Opening/Return/
+  // Production), just with the Adjust control also available.
+  const isFullyReadOnly = isViewer ||
+    (role === 'operator' && !operatorPermissions.can_edit_opening &&
+     !operatorPermissions.can_edit_returns && !operatorPermissions.can_edit_production);
 
   card.innerHTML = `
     <div class="card">
@@ -354,12 +362,17 @@ async function renderEntryCard(){
       </div>
 
       <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
-      ${isViewer ? `<p class="hint" style="margin:8px 0;">Read-only — your account cannot edit Daily Figures.</p>` : ''}
+      ${isFullyReadOnly ? `<p class="hint" style="margin:8px 0;">Read-only — values are managed automatically or by an authorized manager.</p>` : ''}
       <div class="nav-row">
-        ${currentIdx>0 ? `<button class="btn btn-ghost" id="backBtn">Back</button>` : ''}
-        <button class="btn btn-primary" id="saveNextBtn" ${isViewer ? 'disabled' : ''}>Save &amp; Next</button>
+        ${isFullyReadOnly ? `
+          ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
+          ${currentIdx<products.length-1 ? `<button class="btn btn-primary" id="nextProductBtn">Next Product</button>` : ''}
+        ` : `
+          ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
+          <button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>
+        `}
       </div>
-      <button class="btn-skip" id="skipBtn">Skip — no activity for this product</button>
+      ${isFullyReadOnly ? '' : `<button class="btn-skip" id="skipBtn">Skip — no activity for this product</button>`}
     </div>
   `;
 
@@ -380,10 +393,42 @@ async function renderEntryCard(){
   const adjustBtn = document.getElementById('adjustIssuedBtn');
   if(adjustBtn) adjustBtn.addEventListener('click', ()=>adjustIssued(product, date, shift));
 
-  document.getElementById('saveNextBtn').addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));
-  document.getElementById('skipBtn').addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
-  const backBtn = document.getElementById('backBtn');
-  if(backBtn) backBtn.addEventListener('click', ()=>{ currentIdx--; renderEntryCard(); });
+  // Editable workflow (Save & Next / Skip) — unchanged for Manager/Super
+  // Admin/permitted-Operator. Neither element exists in the DOM when
+  // isFullyReadOnly, so there is nothing to wire up and no path that could
+  // ever call saveCurrentAndAdvance().
+  const saveNextBtn = document.getElementById('saveNextBtn');
+  if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));
+  const skipBtn = document.getElementById('skipBtn');
+  if(skipBtn) skipBtn.addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+
+  // Previous Product — same id/handler in both the read-only and editable
+  // branches (only one is ever in the DOM at a time). Pure product-index
+  // movement, never a network request of any kind, in both cases. For an
+  // editable user specifically, it warns before discarding unsaved typed
+  // changes rather than silently dropping them.
+  const prevProductBtn = document.getElementById('prevProductBtn');
+  if(prevProductBtn) prevProductBtn.addEventListener('click', ()=>{
+    if(!isFullyReadOnly && hasUnsavedChanges(rule, view)){
+      if(!confirm('You have unsaved changes for this product. Leave without saving?')) return;
+    }
+    currentIdx--; renderEntryCard();
+  });
+  // Next Product — read-only review navigation only; hidden on the last
+  // product (see the nav-row markup above) rather than looping past it.
+  const nextProductBtn = document.getElementById('nextProductBtn');
+  if(nextProductBtn) nextProductBtn.addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+}
+
+function hasUnsavedChanges(rule, view){
+  const differs = (current, saved) => {
+    saved = saved || {cartons: 0, packs: 0, pieces: 0};
+    return current.cartons !== (saved.cartons || 0) || current.packs !== (saved.packs || 0) || current.pieces !== (saved.pieces || 0);
+  };
+  if(differs(readQtyInputs('ret', rule), view.return_)) return true;
+  if(differs(readQtyInputs('prod', rule), view.production)) return true;
+  if(view.opening_editable && differs(readQtyInputs('opening', rule), view.opening)) return true;
+  return false;
 }
 
 async function saveCurrentAndAdvance(product, date, shift, rule, view){
@@ -613,6 +658,11 @@ function applyUser(user){
   document.getElementById('dashboardLink').classList.toggle('hidden', !['super_admin','manager'].includes(user.role));
   document.getElementById('dispatchLink').classList.toggle('hidden', isOperatorOrViewer);
   document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
+  // Operator/Viewer see only the 3-item operatorNav (Dispatch, Daily
+  // Figures, History & Exports) — the old Enter/History & Export internal
+  // tabs are for Manager/Super Admin only now, to avoid showing both navs
+  // at once.
+  document.getElementById('primaryTabs').classList.toggle('hidden', isOperatorOrViewer);
 }
 
 async function boot(user){

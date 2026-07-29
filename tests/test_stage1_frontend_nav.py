@@ -90,7 +90,9 @@ def test_daily_figures_fields_gated_per_role_and_permission_flags():
 def test_viewer_forces_all_fields_disabled_regardless_of_flags():
     # canEdit*/canAdjust are keyed off isElevated / role==='operator' only —
     # 'viewer' never satisfies either, so it can never inherit a permission
-    # flag. This pins the second, independent lock: isViewer disables the
-    # Save & Next button outright, even if that were ever to change.
+    # flag. isFullyReadOnly is always true for Viewer independent of those
+    # flags — see tests/test_stage1_ui_cleanup_readonly_daily_figures.py
+    # and tests/test_stage1_correction_next_product_review.py for the full
+    # read-only-navigation behavior this drives.
     assert "const isViewer = role === 'viewer';" in INDEX_HTML
-    assert "${isViewer ? 'disabled' : ''}" in INDEX_HTML
+    assert "const isFullyReadOnly = isViewer ||" in INDEX_HTML
