@@ -6,6 +6,7 @@ from webapp.models.daily_figure import DailyFigure, StockAdjustment
 from webapp.models.dispatch import SHIFTS
 from webapp.models.product import Product
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
+from webapp.services import branding_service
 from webapp.services import operator_permissions_service as permissions_svc
 from webapp.services import stock_service as svc
 from webapp.services.audit_service import record_audit
@@ -246,7 +247,8 @@ def export_daily_figures(fmt):
 
     try:
         content = build_export(fmt, title="Daily Figures", filters=filters_applied,
-                                generated_by=current_user().username, columns=columns, rows=rows)
+                                generated_by=current_user().username, columns=columns, rows=rows,
+                                **branding_service.export_kwargs())
     except ValueError as e:
         return _error(e)
 

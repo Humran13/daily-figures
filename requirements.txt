@@ -4,3 +4,4 @@ Flask-SQLAlchemy==3.1.1
 Flask-Migrate==4.0.7
 openpyxl==3.1.5
 fpdf2==2.8.2
+Pillow==12.3.0

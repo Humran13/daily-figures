@@ -81,9 +81,13 @@
   .toast.show{ opacity:1; }
   .detail-line{ display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--paper-dim); font-size:14px; }
   .add-product-bar{ display:flex; gap:8px; margin-bottom:14px; }
+  .print-letterhead{ display:none; }
   @media print {
     header, .tabs, .no-print { display:none !important; }
     body, .shell { background:white; }
+    .print-letterhead{ display:flex !important; align-items:center; gap:10px; margin-bottom:14px; }
+    .print-letterhead img{ max-height:50px; max-width:140px; object-fit:contain; }
+    .print-letterhead .name{ font-weight:700; font-size:16px; }
   }
 </style>
 </head>
@@ -93,6 +97,10 @@
 
 <div class="shell hidden" id="appShell">
   <header class="no-print">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+      <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
+      <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
+    </div>
     <p class="eyebrow">Dispatch Book</p>
     <h1>Dispatch <a href="/">&larr; Daily Figures</a></h1>
     <div class="tabs">
@@ -204,6 +212,9 @@
       <div class="card no-print">
         <button class="btn-ghost btn-small" id="backToListBtn">&larr; Back to list</button>
       </div>
+      <!-- Hidden on screen (the header above already shows branding);
+           shown only in @media print, since header/.tabs are hidden there. -->
+      <div class="print-letterhead" id="printLetterhead"></div>
       <div class="card" id="detailHeader"></div>
       <div class="card" id="detailLines"></div>
       <div class="msg" id="detailMsg"></div>
@@ -237,6 +248,29 @@ async function api(path, opts){
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ---------- company branding ----------
+// Public, unauthenticated endpoint — fetched exactly once per page load.
+let brandingCache = null;
+async function applyBranding(){
+  try{
+    const res = await fetch('/api/branding');
+    brandingCache = await res.json();
+    document.querySelectorAll('[data-brand-name]').forEach(el=>{ el.textContent = brandingCache.display_name; });
+    document.querySelectorAll('[data-brand-logo]').forEach(el=>{
+      if(brandingCache.logo_url){ el.src = brandingCache.logo_url; el.classList.remove('hidden'); }
+      else { el.classList.add('hidden'); }
+    });
+    renderPrintLetterhead();
+  } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
+}
+function renderPrintLetterhead(){
+  const el = document.getElementById('printLetterhead');
+  if(!el || !brandingCache) return;
+  el.innerHTML = (brandingCache.logo_url ? `<img src="${brandingCache.logo_url}" alt="">` : '') +
+    `<span class="name">${escapeHtml(brandingCache.display_name)}</span>`;
+}
+applyBranding();
 
 // ---------- tabs ----------
 function switchTab(name){

@@ -49,7 +49,12 @@
 <body>
 
 <header>
-  <h1>Admin</h1>
+  <h1>
+    <span style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:400;color:#8A94A6;margin-bottom:2px;">
+      <img data-brand-logo class="hidden" alt="" style="height:14px;width:auto;"><span data-brand-name></span>
+    </span>
+    Admin
+  </h1>
   <a href="/dashboard.html" style="margin-right:14px;">Dashboard</a>
   <a href="/">&larr; Back to Daily Figures</a>
 </header>
@@ -68,6 +73,7 @@
       <div class="tab" data-panel="review">Recipient Review</div>
       <div class="tab" data-panel="import">Corporate Import</div>
       <div class="tab" data-panel="legacy">Legacy Data</div>
+      <div class="tab" data-panel="company">Company Settings</div>
     </div>
 
     <!-- USERS -->
@@ -225,6 +231,49 @@
         <tbody id="flagsTable"></tbody></table>
       </div>
     </div>
+
+    <!-- COMPANY SETTINGS -->
+    <div class="panel" id="panel-company">
+      <div class="card">
+        <h2>Company logo</h2>
+        <p class="small">PNG, JPEG, or WebP. Max 2MB. Replacing a logo removes the previous file; the actual image content is validated on the server regardless of the file's name or extension.</p>
+        <div style="margin-bottom:12px;">
+          <img id="logoPreview" class="hidden" style="max-height:80px;max-width:220px;display:block;margin-bottom:8px;border:1.5px solid var(--line);border-radius:6px;padding:6px;">
+          <p id="noLogoMsg" class="small">No logo uploaded — a plain text company name is used everywhere branding appears.</p>
+        </div>
+        <input type="file" id="logoFileInput" accept="image/png,image/jpeg,image/webp">
+        <div class="row" style="margin-top:10px;">
+          <div style="flex:0;"><button class="btn-primary" id="uploadLogoBtn">Upload / replace</button></div>
+          <div style="flex:0;"><button class="btn-danger" id="removeLogoBtn">Remove logo</button></div>
+        </div>
+        <div class="msg" id="logoMsg"></div>
+      </div>
+      <div class="card">
+        <h2>Company details</h2>
+        <div class="row">
+          <div><label>Display name</label><input id="csDisplayName"></div>
+          <div><label>Legal name <span style="font-weight:400;">(optional)</span></label><input id="csLegalName"></div>
+        </div>
+        <div class="row">
+          <div><label>Address</label><textarea id="csAddress" rows="2"></textarea></div>
+        </div>
+        <div class="row">
+          <div><label>Phone</label><input id="csPhone"></div>
+          <div><label>Email</label><input id="csEmail" type="email"></div>
+          <div><label>Website</label><input id="csWebsite" placeholder="https://…"></div>
+        </div>
+        <div class="row">
+          <div><label>Currency code</label><input id="csCurrency" placeholder="e.g. UGX, USD" style="max-width:140px;"></div>
+          <div><label>Registration / tax number <span style="font-weight:400;">(optional)</span></label><input id="csTaxNumber"></div>
+          <div><label>Primary contact <span style="font-weight:400;">(optional)</span></label><input id="csContact"></div>
+        </div>
+        <div class="row">
+          <div><label>Report footer text</label><textarea id="csFooter" rows="2"></textarea></div>
+        </div>
+        <button class="btn-primary" id="saveCompanySettingsBtn">Save company settings</button>
+        <div class="msg" id="companySettingsMsg"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -238,6 +287,20 @@ async function api(path, opts){
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ---------- company branding ----------
+async function applyBranding(){
+  try{
+    const res = await fetch('/api/branding');
+    const b = await res.json();
+    document.querySelectorAll('[data-brand-name]').forEach(el=>{ el.textContent = b.display_name; });
+    document.querySelectorAll('[data-brand-logo]').forEach(el=>{
+      if(b.logo_url){ el.src = b.logo_url; el.classList.remove('hidden'); }
+      else { el.classList.add('hidden'); }
+    });
+  } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
+}
+applyBranding();
 
 // ---------- tabs ----------
 document.querySelectorAll('.tab[data-panel]').forEach(t=>{
@@ -651,6 +714,80 @@ document.getElementById('runMigrationBtn').addEventListener('click', async ()=>{
   }
 });
 
+// ---------- company settings ----------
+function _csFieldMap(){
+  return {
+    display_name: 'csDisplayName', legal_name: 'csLegalName', address: 'csAddress',
+    phone: 'csPhone', email: 'csEmail', website: 'csWebsite', currency_code: 'csCurrency',
+    tax_registration_number: 'csTaxNumber', primary_contact_name: 'csContact',
+    report_footer_text: 'csFooter',
+  };
+}
+
+async function loadCompanySettings(){
+  const {data} = await api('/api/admin/company-settings');
+  const map = _csFieldMap();
+  for(const [field, id] of Object.entries(map)){
+    document.getElementById(id).value = data[field] || '';
+  }
+  const preview = document.getElementById('logoPreview');
+  const noLogoMsg = document.getElementById('noLogoMsg');
+  if(data.logo_url){
+    preview.src = data.logo_url;
+    preview.classList.remove('hidden');
+    noLogoMsg.classList.add('hidden');
+  } else {
+    preview.classList.add('hidden');
+    noLogoMsg.classList.remove('hidden');
+  }
+}
+
+document.getElementById('saveCompanySettingsBtn').addEventListener('click', async ()=>{
+  const map = _csFieldMap();
+  const body = {};
+  for(const [field, id] of Object.entries(map)){
+    body[field] = document.getElementById(id).value;
+  }
+  const {status, data} = await api('/api/admin/company-settings', {method:'PATCH', body: JSON.stringify(body)});
+  const msg = document.getElementById('companySettingsMsg');
+  if(status===200){
+    msg.textContent = 'Company settings saved.'; msg.className = 'msg ok';
+    loadCompanySettings();
+  } else {
+    msg.textContent = data.error || 'Failed to save company settings.'; msg.className = 'msg err';
+  }
+});
+
+document.getElementById('uploadLogoBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('logoMsg');
+  const fileInput = document.getElementById('logoFileInput');
+  const file = fileInput.files[0];
+  if(!file){ msg.textContent = 'Choose a file first.'; msg.className = 'msg err'; return; }
+  const form = new FormData();
+  form.append('logo', file);
+  const res = await fetch('/api/admin/company-settings/logo', {method:'POST', body: form});
+  const data = await res.json().catch(()=>({}));
+  if(res.status===200){
+    msg.textContent = 'Logo saved.'; msg.className = 'msg ok';
+    fileInput.value = '';
+    loadCompanySettings();
+  } else {
+    msg.textContent = data.error || 'Failed to upload logo.'; msg.className = 'msg err';
+  }
+});
+
+document.getElementById('removeLogoBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('logoMsg');
+  if(!confirm('Remove the current logo? The app will fall back to a plain text company name.')) return;
+  const {status, data} = await api('/api/admin/company-settings/logo', {method:'DELETE'});
+  if(status===200){
+    msg.textContent = 'Logo removed.'; msg.className = 'msg ok';
+    loadCompanySettings();
+  } else {
+    msg.textContent = data.error || 'Failed to remove logo.'; msg.className = 'msg err';
+  }
+});
+
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
@@ -660,7 +797,7 @@ document.getElementById('runMigrationBtn').addEventListener('click', async ()=>{
   }
   document.getElementById('adminBody').classList.remove('hidden');
   await loadSalesCategoriesAdmin();
-  await Promise.all([loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue()]);
+  await Promise.all([loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue(), loadCompanySettings()]);
 })();
 </script>
 </body>

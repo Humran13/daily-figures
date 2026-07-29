@@ -12,7 +12,7 @@ from flask import Blueprint, Response, jsonify, request
 from webapp.auth import current_user, roles_required
 from webapp.extensions import db
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
-from webapp.services import stock_service as svc
+from webapp.services import branding_service, stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
 
@@ -67,7 +67,8 @@ def export_summary(fmt):
 
     try:
         content = build_export(fmt, title="Date-Range Summary", filters={"date_from": date_from, "date_to": date_to},
-                                generated_by=current_user().username, columns=columns, rows=rows)
+                                generated_by=current_user().username, columns=columns, rows=rows,
+                                **branding_service.export_kwargs())
     except ValueError as e:
         return _error(e)
 
@@ -131,6 +132,7 @@ def export_recipient_totals(fmt):
             fmt, title=f"Total Issued by {'Sales Category' if group_by == 'category' else 'Recipient'}",
             filters={"date_from": date_from, "date_to": date_to, "group_by": group_by},
             generated_by=current_user().username, columns=columns, rows=data, totals=totals,
+            **branding_service.export_kwargs(),
         )
     except ValueError as e:
         return _error(e)

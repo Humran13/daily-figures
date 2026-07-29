@@ -63,9 +63,12 @@ curl -fsSL https://get.docker.com | sh
 
 ## Backing up your data
 
-The entire database is one file: `./data/production.db`.
+The database is one file: `./data/production.db`. Uploaded company
+branding assets (the logo, if one has been set) live under
+`./data/uploads/branding/` — same persistent volume, not baked into the
+image, so both survive container rebuilds identically.
 
-**This now happens automatically on every deploy/restart.**
+**Database backup happens automatically on every deploy/restart.**
 `docker-entrypoint.sh` runs `scripts/backup_db.sh` before touching the
 schema at all — it copies `production.db` to
 `./data/backups/production_<timestamp>.db`, and if that copy fails for any
@@ -80,8 +83,9 @@ schedule outside of a deploy):
 ```bash
 sh scripts/backup_db.sh ./data/production.db
 ```
-Consider also pointing a nightly cron job at this script, or copying
-`./data/backups/` somewhere off-server (or emailing it to yourself).
+Consider also pointing a nightly cron job at this script, or copying the
+whole `./data/` directory (database backups **and** `uploads/branding/`)
+somewhere off-server.
 
 **Restoring from a backup:**
 ```bash
@@ -89,6 +93,11 @@ docker compose down
 cp data/backups/production_<timestamp>.db data/production.db
 docker compose up -d
 ```
+Restoring the database does not by itself restore a logo file — if you
+also need the exact logo that was live at backup time, copy your own
+off-server copy of `data/uploads/branding/` back into place before
+starting the container. A missing logo file is not fatal either way: the
+app falls back to a plain text company name automatically.
 
 ## Updating the app later
 
@@ -149,6 +158,15 @@ Current migrations and what their rollback does:
   non-unique index and prints a warning rather than failing the deploy —
   check the container logs after upgrading for that warning and resolve
   any flagged duplicates by hand if it appears.
+- `2a904d1ebe3b` (operator_daily_figure_permissions) — adds a single
+  role-wide settings row (seeded all-`False`). Downgrade drops exactly
+  that table.
+- `8d16f14e2b4a` (company_settings) — adds a single-row white-label
+  branding/configuration table, seeded with `display_name="Daily Figures"`
+  and every other field blank. Downgrade drops exactly that table; it does
+  not touch or delete any uploaded logo file under
+  `data/uploads/branding/` (those aren't tracked by the database at all —
+  see "Backing up your data" above).
 
 **Always back up `data/production.db` before running a migration against
 real production data** — as of this version that happens automatically,

@@ -67,6 +67,10 @@
 
 <div class="shell hidden" id="appShell">
   <header>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+      <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
+      <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
+    </div>
     <p class="eyebrow">History &amp; Exports</p>
     <h1>History &amp; Exports</h1>
     <div class="tabs">
@@ -182,6 +186,21 @@ async function api(path, opts){
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ---------- company branding ----------
+async function applyBranding(){
+  try{
+    const res = await fetch('/api/branding');
+    const b = await res.json();
+    document.querySelectorAll('[data-brand-name]').forEach(el=>{ el.textContent = b.display_name; });
+    document.querySelectorAll('[data-brand-logo]').forEach(el=>{
+      if(b.logo_url){ el.src = b.logo_url; el.classList.remove('hidden'); }
+      else { el.classList.add('hidden'); }
+    });
+  } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
+}
+applyBranding();
+
 function statusPill(status){
   return `<span class="pill pill-${status}">${status}</span>`;
 }

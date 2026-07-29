@@ -7,7 +7,7 @@ from webapp.models.customer import Customer
 from webapp.models.dispatch import SHIFTS, STATUS_DRAFT, STATUS_FINALIZED, STATUSES, Dispatch, DispatchLine
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
-from webapp.services import customer_service, dispatch_service as svc
+from webapp.services import branding_service, customer_service, dispatch_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.dispatch_service import DispatchError
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -147,7 +147,8 @@ def export_dispatches(fmt):
 
     try:
         content = build_export(fmt, title="Dispatch Transactions", filters=filters_applied,
-                                generated_by=current_user().username, columns=columns, rows=rows, totals=totals)
+                                generated_by=current_user().username, columns=columns, rows=rows, totals=totals,
+                                **branding_service.export_kwargs())
     except ValueError as e:
         return _error(e)
 

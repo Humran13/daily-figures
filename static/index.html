@@ -114,7 +114,8 @@
 
 <div id="loginScreen" class="login-shell">
   <div class="login-card">
-    <h1>Daily Figures</h1>
+    <img data-brand-logo class="hidden" alt="" style="max-height:56px;max-width:220px;display:block;margin:0 auto 12px;">
+    <h1 data-brand-name>Daily Figures</h1>
     <p>Sign in to continue</p>
     <input type="text" autocomplete="username" id="usernameInput" placeholder="Username" style="margin-bottom:10px;letter-spacing:normal;font-size:16px;text-align:left;">
     <input type="password" autocomplete="current-password" id="passwordInput" placeholder="Password" style="letter-spacing:normal;font-size:16px;text-align:left;">
@@ -126,7 +127,7 @@
 <div class="shell hidden" id="appShell">
   <header>
     <p class="eyebrow" id="userInfo">Production Log</p>
-    <h1>Daily Figures <span class="logout" id="logoutBtn">Log out</span></h1>
+    <h1><span data-brand-name>Daily Figures</span> <span class="logout" id="logoutBtn">Log out</span></h1>
     <div class="tabs" id="primaryTabs">
       <div class="tab active" data-tab="entry">Enter</div>
       <div class="tab" data-tab="history">History &amp; Export</div>
@@ -206,6 +207,23 @@ function todayStr(){ return new Date().toISOString().slice(0,10); }
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ---------- company branding ----------
+// Public, unauthenticated endpoint — fetched exactly once per page load
+// (never per-interaction), so the login screen and every in-app header
+// show the configured company name/logo without hard-coding either.
+async function applyBranding(){
+  try{
+    const res = await fetch('/api/branding');
+    const b = await res.json();
+    document.querySelectorAll('[data-brand-name]').forEach(el=>{ el.textContent = b.display_name; });
+    document.querySelectorAll('[data-brand-logo]').forEach(el=>{
+      if(b.logo_url){ el.src = b.logo_url; el.classList.remove('hidden'); }
+      else { el.classList.add('hidden'); }
+    });
+  } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
+}
+applyBranding();
 function toast(msg){
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
