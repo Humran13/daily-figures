@@ -52,7 +52,7 @@ def test_dispatch_csv_no_longer_has_separate_cartons_packs_pieces_columns(client
 def test_dispatch_csv_shows_business_friendly_quantity_string(client, setup):
     _finalize_dispatch(client, setup["product"]["id"], setup["customer"]["id"], "2026-07-28", "Day", 2, 3, 4, "RPT-2")
     res = client.get("/api/dispatches/export.csv")
-    assert b"2c 3p 4pc" in res.data
+    assert b"2.34 Ctns" in res.data
 
 
 def test_dispatch_no_pack_tier_product_shows_cartons_and_pieces_only(client, setup):
@@ -138,7 +138,7 @@ def test_daily_figures_csv_quantity_strings_are_business_friendly(client, setup)
         "opening": {"cartons": 1, "packs": 2, "pieces": 3},
     })
     res = client.get("/api/daily-figures/export.csv")
-    assert b"1c 2p 3pc" in res.data
+    assert b"1.23 Ctns" in res.data
 
 
 # ---------- CSV stays machine-readable (no decorative branding rows) ----------

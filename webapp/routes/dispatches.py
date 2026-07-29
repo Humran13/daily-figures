@@ -4,7 +4,7 @@ from sqlalchemy import or_
 from webapp.auth import current_user, login_required, roles_required, feature_required
 from webapp.extensions import db
 from webapp.models.customer import Customer
-from webapp.models.dispatch import SHIFTS, STATUS_DRAFT, STATUS_FINALIZED, STATUSES, Dispatch, DispatchLine
+from webapp.models.dispatch import STATUS_DRAFT, STATUS_FINALIZED, STATUSES, Dispatch, DispatchLine
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
 from webapp.services import branding_service, customer_service, dispatch_service as svc
@@ -199,12 +199,13 @@ def create_dispatch():
     d = request.get_json(force=True) or {}
     user = current_user()
 
-    required = ["dispatch_number", "date", "shift", "lines"]
+    # Dispatch is a Day-only workflow — no "shift" field is accepted here at
+    # all (never merely defaulted while still honoring a client-supplied
+    # Night). svc.create_dispatch() hardcodes Day itself.
+    required = ["dispatch_number", "date", "lines"]
     for f in required:
         if not d.get(f):
             return _error(f"missing field: {f}")
-    if d["shift"] not in SHIFTS:
-        return _error(f"shift must be one of {SHIFTS}")
     if not d.get("customer_id") and not d.get("new_customer_name"):
         return _error("either customer_id or new_customer_name is required")
 
@@ -212,7 +213,6 @@ def create_dispatch():
         dispatch = svc.create_dispatch(
             dispatch_number=d["dispatch_number"].strip(),
             date=d["date"],
-            shift=d["shift"],
             customer_id=int(d["customer_id"]) if d.get("customer_id") else None,
             new_customer_name=(d.get("new_customer_name") or "").strip() or None,
             sales_category_id=int(d["sales_category_id"]) if d.get("sales_category_id") else None,
@@ -266,10 +266,10 @@ def update_dispatch(dispatch_id):
 
     if "date" in d:
         dispatch.date = d["date"]
-    if "shift" in d:
-        if d["shift"] not in SHIFTS:
-            return _error(f"shift must be one of {SHIFTS}")
-        dispatch.shift = d["shift"]
+    # "shift" is intentionally not settable here — Dispatch is Day-only, and
+    # a client-supplied "shift" key is silently ignored rather than honored,
+    # exactly like Daily Figures now ignores a submitted "return_"/
+    # "production" (see webapp/routes/daily_figures.py's upsert()).
     if "invoice_number" in d:
         dispatch.invoice_number = d["invoice_number"]
     if "notes" in d:

@@ -173,9 +173,17 @@ async function applyFeatureFlags(){
 }
 
 function statusPill(status){ return `<span class="pill pill-${status}">${status}</span>`; }
-function qty(part){
-  if(!part || part.cartons===undefined) return part ? String(part.base_qty) : '—';
-  return `${part.cartons}c ${part.packs||0}p ${part.pieces}pc`;
+// The one centralized book-notation formatter — mirrors
+// webapp/services/quantity_format.qty_label() exactly.
+function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
+function qty(part, rule){
+  if(!part) return '—';
+  if(part.warning) return part.warning;
+  if(part.cartons === undefined) return String(part.base_qty);
+  if(!hasPackTier(rule)) return `${part.cartons}c ${part.pieces}pc`;
+  if(part.packs === 0 && part.pieces === 0) return `${part.cartons} Ctns`;
+  if(part.packs <= 9 && part.pieces <= 9) return `${part.cartons}.${part.packs}${part.pieces} Ctns`;
+  return `${part.cartons}c ${part.packs}p ${part.pieces}pc`;
 }
 
 async function loadDashboard(){
@@ -188,9 +196,9 @@ async function loadDashboard(){
     <a class="row-link" href="/?tab=history&product=${encodeURIComponent(r.product_name)}">
       <div>
         <div>${escapeHtml(r.product_name)}</div>
-        <div class="meta">Opening ${qty(r.opening)} · Prod ${qty(r.production)} · Issued ${qty(r.issued)} · Return ${qty(r.return_)}</div>
+        <div class="meta">Opening ${qty(r.opening, r.packaging_rule)} · Prod ${qty(r.production, r.packaging_rule)} · Issued ${qty(r.issued, r.packaging_rule)} · Returns ${qty(r.return_, r.packaging_rule)}</div>
       </div>
-      <div class="val">${qty(r.closing)}</div>
+      <div class="val">${qty(r.closing, r.packaging_rule)}</div>
     </a>`).join('') : '<div class="empty">No activity recorded yet.</div>';
 
   const lowStock = data.low_stock || [];
@@ -198,7 +206,7 @@ async function loadDashboard(){
   document.getElementById('lowStockList').innerHTML = lowStock.map(r => `
     <div class="warn-row">
       <span class="name">${escapeHtml(r.product_name)}</span>
-      <span>${qty(r.closing)}</span>
+      <span>${qty(r.closing, r.packaging_rule)}</span>
     </div>`).join('');
   document.getElementById('lowStockCountStat').textContent = lowStock.length;
 

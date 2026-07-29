@@ -62,9 +62,10 @@ def test_save_and_skip_buttons_not_rendered_when_fully_read_only():
 
 
 def test_read_only_message_matches_required_text():
-    # Updated in Stage 5: Return/Production now explicitly point at their
-    # own Books rather than a vague "managed automatically" message.
-    assert "Read-only — Return and Production are recorded in their own Books; Daily Figures only displays the result." in INDEX_HTML
+    # Updated in the Stage 5 final correction: "Return" -> "Returns", and
+    # Return/Production now explicitly point at their own Books rather than
+    # a vague "managed automatically" message.
+    assert "Read-only — Returns and Production are recorded in their own Books; Daily Figures only displays the result." in INDEX_HTML
 
 
 def test_no_save_request_possible_when_buttons_absent():

@@ -132,9 +132,12 @@ def test_history_page_has_four_tabs_in_order():
 
 
 def test_dispatch_history_tab_has_all_required_filters():
+    # No shift filter — Dispatch is Day-only as of the Stage 5 final
+    # correction, so filtering by shift has no useful business meaning.
     for field_id in ("fDate", "fDateFrom", "fDateTo", "fSalesCategory", "fCustomer",
-                      "fProduct", "fNumber", "fInvoice", "fShift", "fStatus", "fCreatedBy"):
+                      "fProduct", "fNumber", "fInvoice", "fStatus", "fCreatedBy"):
         assert f'id="{field_id}"' in HISTORY_HTML, f"missing filter field {field_id}"
+    assert 'id="fShift"' not in HISTORY_HTML
     assert 'data-quick="today"' in HISTORY_HTML
     assert 'data-quick="week"' in HISTORY_HTML
 

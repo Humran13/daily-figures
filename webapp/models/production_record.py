@@ -96,6 +96,7 @@ class ProductionLine(db.Model):
     packaging_rule = db.relationship("PackagingRule")
 
     def to_dict(self):
+        from webapp.services.quantity_format import qty_label
         return {
             "id": self.id,
             "production_id": self.production_id,
@@ -105,6 +106,7 @@ class ProductionLine(db.Model):
             "packs": self.packs,
             "pieces": self.pieces,
             "base_unit_qty": self.base_unit_qty,
+            "quantity_label": qty_label(self.cartons, self.packs, self.pieces, self.packaging_rule),
             "packaging_rule_id": self.packaging_rule_id,
             "line_notes": self.line_notes,
         }

@@ -31,7 +31,7 @@ def test_dispatch_export_csv_contains_finalized_line(client, setup):
     assert b"Dispatch Transactions" in res.data
     assert b"EXP-1" in res.data
     assert b"Dalca" in res.data
-    assert b"2c 3p 4pc" in res.data  # business-friendly quantity string for that line, not a raw base-unit figure
+    assert b"2.34 Ctns" in res.data  # book-style positional notation, not a raw base-unit figure
 
 
 def test_dispatch_export_respects_status_filter(client, setup):

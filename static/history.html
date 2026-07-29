@@ -23,8 +23,14 @@
   main{ padding:16px; padding-bottom:60px; }
   .hidden{ display:none !important; }
   .hint{ font-size:11px; color:var(--ink-soft); }
-  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; align-items:flex-end; }
   .filters input, .filters select{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; background:white; }
+  .filters .field-labeled{ display:flex; flex-direction:column; gap:3px; flex:1; min-width:130px; }
+  .filters .field-labeled label{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin:0; }
+  .filters .field-labeled input{ width:100%; min-width:0; }
+  /* "Any sales category" is the longest option text in this row — give it
+     enough room instead of squeezing to the shared 110px minimum. */
+  #fSalesCategory{ flex:1 1 170px; min-width:150px; }
   .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
   button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:8px; font-weight:700; }
   .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
@@ -109,19 +115,16 @@
         <button class="btn-ghost btn-small" data-quick="month">This month</button>
       </div>
       <div class="filters">
-        <input id="fDate" type="date" title="Exact date">
-        <input id="fDateFrom" type="date" title="From date">
-        <input id="fDateTo" type="date" title="To date">
+        <div class="field-labeled"><label>Exact Date</label><input id="fDate" type="date"></div>
+        <div class="field-labeled"><label>From Date</label><input id="fDateFrom" type="date"></div>
+        <div class="field-labeled"><label>To Date</label><input id="fDateTo" type="date"></div>
         <select id="fSalesCategory"><option value="">Any sales category</option></select>
         <input id="fCustomer" placeholder="Customer">
         <input id="fProduct" placeholder="Product">
         <input id="fNumber" placeholder="Dispatch #">
         <input id="fInvoice" placeholder="Invoice #">
-        <select id="fShift">
-          <option value="">Any shift</option>
-          <option value="Day">Day</option>
-          <option value="Night">Night</option>
-        </select>
+        <!-- No shift filter — Dispatch is Day-only, so filtering by shift
+             has no useful business meaning here. -->
         <select id="fStatus">
           <option value="">All statuses</option>
           <option value="draft">Draft</option>
@@ -149,9 +152,9 @@
         <button class="btn-ghost btn-small" data-rquick="month">This month</button>
       </div>
       <div class="filters">
-        <input id="rDate" type="date" title="Exact date">
-        <input id="rDateFrom" type="date" title="From date">
-        <input id="rDateTo" type="date" title="To date">
+        <div class="field-labeled"><label>Exact Date</label><input id="rDate" type="date"></div>
+        <div class="field-labeled"><label>From Date</label><input id="rDateFrom" type="date"></div>
+        <div class="field-labeled"><label>To Date</label><input id="rDateTo" type="date"></div>
         <input id="rReturnedBy" placeholder="Returned by">
         <input id="rProduct" placeholder="Product">
         <select id="rStatus">
@@ -180,9 +183,9 @@
         <button class="btn-ghost btn-small" data-pquick="month">This month</button>
       </div>
       <div class="filters">
-        <input id="pDate" type="date" title="Exact date">
-        <input id="pDateFrom" type="date" title="From date">
-        <input id="pDateTo" type="date" title="To date">
+        <div class="field-labeled"><label>Exact Date</label><input id="pDate" type="date"></div>
+        <div class="field-labeled"><label>From Date</label><input id="pDateFrom" type="date"></div>
+        <div class="field-labeled"><label>To Date</label><input id="pDateTo" type="date"></div>
         <select id="pShift">
           <option value="">Any shift</option>
           <option value="Day">Day</option>
@@ -215,9 +218,9 @@
         <button class="btn-ghost btn-small" data-hquick="month">This month</button>
       </div>
       <div class="filters">
-        <input id="hDate" type="date" title="Exact date">
-        <input id="hDateFrom" type="date" title="From date">
-        <input id="hDateTo" type="date" title="To date">
+        <div class="field-labeled"><label>Exact Date</label><input id="hDate" type="date"></div>
+        <div class="field-labeled"><label>From Date</label><input id="hDateFrom" type="date"></div>
+        <div class="field-labeled"><label>To Date</label><input id="hDateTo" type="date"></div>
         <select id="hShift">
           <option value="">Any shift</option>
           <option value="Day">Day</option>
@@ -350,7 +353,7 @@ function dispatchFilterParams(){
   const map = {
     fDate: 'date', fDateFrom: 'date_from', fDateTo: 'date_to',
     fNumber: 'dispatch_number', fInvoice: 'invoice_number',
-    fShift: 'shift', fStatus: 'status', fCreatedBy: 'created_by',
+    fStatus: 'status', fCreatedBy: 'created_by',
     fSalesCategory: 'sales_category_id',
   };
   for(const [id, param] of Object.entries(map)){
@@ -456,7 +459,7 @@ document.querySelectorAll('[data-quick]').forEach(btn=>{
     loadDispatchHistory();
   });
 });
-['fDate','fDateFrom','fDateTo','fProduct','fNumber','fInvoice','fShift','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
+['fDate','fDateFrom','fDateTo','fProduct','fNumber','fInvoice','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>loadDispatchHistory());
   document.getElementById(id).addEventListener('change', ()=>loadDispatchHistory());
 });
@@ -471,7 +474,7 @@ document.getElementById('fCustomer').addEventListener('input', ()=>{
 document.getElementById('fCustomer').addEventListener('change', ()=>loadDispatchHistory());
 document.getElementById('clearFiltersBtn').addEventListener('click', ()=>{
   ['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('fShift').value=''; document.getElementById('fStatus').value=''; document.getElementById('fCreatedBy').value='';
+  document.getElementById('fStatus').value=''; document.getElementById('fCreatedBy').value='';
   document.getElementById('fSalesCategory').value='';
   document.querySelectorAll('[data-quick]').forEach(b=>b.classList.remove('active'));
   loadDispatchHistory();
@@ -674,12 +677,21 @@ document.getElementById('pClearFiltersBtn').addEventListener('click', ()=>{
 // supports (index.html's own History tab just never exposed date/shift in
 // its UI — no backend change needed here).
 
-function qtyLabel(part){
+// The one centralized book-notation formatter — mirrors
+// webapp/services/quantity_format.qty_label() exactly. `rule` is the
+// product's own packaging_rule object; pack-tier-ness is never inferred
+// from the value itself (from_base_units() always returns packs:0 for a
+// no-pack-tier product too, so checking "packs !== null" can't actually
+// distinguish the two cases).
+function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
+function qtyLabel(part, rule){
   if(!part) return '—';
+  if(part.warning) return part.warning;
   if(part.cartons === undefined) return String(part.base_qty);
-  return (part.packs !== undefined && part.packs !== null)
-    ? `${part.cartons}c ${part.packs}p ${part.pieces}pc`
-    : `${part.cartons}c ${part.pieces}pc`;
+  if(!hasPackTier(rule)) return `${part.cartons}c ${part.pieces}pc`;
+  if(part.packs === 0 && part.pieces === 0) return `${part.cartons} Ctns`;
+  if(part.packs <= 9 && part.pieces <= 9) return `${part.cartons}.${part.packs}${part.pieces} Ctns`;
+  return `${part.cartons}c ${part.packs}p ${part.pieces}pc`;
 }
 
 function dailyFiguresFilterParams(){
@@ -732,7 +744,7 @@ async function renderDailyFiguresHistory(){
           <div class="entry-row">
             <div class="meta">${e.shift}</div>
             <div class="name">${escapeHtml(e.product_name)}</div>
-            <div class="nums">Prod ${qtyLabel(e.production)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued)}</span> · Return ${qtyLabel(e.return_)} · Closing ${qtyLabel(e.closing)}</div>
+            <div class="nums">Prod ${qtyLabel(e.production, e.packaging_rule)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued, e.packaging_rule)}</span> · Returns ${qtyLabel(e.return_, e.packaging_rule)} · Closing ${qtyLabel(e.closing, e.packaging_rule)}</div>
           </div>`).join('')}
       </div>
     </div>`).join('');
@@ -785,7 +797,7 @@ async function openIssuedBreakdown(product, date, shift){
         <div><a href="/dispatch.html?customer_id=${d.customer_id||''}&customer_name=${encodeURIComponent(d.customer_name||'')}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(d.customer_name||'—')}</a>${d.sales_category_name ? ` · <a href="/dispatch.html?sales_category_id=${d.sales_category_id||''}" style="color:var(--ink-soft);text-decoration:underline;font-size:11px;">${escapeHtml(d.sales_category_name)}</a>` : ''}</div>
         <div class="meta"><a href="/dispatch.html?dispatch_number=${encodeURIComponent(d.dispatch_number)}" style="color:var(--teal-dark);">Dispatch #${d.dispatch_number} &rarr;</a></div>
       </div>
-      <div>${d.cartons}c ${d.packs}p ${d.pieces}pc</div>
+      <div>${qtyLabel(d, product.packaging_rule)}</div>
     </div>`).join('');
   const adjustmentRows = (detail.adjustments||[]).map(a => `
     <div class="contrib-row">

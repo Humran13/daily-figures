@@ -317,7 +317,7 @@ def test_export_csv_uses_business_friendly_quantity_not_raw_pieces(client, setup
     client.post(f"/api/production/{created['id']}/finalize")
     res = client.get("/api/production/export.csv")
     assert res.status_code == 200
-    assert b"2c 3p 4pc" in res.data
+    assert b"2.34 Ctns" in res.data
     assert b"234" not in res.data
 
 

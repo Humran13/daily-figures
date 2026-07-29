@@ -375,6 +375,7 @@ def date_range_summary(date_from, date_to):
         results.append({
             "product_id": product.id,
             "product_name": product.name,
+            "packaging_rule": rule.to_dict() if rule else None,
             "opening": _split_or_none(opening_base, rule) if rule else None,
             "return_": _split_or_none(total_return, rule) if rule else None,
             "production": _split_or_none(total_production, rule) if rule else None,

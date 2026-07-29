@@ -59,7 +59,10 @@
   .row-item .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
   .row-item .num{ font-family:var(--mono); font-weight:700; font-size:13px; }
   .row-item .meta{ font-size:12px; color:var(--ink-soft); }
-  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; align-items:flex-end; }
+  .filters .field-labeled{ display:flex; flex-direction:column; gap:3px; flex:1; min-width:130px; }
+  .filters .field-labeled label{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin:0; }
+  .filters .field-labeled input{ width:100%; min-width:0; }
   .filters input, .filters select{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; }
   .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
   .quick-filters button.active{ background:var(--teal); color:white; }
@@ -97,10 +100,10 @@
       <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
     </div>
     <p class="eyebrow">Production Book</p>
-    <h1>Production <a href="/">&larr; Daily Figures</a></h1>
+    <h1>Production <a href="/" id="backToDailyFiguresLink">&larr; Daily Figures</a></h1>
     <div class="tabs">
       <div class="tab" data-tab="new">New Production</div>
-      <div class="tab active" data-tab="list">Production</div>
+      <div class="tab active" data-tab="list">Production History</div>
       <a href="/dashboard.html" class="tab" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
     </div>
     <!-- Operator/Viewer only: the full 5-item operational nav, identical to
@@ -124,9 +127,9 @@
         <button class="btn-ghost btn-small" data-quick="month">This month</button>
       </div>
       <div class="filters no-print">
-        <input id="fDate" type="date" title="Exact date">
-        <input id="fDateFrom" type="date" title="From date">
-        <input id="fDateTo" type="date" title="To date">
+        <div class="field-labeled"><label>Exact Date</label><input id="fDate" type="date"></div>
+        <div class="field-labeled"><label>From Date</label><input id="fDateFrom" type="date"></div>
+        <div class="field-labeled"><label>To Date</label><input id="fDateTo" type="date"></div>
         <select id="fShift">
           <option value="">Any shift</option>
           <option value="Day">Day</option>
@@ -537,7 +540,7 @@ async function openDetail(id){
   document.getElementById('detailLines').innerHTML = data.lines.map(l => `
     <div class="detail-line">
       <span>${escapeHtml(l.product_name)}</span>
-      <span style="font-family:var(--mono);">${l.cartons}c ${l.packs}p ${l.pieces}pc</span>
+      <span style="font-family:var(--mono);">${l.quantity_label}</span>
     </div>
   `).join('');
 
@@ -588,6 +591,10 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
   const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
   setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(data.user.role));
   document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
+  // Operator/Viewer already get a "Daily Figures" link from operatorNav
+  // above — avoid a duplicate. Admin-tier keeps the header link since
+  // they have no other Daily Figures link on this page.
+  document.getElementById('backToDailyFiguresLink').classList.toggle('hidden', isOperatorOrViewer);
   await applyFeatureFlags();
   document.getElementById('appShell').classList.remove('hidden');
   await loadProducts();

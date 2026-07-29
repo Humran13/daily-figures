@@ -76,9 +76,9 @@ def test_daily_figures_entry_card_shows_return_and_production_as_readouts_not_in
 
 def test_returns_and_production_pages_have_new_and_list_tabs():
     assert 'data-tab="new">New Return</div>' in RETURNS_HTML
-    assert 'data-tab="list">Returns</div>' in RETURNS_HTML
+    assert 'data-tab="list">Returns History</div>' in RETURNS_HTML
     assert 'data-tab="new">New Production</div>' in PRODUCTION_HTML
-    assert 'data-tab="list">Production</div>' in PRODUCTION_HTML
+    assert 'data-tab="list">Production History</div>' in PRODUCTION_HTML
 
 
 def test_returns_and_production_pages_have_print_letterhead():

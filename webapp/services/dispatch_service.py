@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from webapp.extensions import db
 from webapp.models.customer import Customer
-from webapp.models.dispatch import STATUS_DRAFT, STATUS_FINALIZED, STATUS_VOID, Dispatch, DispatchLine
+from webapp.models.dispatch import SHIFT_DAY, STATUS_DRAFT, STATUS_FINALIZED, STATUS_VOID, Dispatch, DispatchLine
 from webapp.models.product import Product
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
@@ -133,9 +133,16 @@ def _require_category(customer, category):
         )
 
 
-def create_dispatch(*, dispatch_number, date, shift, customer_id=None, new_customer_name=None,
+def create_dispatch(*, dispatch_number, date, customer_id=None, new_customer_name=None,
                      sales_category_id=None, invoice_number, notes,
                      lines, user, override_duplicate=False, override_reason=None):
+    """
+    Dispatch is a Day-only workflow — every new dispatch is always Day,
+    enforced here rather than merely defaulted, so no caller (UI or direct
+    API request) can create a Night dispatch going forward. Existing
+    historical Night dispatch records are untouched by this — this only
+    governs what gets created from here on.
+    """
     if not lines:
         raise DispatchError("A dispatch needs at least one product line")
 
@@ -164,7 +171,7 @@ def create_dispatch(*, dispatch_number, date, shift, customer_id=None, new_custo
     dispatch = Dispatch(
         dispatch_number=dispatch_number,
         date=date,
-        shift=shift,
+        shift=SHIFT_DAY,
         customer_id=customer.id,
         sales_category_id=category.id if category else None,
         sales_category_name_snapshot=category.name if category else None,
@@ -287,7 +294,10 @@ def duplicate_dispatch(source, new_dispatch_number, user, sales_category_id=None
     new_dispatch = Dispatch(
         dispatch_number=new_dispatch_number,
         date=now.strftime("%Y-%m-%d"),
-        shift=source.shift,
+        # Always Day for the new copy, even if the source is a legacy Night
+        # dispatch — this is a NEW dispatch being created now, and Dispatch
+        # is Day-only going forward regardless of what its source was.
+        shift=SHIFT_DAY,
         customer_id=source.customer_id,
         sales_category_id=category.id,
         sales_category_name_snapshot=category.name,
