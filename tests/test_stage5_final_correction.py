@@ -181,26 +181,12 @@ def test_quick_filters_preserved_on_every_history_tab():
         assert f'{marker}"week"' in HISTORY_HTML
 
 
-# ================= Daily Figures: read-only Opening Stock, no disabled inputs =================
-
-def test_unauthorized_opening_stock_is_plain_text_not_disabled_inputs():
-    assert "Read-only — set by an authorized manager" in INDEX_HTML
-    # The disabled-input branch (qtyInputsHtml(..., true)) must no longer
-    # be reachable for Opening Stock at all — it's always rendered
-    # non-disabled now, with the read-only case using a formatted readout
-    # instead.
-    assert "qtyInputsHtml('opening', rule, view.opening, !canEditOpening)" not in INDEX_HTML
-    assert "qtyInputsHtml('opening', rule, view.opening, false)" in INDEX_HTML
-
-
-def test_authorized_opening_stock_editing_still_uses_real_inputs():
-    assert "canEditOpening\n      ? `<div style=\"margin-bottom:14px;\">${qtyInputsHtml('opening', rule, view.opening, false)}</div>`" in INDEX_HTML \
-        or "qtyInputsHtml('opening', rule, view.opening, false)" in INDEX_HTML
-
-
-def test_quantity_row_layout_uses_wrap_safe_sub_hint_pattern():
-    assert "stock-readout-sub" in INDEX_HTML
-    assert "flex-wrap:wrap" in INDEX_HTML.split("<script>")[0]
+# ================= Daily Figures: earlier (restored) layout =================
+# A later correction restored the original, more compact entry-card layout
+# (single-row stock-readouts with inline hints, Opening Stock rendered via
+# the same disabled-qtyInputsHtml gate every other role-gated field uses)
+# in place of the "large read-only card" redesign these tests used to pin.
+# See tests/test_stage5_ui_restoration.py for the current layout's coverage.
 
 
 # ================= permissions/calculations unchanged =================

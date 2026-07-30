@@ -34,10 +34,9 @@
   .card{ background:white; border:1.5px solid var(--line); border-radius:16px; padding:22px 20px; margin-bottom:16px; }
   .product-name{ font-size:22px; font-weight:800; letter-spacing:-.01em; margin:0 0 2px; }
   .product-sub{ font-size:12px; color:var(--ink-soft); margin:0 0 18px; }
-  .stock-readout{ display:flex; flex-wrap:wrap; column-gap:10px; row-gap:4px; justify-content:space-between; align-items:center; background:var(--paper-dim); border-radius:10px; padding:12px 14px; margin-bottom:8px; }
-  .stock-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); flex:1 1 auto; min-width:0; }
-  .stock-readout .val{ font-family:var(--mono); font-size:20px; font-weight:700; color:var(--ink); white-space:nowrap; flex:0 0 auto; }
-  .stock-readout-sub{ font-size:11px; color:var(--ink-soft); margin:-2px 0 14px; padding:0 2px; }
+  .stock-readout{ display:flex; justify-content:space-between; align-items:center; background:var(--paper-dim); border-radius:10px; padding:12px 14px; margin-bottom:18px; }
+  .stock-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); }
+  .stock-readout .val{ font-family:var(--mono); font-size:20px; font-weight:700; color:var(--ink); }
   .num-field{ margin-bottom:14px; }
   .num-field label{ display:block; font-size:13px; font-weight:700; color:var(--ink); margin-bottom:6px; }
   .num-field .hint{ font-weight:400; color:var(--ink-soft); font-size:11px; }
@@ -379,52 +378,34 @@ async function renderEntryCard(){
   // allowed to set it.
   const isFullyReadOnly = isViewer || !(view.opening_editable && canEditOpening);
 
-  // Opening Stock: Manager/Super Admin (always) and a permitted Operator
-  // get the real editable Cartons/Packs/Pieces inputs — anyone else who
-  // can't edit it (an unpermitted Operator, or Viewer) sees a plain
-  // formatted read-only value instead of a disabled input control.
-  const openingBlock = !view.opening_editable ? '' : (
-    canEditOpening
-      ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, false)}</div>`
-      : `<div class="stock-readout" style="margin-top:8px;">
-           <span class="lbl">Opening Stock</span>
-           <span class="val qty-readout">${qtyLabel(view.opening, rule)}</span>
-         </div>
-         <div class="stock-readout-sub">Read-only — set by an authorized manager</div>`
-  );
-
   card.innerHTML = `
     <div class="card">
       <p class="product-sub">Product ${currentIdx+1} of ${products.length} · ${shift} shift, ${date}</p>
       <p class="product-name">${product.name}</p>
-      ${view.opening_editable ? '' : `
       <div class="stock-readout">
         <span class="lbl">Opening Stock</span>
         <span class="val qty-readout" id="openingReadout">${qtyLabel(view.opening, rule)}</span>
-      </div>`}
-      ${openingBlock}
+      </div>
+      ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
 
-      <div class="stock-readout">
-        <span class="lbl">Returns</span>
+      <div class="stock-readout" style="margin-top:14px;">
+        <span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Returns Book)</span></span>
         <span class="val qty-readout">${qtyLabel(view.return_, rule)}</span>
       </div>
-      <div class="stock-readout-sub">Auto — from the finalized Returns Book</div>
 
-      <div class="stock-readout">
-        <span class="lbl">Production</span>
+      <div class="stock-readout" style="margin-top:14px;">
+        <span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Production Book)</span></span>
         <span class="val qty-readout">${qtyLabel(view.production, rule)}</span>
       </div>
-      <div class="stock-readout-sub">Auto — from the finalized Production Book</div>
 
-      <div class="stock-readout">
-        <span class="lbl">Issued</span>
+      <div class="stock-readout" style="margin-top:14px;">
+        <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto — generated from finalized Dispatch records)</span></span>
         <span>
           <span class="val qty-readout">${qtyLabel(view.issued, rule)}</span>
           <button class="issued-link" id="issuedBreakdownBtn">view</button>
           ${canAdjust ? `<button class="adjust-link" id="adjustIssuedBtn">adjust</button>` : ''}
         </span>
       </div>
-      <div class="stock-readout-sub">Auto — generated from finalized Dispatch records</div>
 
       <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
       <p class="hint" style="margin:8px 0;">Closing Stock = Opening Stock + Production + Returns &minus; Issued</p>
