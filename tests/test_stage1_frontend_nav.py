@@ -35,10 +35,13 @@ def test_daily_figures_fields_gated_per_role_and_permission_flags():
     # Figures only ever displays them now (exactly like Issued already was),
     # so canEditReturns/canEditProduction no longer exist here; only Opening
     # Stock and the stock-adjustment action remain gated this way.
-    assert "const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);" in INDEX_HTML
+    # Stage 7 additionally gates the Operator branch on entry ownership
+    # (!isCompleted && !blockedByOther) — Manager/Super Admin (isElevated)
+    # remain unconditional.
+    assert "const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening && !isCompleted && !blockedByOther);" in INDEX_HTML
     assert "const canEditReturns" not in INDEX_HTML
     assert "const canEditProduction" not in INDEX_HTML
-    assert "const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments);" in INDEX_HTML
+    assert "const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments && !isCompleted && !blockedByOther);" in INDEX_HTML
 
 
 def test_viewer_forces_all_fields_disabled_regardless_of_flags():

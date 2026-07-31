@@ -50,8 +50,14 @@ def test_bare_opening_closing_headings_are_not_used_standalone():
     assert '<span class="lbl">Closing</span>' not in INDEX_HTML
 
 
-def test_closing_stock_formula_displayed_with_exact_required_wording():
-    assert "Closing Stock = Opening Stock + Production + Returns" in INDEX_HTML
+def test_closing_stock_formula_sentence_removed_but_calculation_unchanged():
+    # Stage 7 explicitly removed this explanatory sentence from the entry
+    # card (unnecessary helper text) — the calculation itself is unchanged
+    # (see updatePreview()'s closingBase formula, still Opening + Production
+    # + Returns - Issued, and webapp/services/stock_service.py's
+    # closing_base_qty(), never touched by this stage).
+    assert "Closing Stock = Opening Stock + Production + Returns" not in INDEX_HTML
+    assert "const closingBase = o + view.return_.base_qty + view.production.base_qty - view.issued.base_qty;" in INDEX_HTML
 
 
 def test_daily_figures_export_columns_use_stock_terminology():
@@ -68,8 +74,11 @@ def test_daily_figures_export_columns_use_stock_terminology():
 def test_daily_figures_entry_card_shows_return_and_production_as_readouts_not_inputs():
     assert "qtyInputsHtml('ret'" not in INDEX_HTML
     assert "qtyInputsHtml('prod'" not in INDEX_HTML
-    assert "from the finalized Returns Book" in INDEX_HTML
-    assert "from the finalized Production Book" in INDEX_HTML
+    # Stage 7 shortened the long "(auto — from the finalized X Book)"
+    # sentences to a plain "(auto)" tag — Returns/Production are still
+    # rendered as read-only <span> readouts, never <input> fields.
+    assert '<span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>' in INDEX_HTML
+    assert '<span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>' in INDEX_HTML
 
 
 # ---------- new pages: structural conventions reused from dispatch.html ----------

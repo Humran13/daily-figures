@@ -45,11 +45,15 @@ def test_entry_card_shows_date_shift_progress_and_product_name():
 
 def test_stock_readout_is_single_row_with_inline_hint_not_a_sub_line():
     """The earlier, more compact layout keeps each field's hint inline
-    inside the label span — no separate stock-readout-sub row beneath it."""
+    inside the label span — no separate stock-readout-sub row beneath it.
+    Stage 7 shortened the long "(auto — from the finalized X Book)"
+    sentences down to a plain "(auto)" tag (unnecessary helper text removed,
+    the labels themselves are unchanged) — see
+    tests/test_stage7_daily_entry_ownership.py."""
     assert "stock-readout-sub" not in INDEX_HTML
-    assert '<span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Returns Book)</span></span>' in INDEX_HTML
-    assert '<span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Production Book)</span></span>' in INDEX_HTML
-    assert '<span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto — generated from finalized Dispatch records)</span></span>' in INDEX_HTML
+    assert '<span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>' in INDEX_HTML
+    assert '<span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>' in INDEX_HTML
+    assert '<span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>' in INDEX_HTML
 
 
 def test_stock_readout_css_is_the_earlier_compact_single_line_rule():
@@ -71,8 +75,10 @@ def test_closing_stock_is_the_dark_panel():
     assert '<div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>' in INDEX_HTML
 
 
-def test_formula_hint_still_present():
-    assert "Closing Stock = Opening Stock + Production + Returns &minus; Issued" in INDEX_HTML
+def test_formula_hint_removed_stage7():
+    # Stage 7 explicitly removed this explanatory sentence — the formula
+    # itself (updatePreview()'s closingBase calculation) is unchanged.
+    assert "Closing Stock = Opening Stock + Production + Returns &minus; Issued" not in INDEX_HTML
 
 
 # ================= Closing Stock: book notation, never raw pieces, never em-dash =================
@@ -184,7 +190,7 @@ def test_viewer_cannot_save_opening_stock(client, setup, login_as):
 # ================= Save & Next / Skip only where authorized =================
 
 def test_save_and_next_and_skip_conditioned_on_is_fully_read_only():
-    assert "${isFullyReadOnly ? '' : `<button class=\"btn-skip\" id=\"skipBtn\">Skip — no activity for this product</button>`}" in INDEX_HTML
+    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
     nav_row = re.search(r'<div class="nav-row">\s*\$\{isFullyReadOnly.*?</div>', INDEX_HTML, re.DOTALL).group(0)
     assert 'id="saveNextBtn">Save &amp; Next<' in nav_row
     assert 'id="nextProductBtn">Next Product<' in nav_row
@@ -198,7 +204,8 @@ def test_next_and_previous_product_handlers_unchanged():
     next_body = re.search(
         r"if\(nextProductBtn\) nextProductBtn\.addEventListener\('click', \(\)=>\{([^}]*)\}\);", INDEX_HTML,
     ).group(1)
-    assert next_body.strip() == "currentIdx++; renderEntryCard();"
+    # Stage 7 added a fire-and-forget lock release before advancing.
+    assert next_body.strip() == "releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard();"
 
 
 def test_date_and_shift_read_fresh_on_every_render():

@@ -257,6 +257,20 @@
     return res.json().catch(function () { return null; });
   }
 
+  // Shown once per superseded session (a second device/login bumping this
+  // user's session_version — see webapp/auth.py's _session_diagnosis()) —
+  // guarded by sessionStorage so navigating through several pages after
+  // being signed out doesn't re-alert on every single one.
+  var SUPERSEDED_ALERT_KEY = 'appSessionSupersededShown';
+  function warnSessionSuperseded(message) {
+    try {
+      if (sessionStorage.getItem(SUPERSEDED_ALERT_KEY)) return;
+      sessionStorage.setItem(SUPERSEDED_ALERT_KEY, '1');
+    } catch (e) { /* private browsing / storage disabled — still show it once this load */ }
+    window.alert(message || 'Your account was signed in on another device.');
+    if (location.pathname !== '/' && location.pathname !== '/index.html') location.href = '/';
+  }
+
   var AppShell = {
     resolveLanding: resolveLanding,
     currentPageKey: currentPageKey,
@@ -272,7 +286,8 @@
     var session = await apiGet('/api/session');
     if (!session || !session.authed || !session.user) {
       AppShell.user = null;
-      return; // login screen or an expired session — nothing to render
+      if (session && session.session_superseded) warnSessionSuperseded(session.message);
+      return; // login screen, an expired session, or a superseded one — nothing to render
     }
     AppShell.user = session.user;
 

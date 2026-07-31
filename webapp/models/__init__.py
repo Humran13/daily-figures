@@ -11,6 +11,7 @@ from webapp.models.company_settings import CompanySettings
 from webapp.models.feature_flag import FeatureFlag
 from webapp.models.return_record import ReturnRecord, ReturnLine
 from webapp.models.production_record import ProductionRecord, ProductionLine
+from webapp.models.daily_entry_status import DailyEntryStatus
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -21,4 +22,5 @@ __all__ = [
     "FeatureFlag",
     "ReturnRecord", "ReturnLine",
     "ProductionRecord", "ProductionLine",
+    "DailyEntryStatus",
 ]

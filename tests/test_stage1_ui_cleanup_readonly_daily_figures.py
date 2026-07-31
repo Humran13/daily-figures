@@ -62,14 +62,17 @@ def test_save_and_skip_buttons_not_rendered_when_fully_read_only():
     # read-only nav-row assertions. This just pins that saveNextBtn/skipBtn
     # are still conditioned on isFullyReadOnly, not unconditional.
     assert '<button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>' in INDEX_HTML
-    assert "${isFullyReadOnly ? '' : `<button class=\"btn-skip\" id=\"skipBtn\">Skip — no activity for this product</button>`}" in INDEX_HTML
+    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
 
 
-def test_read_only_message_matches_required_text():
-    # Updated in the Stage 5 final correction: "Return" -> "Returns", and
-    # Return/Production now explicitly point at their own Books rather than
-    # a vague "managed automatically" message.
-    assert "Read-only — Returns and Production are recorded in their own Books; Daily Figures only displays the result." in INDEX_HTML
+def test_read_only_explanatory_sentence_removed():
+    # Stage 7 explicitly removed this long repeated helper sentence (and
+    # the "Closing Stock = ..." formula sentence) from the entry card —
+    # the labels/values/permission behavior underneath are unchanged, only
+    # this explanatory prose is gone. See
+    # tests/test_stage7_daily_entry_ownership.py for the replacement
+    # status banner ("Already inputted by...", "No Activity Today...").
+    assert "Read-only — Returns and Production are recorded in their own Books; Daily Figures only displays the result." not in INDEX_HTML
 
 
 def test_no_save_request_possible_when_buttons_absent():
@@ -118,8 +121,11 @@ def test_adjust_button_remains_independently_gated_not_tied_to_fully_read_only()
 
 def test_per_field_permission_gating_still_intact():
     # Only Opening Stock is still gated this way as of Stage 5 — Return and
-    # Production no longer have edit permissions to gate at all.
-    assert "const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);" in INDEX_HTML
+    # Production no longer have edit permissions to gate at all. Stage 7
+    # additionally requires an Operator's own edit permission to also
+    # depend on entry ownership (!isCompleted && !blockedByOther) — Manager/
+    # Super Admin (isElevated) remain unconditional, unchanged.
+    assert "const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening && !isCompleted && !blockedByOther);" in INDEX_HTML
     assert "canEditReturns" not in INDEX_HTML
     assert "canEditProduction" not in INDEX_HTML
 

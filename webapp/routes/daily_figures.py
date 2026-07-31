@@ -7,6 +7,7 @@ from webapp.models.dispatch import SHIFTS
 from webapp.models.product import Product
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import branding_service
+from webapp.services import daily_entry_status_service as entry_status_svc
 from webapp.services import operator_permissions_service as permissions_svc
 from webapp.services import stock_service as svc
 from webapp.services.audit_service import record_audit
@@ -96,6 +97,16 @@ def upsert():
 
     before = svc.daily_figure_view(product, d["date"], d["shift"])
 
+    # Ownership/completion (Stage 7 section 1): an Operator who already sees
+    # this entry as locked by someone else, or already completed, must not
+    # even reach the permission/write logic below — Manager/Super Admin
+    # correction authority (section 3) bypasses this entirely, same as it
+    # already bypasses the Opening Stock permission flag just below.
+    if user.role == ROLE_OPERATOR:
+        conflict = entry_status_svc.check_operator_conflict(d["date"], d["shift"], product.id, user)
+        if conflict:
+            return _error(conflict, status=409)
+
     # Manager/Super Admin keep their existing unconditional write access to
     # Opening Stock. Operator is gated by the role-wide permission flag.
     # Issued/Returns/Production are never writable here at all (nothing in
@@ -115,6 +126,20 @@ def upsert():
     except StockError as e:
         db.session.rollback()
         return _error(e)
+
+    # The actual concurrency-safe gate (a compare-and-swap UPDATE, not just
+    # the pre-check above) — if another Operator's completion committed in
+    # the narrow window between that pre-check and here, this raises and
+    # the rollback below discards the DailyFigure write too, so no
+    # duplicate/conflicting row and no double-counted total ever lands.
+    try:
+        if user.role == ROLE_OPERATOR:
+            entry_status_svc.mark_completed_with_data(d["date"], d["shift"], product.id, user)
+        else:
+            entry_status_svc.mark_completed_with_data_if_not_already(d["date"], d["shift"], product.id, user)
+    except entry_status_svc.DailyEntryStatusConflict as e:
+        db.session.rollback()
+        return _error(e, status=409)
 
     after = svc.daily_figure_view(product, d["date"], d["shift"])
     record_audit(user, "upsert", "daily_figure", entity_id=f"{d['date']}|{d['shift']}|{product.name}",

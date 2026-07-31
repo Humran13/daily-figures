@@ -81,6 +81,7 @@
       <div class="tab" data-panel="legacy">Legacy Data</div>
       <div class="tab" data-panel="company">Company Settings</div>
       <div class="tab" data-panel="flags">Feature Flags</div>
+      <div class="tab" data-panel="reset">Reset Daily Values</div>
     </div>
 
     <!-- USERS -->
@@ -124,6 +125,23 @@
         <div class="row">
           <button class="btn-primary" id="resetPasswordSubmitBtn">Reset password</button>
           <button class="btn-ghost" id="resetPasswordCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reset Daily Values confirmation — always shows the exact scope
+         (date/shift/products) already fetched by the preview, and always
+         requires a reason before the reset control becomes reachable. -->
+    <div class="modal-backdrop hidden" id="resetConfirmModal">
+      <div class="modal-sheet">
+        <h3>Confirm reset</h3>
+        <p class="small" id="resetConfirmScope"></p>
+        <p class="small"><strong>Dispatch, Returns, and Production totals are calculated from their source books and will not be deleted by this reset.</strong></p>
+        <div><label>Reason (required)</label><textarea id="resetConfirmReason" rows="2" placeholder="Why is this reset needed?"></textarea></div>
+        <div class="msg" id="resetConfirmMsg"></div>
+        <div class="row">
+          <button class="btn-danger" id="resetConfirmSubmitBtn">Reset daily values</button>
+          <button class="btn-ghost" id="resetConfirmCancelBtn">Cancel</button>
         </div>
       </div>
     </div>
@@ -314,6 +332,31 @@
         <table><thead><tr><th>Module</th><th>Status</th><th></th></tr></thead>
         <tbody id="flagsTable2"></tbody></table>
         <div class="msg" id="flagsMsg"></div>
+      </div>
+    </div>
+
+    <!-- RESET DAILY VALUES -->
+    <div class="panel" id="panel-reset">
+      <div class="card">
+        <h2>Reset daily values</h2>
+        <p class="small">Clears manually-entered Opening Stock, Notes, and in-progress/completed review status for one Date + Shift, and either one product or every product. Dispatch, Returns, and Production totals are calculated from their source books and will not be deleted by this reset — correct, void, or reopen the source record instead if those figures are wrong.</p>
+        <div class="row">
+          <div><label>Date</label><input type="date" id="resetDate"></div>
+          <div><label>Shift</label>
+            <select id="resetShift">
+              <option value="Day">Day</option>
+              <option value="Night">Night</option>
+            </select>
+          </div>
+          <div><label>Product</label><select id="resetProduct"><option value="">All products for this Date + Shift</option></select></div>
+        </div>
+        <button class="btn-primary" id="resetPreviewBtn">Preview affected products</button>
+        <div class="msg" id="resetPreviewMsg"></div>
+        <div id="resetPreviewResults" class="hidden">
+          <table><thead><tr><th>Product</th><th>Opening Stock entered</th><th>Notes</th><th>Review status</th></tr></thead>
+          <tbody id="resetPreviewTable"></tbody></table>
+          <button class="btn-danger" id="resetOpenConfirmBtn" style="margin-top:10px;">Reset these values&hellip;</button>
+        </div>
       </div>
     </div>
   </div>
@@ -956,6 +999,82 @@ async function loadFeatureFlagsAdmin(){
   });
 }
 
+// ---------- reset daily values ----------
+let resetPreviewCache = null;
+
+function populateResetProductSelect(){
+  const select = document.getElementById('resetProduct');
+  select.innerHTML = '<option value="">All products for this Date + Shift</option>' +
+    productsCache.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+}
+
+document.getElementById('resetPreviewBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('resetPreviewMsg');
+  const date = document.getElementById('resetDate').value;
+  const shift = document.getElementById('resetShift').value;
+  const productId = document.getElementById('resetProduct').value;
+  if(!date){ msg.textContent = 'Choose a date first.'; msg.className = 'msg err'; return; }
+
+  const {status, data} = await api('/api/daily-reset/preview', {
+    method:'POST', body: JSON.stringify({date, shift, product_id: productId || 'all'}),
+  });
+  if(status !== 200){
+    msg.textContent = data.error || 'Could not load preview.'; msg.className = 'msg err';
+    document.getElementById('resetPreviewResults').classList.add('hidden');
+    return;
+  }
+  msg.textContent = '';
+  resetPreviewCache = data;
+  document.getElementById('resetPreviewTable').innerHTML = data.products.map(p => `
+    <tr>
+      <td>${escapeHtml(p.product_name)}</td>
+      <td>${p.has_manual_opening_entry ? `${p.opening_qty.cartons}c ${p.opening_qty.packs}p ${p.opening_qty.pieces}pc` : '—'}</td>
+      <td>${p.has_notes ? 'Yes' : '—'}</td>
+      <td>${escapeHtml(p.review_status.replace('_',' '))}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="small">No products match this scope.</td></tr>';
+  document.getElementById('resetPreviewResults').classList.remove('hidden');
+});
+
+document.getElementById('resetOpenConfirmBtn').addEventListener('click', ()=>{
+  if(!resetPreviewCache) return;
+  const productId = document.getElementById('resetProduct').value;
+  const scopeLabel = productId
+    ? `${resetPreviewCache.products[0] ? resetPreviewCache.products[0].product_name : 'this product'}`
+    : `all ${resetPreviewCache.products.length} product(s)`;
+  document.getElementById('resetConfirmScope').textContent =
+    `This will reset ${scopeLabel} for ${resetPreviewCache.date} — ${resetPreviewCache.shift}.`;
+  document.getElementById('resetConfirmReason').value = '';
+  document.getElementById('resetConfirmMsg').textContent = '';
+  document.getElementById('resetConfirmModal').classList.remove('hidden');
+});
+document.getElementById('resetConfirmCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('resetConfirmModal').classList.add('hidden');
+});
+document.getElementById('resetConfirmModal').addEventListener('click', (e)=>{
+  if(e.target.id === 'resetConfirmModal') document.getElementById('resetConfirmModal').classList.add('hidden');
+});
+document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('resetConfirmMsg');
+  const reason = document.getElementById('resetConfirmReason').value.trim();
+  if(!reason){ msg.textContent = 'A reason is required.'; msg.className = 'msg err'; return; }
+  const date = document.getElementById('resetDate').value;
+  const shift = document.getElementById('resetShift').value;
+  const productId = document.getElementById('resetProduct').value;
+
+  const {status, data} = await api('/api/daily-reset', {
+    method:'POST', body: JSON.stringify({date, shift, product_id: productId || 'all', reason}),
+  });
+  if(status !== 200){
+    msg.textContent = data.error || 'Could not reset daily values.'; msg.className = 'msg err';
+    return;
+  }
+  document.getElementById('resetConfirmModal').classList.add('hidden');
+  document.getElementById('resetPreviewResults').classList.add('hidden');
+  document.getElementById('resetPreviewMsg').textContent =
+    `Daily values reset for ${data.date} — ${data.shift} — ${data.products.join(', ')}.`;
+  document.getElementById('resetPreviewMsg').className = 'msg ok';
+});
+
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
@@ -970,6 +1089,7 @@ async function loadFeatureFlagsAdmin(){
     loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue(),
     loadCompanySettings(), loadFeatureFlagsAdmin(),
   ]);
+  populateResetProductSelect();
 })();
 </script>
 <script src="/pwa.js" defer></script>

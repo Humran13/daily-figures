@@ -58,7 +58,11 @@ def test_next_product_click_handler_is_pure_navigation():
     )
     assert match, "nextProductBtn click handler not found or not null-guarded"
     body = match.group(1)
-    assert body.strip() == "currentIdx++; renderEntryCard();"
+    # Stage 7 added a fire-and-forget lock release (releaseLockIfOwned) —
+    # still no direct write API call from this handler itself; the release
+    # is a no-op for anyone who never held a lock (Manager/Super Admin/
+    # Viewer, or an Operator on a read-only row) and best-effort otherwise.
+    assert body.strip() == "releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard();"
     assert "api(" not in body and "apiPost(" not in body and "fetch(" not in body
 
 
@@ -117,7 +121,10 @@ def test_issued_drilldown_button_not_conditioned_on_read_only():
 # 6. Skip is hidden in read-only mode
 
 def test_skip_button_hidden_when_fully_read_only():
-    assert "${isFullyReadOnly ? '' : `<button class=\"btn-skip\" id=\"skipBtn\">Skip — no activity for this product</button>`}" in INDEX_HTML
+    # Stage 7 renamed Skip's label to disambiguate it from the new explicit
+    # "No Activity Today" completion (see tests/test_stage7_daily_entry_ownership.py)
+    # — Skip means "come back later, not reviewed", never "reviewed as zero".
+    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
 
 
 def test_read_only_branch_of_nav_row_contains_no_skip_reference():
@@ -132,7 +139,8 @@ def test_editable_workflow_handlers_unchanged():
     # see tests/test_stage1_correction_previous_product_symmetry.py. Save &
     # Next and Skip are untouched by that change.
     assert "if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));" in INDEX_HTML
-    assert "if(skipBtn) skipBtn.addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });" in INDEX_HTML
+    # Stage 7 added a fire-and-forget lock release before advancing.
+    assert "if(skipBtn) skipBtn.addEventListener('click', ()=>{ releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard(); });" in INDEX_HTML
 
 
 # 8. isFullyReadOnly is false only when this is a first-ever entry the

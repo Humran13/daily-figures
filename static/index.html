@@ -90,6 +90,11 @@
   .issued-link{ background:none; color:var(--teal-dark); text-decoration:underline; font-size:12px; font-weight:700; padding:0; }
   .adjust-link{ background:none; color:var(--ink-soft); text-decoration:underline; font-size:11px; padding:0; margin-left:8px; }
   .not-configured{ text-align:center; padding:20px; color:var(--ink-soft); font-size:13px; }
+  .status-banner{ border-radius:10px; padding:10px 12px; font-size:12px; font-weight:600; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .status-banner.info{ background:#EAF3EF; color:var(--teal-dark); }
+  .status-banner.warn{ background:#FCEfd7; color:#8a5a12; }
+  .status-banner button{ background:none; text-decoration:underline; font-size:11px; font-weight:700; color:inherit; padding:0; }
+  .btn-no-activity{ background:var(--paper-dim); color:var(--ink-soft); padding:12px; border-radius:10px; font-size:13px; font-weight:700; width:100%; margin-top:8px; }
   .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.6); z-index:60; display:flex; align-items:flex-end; justify-content:center; }
   .modal-sheet{ background:var(--paper); width:100%; max-width:520px; max-height:82vh; overflow-y:auto; border-radius:18px 18px 0 0; padding:20px; }
   .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
@@ -238,6 +243,10 @@ async function apiPost(path, body){
   const res = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   return {status: res.status, data: await res.json()};
 }
+async function apiDelete(path, body){
+  const res = await fetch(path, {method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  return {status: res.status, data: await res.json().catch(()=>({}))};
+}
 
 async function loadProducts(){
   const data = await apiGet('/api/admin/products');
@@ -357,11 +366,23 @@ async function renderEntryCard(){
   const role = currentUser && currentUser.role;
   const isElevated = role === 'super_admin' || role === 'manager';
   const isViewer = role === 'viewer';
-  // Manager/Super Admin: always editable (unchanged). Operator: gated by
-  // the role-wide permission flag. Viewer: never editable, regardless of
-  // the flag — read-only across Daily Figures always wins.
-  const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening);
-  const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments);
+
+  // Ownership/completion (Stage 7 section 1): an Operator asking for this
+  // entry actually acquires the lock (or learns it's contested/completed)
+  // in the same request; every other role just reads the current status
+  // without claiming anything, since Manager/Super Admin correction
+  // authority (section 3) never needs to own a lock, and Viewer never
+  // writes at all.
+  const entryStatus = await fetchEntryStatus(product, date, shift);
+  const isCompleted = entryStatus.status === 'completed';
+  const blockedByOther = !!entryStatus.locked_by && (!currentUser || entryStatus.locked_by !== currentUser.username);
+
+  // Manager/Super Admin: always editable, never blocked by another user's
+  // lock or a prior completion (unchanged). Operator: gated by the
+  // role-wide permission flag AND by ownership — someone else's live lock
+  // or an existing completion takes precedence. Viewer: never editable.
+  const canEditOpening = isElevated || (role === 'operator' && operatorPermissions.can_edit_opening && !isCompleted && !blockedByOther);
+  const canAdjust = isElevated || (role === 'operator' && operatorPermissions.can_create_adjustments && !isCompleted && !blockedByOther);
   // Opening Stock (only on a product's first-ever period) is the only
   // quantity Daily Figures still accepts directly — Return and Production
   // are entered in the Returns Book / Production Book and shown here
@@ -369,11 +390,16 @@ async function renderEntryCard(){
   // to save unless this is that first-ever entry and the current role is
   // allowed to set it.
   const isFullyReadOnly = isViewer || !(view.opening_editable && canEditOpening);
+  // No Activity Today is available to anyone who could otherwise act on
+  // this entry, whether or not Opening Stock itself happens to be
+  // editable right now — see Stage 7 section 6.
+  const canMarkNoActivity = !isViewer && !isCompleted && !blockedByOther;
 
   card.innerHTML = `
     <div class="card">
       <p class="product-sub">Product ${currentIdx+1} of ${products.length} · ${shift} shift, ${date}</p>
       <p class="product-name">${product.name}</p>
+      ${renderStatusBanner(entryStatus, isCompleted, blockedByOther, isElevated)}
       <div class="stock-readout">
         <span class="lbl">Opening Stock</span>
         <span class="val qty-readout" id="openingReadout">${qtyLabel(view.opening, rule)}</span>
@@ -381,17 +407,17 @@ async function renderEntryCard(){
       ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
 
       <div class="stock-readout" style="margin-top:14px;">
-        <span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Returns Book)</span></span>
+        <span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
         <span class="val qty-readout">${qtyLabel(view.return_, rule)}</span>
       </div>
 
       <div class="stock-readout" style="margin-top:14px;">
-        <span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto — from the finalized Production Book)</span></span>
+        <span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
         <span class="val qty-readout">${qtyLabel(view.production, rule)}</span>
       </div>
 
       <div class="stock-readout" style="margin-top:14px;">
-        <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto — generated from finalized Dispatch records)</span></span>
+        <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
         <span>
           <span class="val qty-readout">${qtyLabel(view.issued, rule)}</span>
           <button class="issued-link" id="issuedBreakdownBtn">view</button>
@@ -400,8 +426,6 @@ async function renderEntryCard(){
       </div>
 
       <div class="closing-readout"><span class="lbl">Closing Stock</span><span class="val" id="closingPreview">—</span></div>
-      <p class="hint" style="margin:8px 0;">Closing Stock = Opening Stock + Production + Returns &minus; Issued</p>
-      ${isFullyReadOnly ? `<p class="hint" style="margin:8px 0;">Read-only — Returns and Production are recorded in their own Books; Daily Figures only displays the result.</p>` : ''}
       <div class="nav-row">
         ${isFullyReadOnly ? `
           ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
@@ -411,7 +435,8 @@ async function renderEntryCard(){
           <button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>
         `}
       </div>
-      ${isFullyReadOnly ? '' : `<button class="btn-skip" id="skipBtn">Skip — no activity for this product</button>`}
+      ${canMarkNoActivity ? `<button class="btn-no-activity" id="noActivityBtn">No Activity Today</button>` : ''}
+      ${isFullyReadOnly ? '' : `<button class="btn-skip" id="skipBtn">Skip for now — leave this product unreviewed and come back later</button>`}
     </div>
   `;
 
@@ -439,7 +464,13 @@ async function renderEntryCard(){
   const saveNextBtn = document.getElementById('saveNextBtn');
   if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));
   const skipBtn = document.getElementById('skipBtn');
-  if(skipBtn) skipBtn.addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+  if(skipBtn) skipBtn.addEventListener('click', ()=>{ releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard(); });
+  const noActivityBtn = document.getElementById('noActivityBtn');
+  if(noActivityBtn) noActivityBtn.addEventListener('click', ()=>markNoActivity(product, date, shift));
+  const takeoverBtn = document.getElementById('takeoverLockBtn');
+  if(takeoverBtn) takeoverBtn.addEventListener('click', ()=>takeoverLock(product, date, shift));
+  const reopenBtn = document.getElementById('reopenEntryBtn');
+  if(reopenBtn) reopenBtn.addEventListener('click', ()=>reopenEntry(product, date, shift));
 
   // Previous Product — same id/handler in both the read-only and editable
   // branches (only one is ever in the DOM at a time). Pure product-index
@@ -451,12 +482,77 @@ async function renderEntryCard(){
     if(!isFullyReadOnly && hasUnsavedChanges(rule, view)){
       if(!confirm('You have unsaved changes for this product. Leave without saving?')) return;
     }
+    releaseLockIfOwned(product, date, shift);
     currentIdx--; renderEntryCard();
   });
   // Next Product — read-only review navigation only; hidden on the last
   // product (see the nav-row markup above) rather than looping past it.
   const nextProductBtn = document.getElementById('nextProductBtn');
-  if(nextProductBtn) nextProductBtn.addEventListener('click', ()=>{ currentIdx++; renderEntryCard(); });
+  if(nextProductBtn) nextProductBtn.addEventListener('click', ()=>{ releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard(); });
+}
+
+// ---------- daily entry ownership/completion (Stage 7) ----------
+// An Operator's request both reads AND claims the lock in one call — every
+// other role only ever reads the current status (Manager/Super Admin
+// correction authority bypasses ownership locking server-side regardless;
+// Viewer never writes). See webapp/services/daily_entry_status_service.py.
+async function fetchEntryStatus(product, date, shift){
+  if(currentUser && currentUser.role === 'operator'){
+    const {status, data} = await apiPost('/api/daily-entry-status/lock', {product_id: product.id, date, shift});
+    if(status === 409){
+      const fresh = await apiGet(`/api/daily-entry-status?date=${date}&shift=${shift}&product_id=${product.id}`);
+      return fresh;
+    }
+    return data;
+  }
+  return await apiGet(`/api/daily-entry-status?date=${date}&shift=${shift}&product_id=${product.id}`);
+}
+function releaseLockIfOwned(product, date, shift){
+  if(!currentUser || currentUser.role !== 'operator') return;
+  // Fire-and-forget — leaving the product early shouldn't block on a
+  // network round trip, and a lock nobody renews naturally expires anyway.
+  apiDelete('/api/daily-entry-status/lock', {product_id: product.id, date, shift}).catch(()=>{});
+}
+function formatEntryTime(iso){
+  if(!iso) return '';
+  return new Date(iso + 'Z').toLocaleString(undefined, {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+}
+function renderStatusBanner(entryStatus, isCompleted, blockedByOther, isElevated){
+  if(isCompleted){
+    const who = entryStatus.completed_by || 'another user';
+    const when = formatEntryTime(entryStatus.completed_at);
+    const message = entryStatus.completion_type === 'no_activity'
+      ? `No Activity Today recorded by ${escapeHtml(who)}${when ? ' at ' + when : ''}.`
+      : `Already inputted by ${escapeHtml(who)}${when ? ' at ' + when : ''}.`;
+    return `<div class="status-banner info"><span>${message}</span>${isElevated ? `<button id="reopenEntryBtn">Reopen</button>` : ''}</div>`;
+  }
+  if(blockedByOther){
+    const who = escapeHtml(entryStatus.locked_by || 'another user');
+    return `<div class="status-banner warn"><span>This product is currently being entered by ${who}.</span>${isElevated ? `<button id="takeoverLockBtn">Take over</button>` : ''}</div>`;
+  }
+  return '';
+}
+async function markNoActivity(product, date, shift){
+  const {status, data} = await apiPost('/api/daily-entry-status/no-activity', {product_id: product.id, date, shift});
+  if(status !== 200){ toast(data.error || 'Could not complete — check the status'); renderEntryCard(); return; }
+  toast('No Activity Today recorded.');
+  currentIdx++;
+  renderEntryCard();
+}
+async function takeoverLock(product, date, shift){
+  if(!confirm('Take over this entry from whoever currently holds it? This will be recorded in the audit log.')) return;
+  const {status, data} = await apiPost('/api/daily-entry-status/takeover', {product_id: product.id, date, shift});
+  if(status !== 200){ toast(data.error || 'Could not take over this entry'); return; }
+  toast('Lock taken over.');
+  renderEntryCard();
+}
+async function reopenEntry(product, date, shift){
+  const reason = prompt('Reason for reopening this completed entry (required, will be audited):');
+  if(!reason){ toast('A reason is required'); return; }
+  const {status, data} = await apiPost('/api/daily-entry-status/reopen', {product_id: product.id, date, shift, reason});
+  if(status !== 200){ toast(data.error || 'Could not reopen this entry'); return; }
+  toast('This daily entry was reopened.');
+  renderEntryCard();
 }
 
 function hasUnsavedChanges(rule, view){
@@ -480,6 +576,7 @@ async function saveCurrentAndAdvance(product, date, shift, rule, view){
   });
   if(status !== 200){
     toast(data.error || 'Could not save — check the values');
+    if(status === 409) renderEntryCard(); // reflect who actually holds/completed it now
     return;
   }
   currentIdx++;

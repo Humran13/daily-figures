@@ -40,7 +40,8 @@ def test_next_product_increments_current_index():
     body = re.search(
         r"if\(nextProductBtn\) nextProductBtn\.addEventListener\('click', \(\)=>\{([^}]*)\}\);", INDEX_HTML
     ).group(1)
-    assert body.strip() == "currentIdx++; renderEntryCard();"
+    # Stage 7 added a fire-and-forget lock release before advancing.
+    assert body.strip() == "releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard();"
 
 
 def test_previous_product_decrements_current_index():
@@ -100,7 +101,9 @@ def test_issued_drilldown_still_unconditional():
 
 
 def test_skip_still_hidden_in_read_only_mode():
-    assert "${isFullyReadOnly ? '' : `<button class=\"btn-skip\" id=\"skipBtn\">Skip — no activity for this product</button>`}" in INDEX_HTML
+    # Stage 7 renamed Skip's label — see
+    # tests/test_stage1_correction_next_product_review.py's equivalent test.
+    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
 
 
 # ---------- editable workflow: Previous Product added, no auto-save, warns if dirty ----------
