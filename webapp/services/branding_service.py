@@ -81,7 +81,7 @@ def manifest_icons(settings=None):
     """
     settings = settings or get_settings()
     if settings.icon_192_path and settings.icon_512_path and settings.icon_512_maskable_path:
-        v = f"{settings.updated_at.timestamp():.0f}" if settings.updated_at else "0"
+        v = settings.version_token()
         return [
             {"src": f"/api/branding/icon-192.png?v={v}", "sizes": "192x192", "type": "image/png", "purpose": "any"},
             {"src": f"/api/branding/icon-512.png?v={v}", "sizes": "512x512", "type": "image/png", "purpose": "any"},

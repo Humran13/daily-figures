@@ -167,7 +167,11 @@ def test_service_worker_never_touches_cross_origin_requests():
 # ---------- install UI: hidden by default ----------
 
 def test_install_banner_and_persistent_button_hidden_by_default():
-    assert "banner.className = 'pwa-install-banner hidden';" in PWA_JS
+    # The final Stage 6 correction made the banner's className conditional
+    # on compact-vs-full page presentation (see
+    # tests/test_stage6_correction_logo_and_install.py) — both variants
+    # still start hidden either way.
+    assert "banner.className = compact ? 'pwa-install-banner pwa-install-compact hidden' : 'pwa-install-banner hidden';" in PWA_JS
     assert "persistentBtn.className = 'pwa-install-persistent hidden';" in PWA_JS
 
 

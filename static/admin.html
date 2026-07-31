@@ -273,7 +273,7 @@
           <div style="flex:0;"><button class="btn-danger" id="removeLogoBtn">Remove logo</button></div>
         </div>
         <div class="msg" id="logoMsg"></div>
-        <p class="small" style="margin-top:10px;">Uploading or replacing the logo also updates the installed app's home-screen icon (generated automatically, center-fit — the original file you upload is never cropped or overwritten). Browser and operating-system icon caches may still delay when the new icon actually appears, and some devices that already have the app installed may need to remove and reinstall it before the new icon shows up — this is a platform limitation, not something this app controls.</p>
+        <p class="small" style="margin-top:10px;">The company logo is also used as the installed app icon. Browsers and operating systems may cache an older icon. An already-installed app may need to be removed and installed again before the new icon appears.</p>
       </div>
       <div class="card">
         <h2>Company details</h2>
@@ -884,7 +884,8 @@ document.getElementById('uploadLogoBtn').addEventListener('click', async ()=>{
   const res = await fetch('/api/admin/company-settings/logo', {method:'POST', body: form});
   const data = await res.json().catch(()=>({}));
   if(res.status===200){
-    msg.textContent = 'Logo saved.'; msg.className = 'msg ok';
+    msg.textContent = 'Company branding updated. New installations will use the new icon. Existing installations may require reinstalling.';
+    msg.className = 'msg ok';
     fileInput.value = '';
     loadCompanySettings();
   } else {

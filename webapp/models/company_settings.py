@@ -47,11 +47,22 @@ class CompanySettings(db.Model):
     updated_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     updated_at = db.Column(db.DateTime(), nullable=False, default=_utcnow, onupdate=_utcnow)
 
+    def version_token(self):
+        """Cache-busting token for logo/icon URLs, derived from updated_at
+        at microsecond resolution (not whole seconds) — two uploads made in
+        quick succession (as happens routinely when a Super Administrator
+        replaces a logo right after uploading it, e.g. to fix a mistake)
+        must still produce two different URLs, or a browser/CDN cache could
+        keep serving the previous image under an unchanged query string."""
+        if not self.updated_at:
+            return "0"
+        return str(int(self.updated_at.timestamp() * 1_000_000))
+
     def to_dict(self):
         return {
             "display_name": self.display_name,
             "legal_name": self.legal_name,
-            "logo_url": f"/api/branding/logo?v={self.updated_at.timestamp():.0f}" if self.logo_path else None,
+            "logo_url": f"/api/branding/logo?v={self.version_token()}" if self.logo_path else None,
             "pwa_icons_configured": bool(self.icon_192_path and self.icon_512_path and self.icon_512_maskable_path),
             "address": self.address,
             "phone": self.phone,
@@ -70,5 +81,5 @@ class CompanySettings(db.Model):
         headers — never the address/phone/email/tax/contact fields."""
         return {
             "display_name": self.display_name,
-            "logo_url": f"/api/branding/logo?v={self.updated_at.timestamp():.0f}" if self.logo_path else None,
+            "logo_url": f"/api/branding/logo?v={self.version_token()}" if self.logo_path else None,
         }

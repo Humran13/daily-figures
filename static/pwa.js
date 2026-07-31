@@ -10,6 +10,15 @@
  * (--ink/--teal/--paper/--amber/--ink-soft), which are identical across
  * every page in this app, with hard-coded fallbacks in case a page is ever
  * missing one.
+ *
+ * COMPACT vs. FULL presentation: the full-size, fixed-position promotional
+ * banner (and its floating "Install App" pill) is only appropriate where
+ * there is no data-entry surface underneath it to cover — the login screen
+ * and the Dashboard. Every operational/entry page (Dispatch, Returns,
+ * Production, and Daily Figures once signed in) instead gets a small
+ * install control placed in normal page flow, at the end of <body> —
+ * never fixed/floating, so it can never overlap Save Draft, Finalize,
+ * Save & Next, Skip, product navigation, or any input. See isCompactPage().
  */
 (function () {
   'use strict';
@@ -17,6 +26,28 @@
   var DISMISS_KEY = 'pwaInstallDismissedUntil';
   var DISMISS_DAYS = 7;
   var deferredPrompt = null;
+
+  // Dashboard and the login screen (index.html while unauthenticated) keep
+  // the full promotional banner — everywhere else (every operational book,
+  // History & Exports, Admin, and index.html once signed into Daily
+  // Figures) gets the small, non-blocking, in-flow control instead.
+  var FULL_BANNER_PATHS = ['/dashboard.html'];
+  var LOGIN_OR_DAILY_FIGURES_PATHS = ['/', '/index.html'];
+
+  async function isCompactPage() {
+    var path = location.pathname;
+    if (FULL_BANNER_PATHS.indexOf(path) !== -1) return false;
+    if (LOGIN_OR_DAILY_FIGURES_PATHS.indexOf(path) !== -1) {
+      try {
+        var res = await fetch('/api/session');
+        var data = await res.json();
+        return !!(data && data.authed); // signed in -> Daily Figures entry/review -> compact; signed out -> login screen -> full
+      } catch (e) {
+        return false; // can't confirm signed-in state — default to the safer/legacy full banner
+      }
+    }
+    return true; // every operational book, History & Exports, Admin, etc.
+  }
 
   function isStandalone() {
     return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
@@ -75,6 +106,15 @@
       'background:var(--teal,#1F8A70);color:#fff;border:none;border-radius:24px;padding:10px 16px;' +
       'font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.2);font-family:inherit;}' +
       '.pwa-install-persistent.hidden{display:none;}' +
+      // Compact presentation: overrides the fixed/floating card above to a
+      // small, static, in-flow row appended after all existing page
+      // content — it can never overlap Save Draft/Finalize/inputs/nav
+      // because it never leaves the normal document flow to begin with.
+      '.pwa-install-banner.pwa-install-compact{position:static;left:auto;right:auto;bottom:auto;' +
+      'max-width:none;margin:14px;box-shadow:none;flex-direction:row;align-items:center;flex-wrap:wrap;' +
+      'padding:10px 14px;border-radius:10px;}' +
+      '.pwa-install-banner.pwa-install-compact p{flex:1 1 220px;}' +
+      '.pwa-install-banner.pwa-install-compact .pwa-install-actions{flex:0 0 auto;}' +
       '.pwa-ios-modal{position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:210;display:flex;' +
       'align-items:center;justify-content:center;padding:20px;}' +
       '.pwa-ios-modal.hidden{display:none;}' +
@@ -91,10 +131,10 @@
     document.head.appendChild(style);
   }
 
-  function buildDom() {
+  function buildDom(compact) {
     var banner = document.createElement('div');
     banner.id = 'pwaInstallBanner';
-    banner.className = 'pwa-install-banner hidden';
+    banner.className = compact ? 'pwa-install-banner pwa-install-compact hidden' : 'pwa-install-banner hidden';
     banner.setAttribute('role', 'dialog');
     banner.setAttribute('aria-live', 'polite');
     banner.innerHTML =
@@ -104,12 +144,19 @@
       '<button type="button" id="pwaInstallDismissBtn">Not now</button>' +
       '</div>';
 
-    var persistentBtn = document.createElement('button');
-    persistentBtn.type = 'button';
-    persistentBtn.id = 'pwaInstallPersistentBtn';
-    persistentBtn.className = 'pwa-install-persistent hidden';
-    persistentBtn.setAttribute('aria-label', 'Install App');
-    persistentBtn.textContent = 'Install App';
+    // The floating "Install App" pill is a second fixed-position overlay —
+    // only built for the full/promotional presentation. Compact pages rely
+    // solely on the in-flow banner above, so nothing fixed/floating ever
+    // exists on an operational or data-entry page.
+    var persistentBtn = null;
+    if (!compact) {
+      persistentBtn = document.createElement('button');
+      persistentBtn.type = 'button';
+      persistentBtn.id = 'pwaInstallPersistentBtn';
+      persistentBtn.className = 'pwa-install-persistent hidden';
+      persistentBtn.setAttribute('aria-label', 'Install App');
+      persistentBtn.textContent = 'Install App';
+    }
 
     var iosModal = document.createElement('div');
     iosModal.id = 'pwaIosModal';
@@ -131,7 +178,7 @@
       '</div>';
 
     document.body.appendChild(banner);
-    document.body.appendChild(persistentBtn);
+    if (persistentBtn) document.body.appendChild(persistentBtn);
     document.body.appendChild(iosModal);
     return { banner: banner, persistentBtn: persistentBtn, iosModal: iosModal };
   }
@@ -148,28 +195,34 @@
     }
   }
 
-  function init() {
+  async function init() {
     if (isStandalone()) return; // already installed and running as the app — never show install UI
-
-    injectStyles();
-    var dom = buildDom();
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(function () { /* app must work fine without it */ });
     }
 
+    var compact = await isCompactPage();
+    injectStyles();
+    var dom = buildDom(compact);
+
     function showBanner() {
       if (isTypingInFormField()) { setTimeout(showBanner, 1500); return; }
       dom.banner.classList.remove('hidden');
-      dom.persistentBtn.classList.add('hidden');
+      if (dom.persistentBtn) dom.persistentBtn.classList.add('hidden');
     }
     function showPersistentOnly() {
+      // Compact pages have no separate floating pill (see buildDom()) — a
+      // dismissed/declined install on those pages simply hides the small
+      // in-flow banner outright rather than swapping to a second, smaller
+      // overlay (which would reintroduce the exact fixed-position
+      // affordance compact mode exists to avoid).
       dom.banner.classList.add('hidden');
-      dom.persistentBtn.classList.remove('hidden');
+      if (dom.persistentBtn) dom.persistentBtn.classList.remove('hidden');
     }
     function hideAllInstallUi() {
       dom.banner.classList.add('hidden');
-      dom.persistentBtn.classList.add('hidden');
+      if (dom.persistentBtn) dom.persistentBtn.classList.add('hidden');
     }
 
     function reveal() {
@@ -211,7 +264,7 @@
         var prompted = deferredPrompt;
         deferredPrompt = null;
         dom.banner.classList.add('hidden');
-        dom.persistentBtn.classList.add('hidden');
+        if (dom.persistentBtn) dom.persistentBtn.classList.add('hidden');
         try {
           prompted.prompt();
           var choice = await prompted.userChoice;
@@ -234,7 +287,7 @@
     }
 
     document.getElementById('pwaInstallBtn').addEventListener('click', attemptInstall);
-    dom.persistentBtn.addEventListener('click', attemptInstall);
+    if (dom.persistentBtn) dom.persistentBtn.addEventListener('click', attemptInstall);
     document.getElementById('pwaInstallDismissBtn').addEventListener('click', function () {
       rememberDismissal();
       showPersistentOnly();
