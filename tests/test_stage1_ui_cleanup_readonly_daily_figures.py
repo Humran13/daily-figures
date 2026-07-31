@@ -16,15 +16,19 @@ INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
 # ---------- no duplicate navigation ----------
+# Stage 6 replaced the old per-role operatorNav/primaryTabs-hiding split
+# with one shared, role-aware nav rendered by static/app-shell.js into
+# #appRoleNav for every role — index.html's own internal Enter/History &
+# Export tabs are no longer hidden for anyone (every role gets the exact
+# same internal tab pair, same as every other module's own internal tabs).
+# See tests/test_stage6_app_shell.py for the new navigation's coverage.
 
-def test_primary_tabs_and_operator_nav_are_mutually_exclusive_by_role():
-    assert "document.getElementById('primaryTabs').classList.toggle('hidden', isOperatorOrViewer);" in INDEX_HTML
-    assert "document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);" in INDEX_HTML
+def test_primary_tabs_always_shown_regardless_of_role():
+    assert "document.getElementById('primaryTabs').classList.toggle('hidden'" not in INDEX_HTML
+    assert 'id="operatorNav"' not in INDEX_HTML
 
 
-def test_old_internal_tabs_still_exist_for_manager_and_super_admin():
-    """Requirement: Manager/Super Admin's interface is unchanged — the old
-    tabs must still exist in markup, just hidden for Operator/Viewer."""
+def test_old_internal_tabs_still_exist_for_every_role():
     assert '<div class="tab active" data-tab="entry">Enter</div>' in INDEX_HTML
     assert '<div class="tab" data-tab="history">History &amp; Export</div>' in INDEX_HTML
     assert 'id="primaryTabs"' in INDEX_HTML
@@ -32,7 +36,7 @@ def test_old_internal_tabs_still_exist_for_manager_and_super_admin():
 
 def test_primary_tabs_container_wraps_both_old_tabs():
     match = re.search(
-        r'<div class="tabs" id="primaryTabs">.*?(?=<div class="tabs hidden" id="operatorNav">)',
+        r'<div class="tabs" id="primaryTabs">.*?</div>\s*</div>',
         INDEX_HTML, re.DOTALL,
     )
     assert match, "primaryTabs container is missing"

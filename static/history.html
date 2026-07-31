@@ -79,11 +79,8 @@
 <div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Sign in from the main app first.</div>
 
 <div class="shell hidden" id="appShell">
+  <div id="appIdentityBar"></div>
   <header>
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
-      <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
-      <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
-    </div>
     <p class="eyebrow">History &amp; Exports</p>
     <h1>History &amp; Exports</h1>
     <div class="tabs">
@@ -92,25 +89,8 @@
       <div class="tab" data-tab="production" data-module="production">Production History</div>
       <div class="tab" data-tab="daily-figures" data-module="daily_figures">Daily Figures History</div>
     </div>
-    <!-- Operator/Viewer only — identical to the block on dispatch.html/index.html. -->
-    <div class="tabs hidden" id="operatorNav">
-      <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
-      <a href="/returns.html?tab=new" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
-      <a href="/production.html?tab=new" class="tab" data-module="production" style="text-decoration:none;">Production</a>
-      <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
-      <a href="/history.html" class="tab" style="text-decoration:none;">History &amp; Exports</a>
-    </div>
-    <!-- Manager/Super Admin/Viewer-with-full-access: unobtrusive way back;
-         this page isn't part of their existing nav (unchanged per Stage 1),
-         it's simply reachable. -->
-    <div class="tabs" id="adminTierNav">
-      <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
-      <a href="/dispatch.html" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
-      <a href="/returns.html" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
-      <a href="/production.html" class="tab" data-module="production" style="text-decoration:none;">Production</a>
-      <a href="/dashboard.html" class="tab hidden" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
-    </div>
   </header>
+  <div id="appRoleNav"></div>
 
   <main>
     <!-- ================= DISPATCH HISTORY ================= -->
@@ -831,10 +811,6 @@ function applyDailyFiguresFiltersFromUrl(q){
     return;
   }
   currentUser = data.user;
-  const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
-  document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
-  document.getElementById('adminTierNav').classList.toggle('hidden', isOperatorOrViewer);
-  setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(data.user.role));
   document.getElementById('appShell').classList.remove('hidden');
 
   const {data: products} = await api('/api/admin/products');
@@ -861,5 +837,6 @@ function applyDailyFiguresFiltersFromUrl(q){
 })();
 </script>
 <script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
 </body>
 </html>

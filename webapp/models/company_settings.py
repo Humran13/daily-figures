@@ -25,6 +25,17 @@ class CompanySettings(db.Model):
     display_name = db.Column(db.String(160), nullable=False)
     legal_name = db.Column(db.String(160), nullable=True)
     logo_path = db.Column(db.String(255), nullable=True)  # relative path under the persistent uploads dir
+    # PWA install-icon variants derived from the logo (see
+    # webapp/services/branding_service.py's _generate_derived_icons()) —
+    # center-fit onto a padded square so a rectangular logo isn't cropped.
+    # Same persistent uploads dir as logo_path, same server-generated
+    # filename convention (never a client-supplied name/path). Null
+    # whenever no logo is configured, or generation failed for a logo that
+    # otherwise uploaded fine — the generic ledger icon is always a safe
+    # fallback either way (see webapp/routes/pwa.py's manifest()).
+    icon_192_path = db.Column(db.String(255), nullable=True)
+    icon_512_path = db.Column(db.String(255), nullable=True)
+    icon_512_maskable_path = db.Column(db.String(255), nullable=True)
     address = db.Column(db.Text, nullable=True)
     phone = db.Column(db.String(40), nullable=True)
     email = db.Column(db.String(160), nullable=True)
@@ -41,6 +52,7 @@ class CompanySettings(db.Model):
             "display_name": self.display_name,
             "legal_name": self.legal_name,
             "logo_url": f"/api/branding/logo?v={self.updated_at.timestamp():.0f}" if self.logo_path else None,
+            "pwa_icons_configured": bool(self.icon_192_path and self.icon_512_path and self.icon_512_maskable_path),
             "address": self.address,
             "phone": self.phone,
             "email": self.email,

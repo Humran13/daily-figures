@@ -51,20 +51,18 @@
   .hidden{ display:none !important; }
   .small{ font-size:11px; color:var(--ink-soft); }
   .gate{ text-align:center; padding:60px 20px; }
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.6); z-index:60; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .modal-sheet{ background:var(--paper); width:100%; max-width:420px; border-radius:14px; padding:20px; }
+  .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
 </style>
 </head>
 <body>
 
+<div id="appIdentityBar"></div>
 <header>
-  <h1>
-    <span style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:400;color:#8A94A6;margin-bottom:2px;">
-      <img data-brand-logo class="hidden" alt="" style="height:14px;width:auto;"><span data-brand-name></span>
-    </span>
-    Admin
-  </h1>
-  <a href="/dashboard.html" id="dashboardLink" data-module="dashboard" style="margin-right:14px;">Dashboard</a>
-  <a href="/" data-module="daily_figures">&larr; Back to Daily Figures</a>
+  <h1>Admin</h1>
 </header>
+<div id="appRoleNav"></div>
 
 <div class="wrap">
   <div id="gate" class="gate hidden">
@@ -107,6 +105,25 @@
         <h2>Existing users</h2>
         <table><thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead>
         <tbody id="usersTable"></tbody></table>
+      </div>
+    </div>
+
+    <!-- Reset-password modal: its own confirmation field, never shows the
+         current password/hash (nothing here ever reads one — the backend
+         reset-password endpoint only ever accepts a NEW password). -->
+    <div class="modal-backdrop hidden" id="resetPasswordModal">
+      <div class="modal-sheet">
+        <h3>Reset password for <span id="resetPasswordUsername"></span></h3>
+        <div class="row">
+          <div><label>New password</label><input id="resetPasswordNew" type="password" placeholder="min 8 characters"></div>
+          <div><label>Confirm new password</label><input id="resetPasswordConfirm" type="password"></div>
+        </div>
+        <p class="small">The user will be signed out of every other device or tab the next time they load a page.</p>
+        <div class="msg" id="resetPasswordMsg"></div>
+        <div class="row">
+          <button class="btn-primary" id="resetPasswordSubmitBtn">Reset password</button>
+          <button class="btn-ghost" id="resetPasswordCancelBtn">Cancel</button>
+        </div>
       </div>
     </div>
 
@@ -255,6 +272,7 @@
           <div style="flex:0;"><button class="btn-danger" id="removeLogoBtn">Remove logo</button></div>
         </div>
         <div class="msg" id="logoMsg"></div>
+        <p class="small" style="margin-top:10px;">Uploading or replacing the logo also updates the installed app's home-screen icon (generated automatically, center-fit — the original file you upload is never cropped or overwritten). Browser and operating-system icon caches may still delay when the new icon actually appears, and some devices that already have the app installed may need to remove and reinstall it before the new icon shows up — this is a platform limitation, not something this app controls.</p>
       </div>
       <div class="card">
         <h2>Company details</h2>
@@ -370,7 +388,7 @@ async function loadUsers(){
   const {data} = await api('/api/admin/users');
   const rows = (Array.isArray(data) ? data : []).map(u => `
     <tr>
-      <td>${escapeHtml(u.username)}</td>
+      <td><input data-username-for="${u.id}" value="${escapeHtml(u.username)}" style="width:130px;"></td>
       <td>
         <select data-role-for="${u.id}">
           ${['viewer','operator','manager','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${r.replace('_',' ')}</option>`).join('')}
@@ -379,18 +397,20 @@ async function loadUsers(){
       <td><span class="pill ${u.active?'pill-active':'pill-inactive'}">${u.active?'Active':'Disabled'}</span></td>
       <td class="small">${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'never'}</td>
       <td>
-        <button class="btn-ghost" data-save-role="${u.id}">Save role</button>
+        <button class="btn-ghost" data-save="${u.id}">Save</button>
+        <button class="btn-ghost" data-reset-password="${u.id}" data-username="${escapeHtml(u.username)}">Reset password</button>
         <button class="${u.active?'btn-danger':'btn-primary'}" data-toggle-active="${u.id}" data-next="${!u.active}">${u.active?'Disable':'Reactivate'}</button>
       </td>
     </tr>`).join('');
   document.getElementById('usersTable').innerHTML = rows || '<tr><td colspan="5" class="small">No users yet.</td></tr>';
 
-  document.querySelectorAll('[data-save-role]').forEach(btn=>{
+  document.querySelectorAll('[data-save]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
-      const id = btn.dataset.saveRole;
+      const id = btn.dataset.save;
       const role = document.querySelector(`[data-role-for="${id}"]`).value;
-      const {status, data} = await api(`/api/admin/users/${id}`, {method:'PATCH', body: JSON.stringify({role})});
-      document.getElementById('userMsg').textContent = status===200 ? 'Role updated.' : (data.error||'Failed');
+      const username = document.querySelector(`[data-username-for="${id}"]`).value.trim();
+      const {status, data} = await api(`/api/admin/users/${id}`, {method:'PATCH', body: JSON.stringify({role, username})});
+      document.getElementById('userMsg').textContent = status===200 ? 'User updated.' : (data.error||'Failed');
       document.getElementById('userMsg').className = 'msg ' + (status===200?'ok':'err');
       loadUsers();
     });
@@ -406,7 +426,47 @@ async function loadUsers(){
       loadUsers();
     });
   });
+  document.querySelectorAll('[data-reset-password]').forEach(btn=>{
+    btn.addEventListener('click', ()=>openResetPasswordModal(btn.dataset.resetPassword, btn.dataset.username));
+  });
 }
+
+// ---------- reset password ----------
+let resetPasswordUserId = null;
+function openResetPasswordModal(userId, username){
+  resetPasswordUserId = userId;
+  document.getElementById('resetPasswordUsername').textContent = username;
+  document.getElementById('resetPasswordNew').value = '';
+  document.getElementById('resetPasswordConfirm').value = '';
+  document.getElementById('resetPasswordMsg').textContent = '';
+  document.getElementById('resetPasswordModal').classList.remove('hidden');
+}
+function closeResetPasswordModal(){
+  resetPasswordUserId = null;
+  document.getElementById('resetPasswordModal').classList.add('hidden');
+}
+document.getElementById('resetPasswordCancelBtn').addEventListener('click', closeResetPasswordModal);
+document.getElementById('resetPasswordModal').addEventListener('click', (e)=>{
+  if(e.target.id === 'resetPasswordModal') closeResetPasswordModal();
+});
+document.addEventListener('keydown', (e)=>{
+  if(e.key === 'Escape' && !document.getElementById('resetPasswordModal').classList.contains('hidden')) closeResetPasswordModal();
+});
+document.getElementById('resetPasswordSubmitBtn').addEventListener('click', async ()=>{
+  const password = document.getElementById('resetPasswordNew').value;
+  const confirm_password = document.getElementById('resetPasswordConfirm').value;
+  const msg = document.getElementById('resetPasswordMsg');
+  if(password !== confirm_password){ msg.textContent = 'Password and confirmation do not match.'; msg.className = 'msg err'; return; }
+  const {status, data} = await api(`/api/admin/users/${resetPasswordUserId}/reset-password`, {
+    method: 'POST', body: JSON.stringify({password, confirm_password}),
+  });
+  if(status === 200){
+    msg.textContent = 'Password reset.'; msg.className = 'msg ok';
+    setTimeout(closeResetPasswordModal, 900);
+  } else {
+    msg.textContent = data.error || 'Failed to reset password.'; msg.className = 'msg err';
+  }
+});
 
 document.getElementById('createUserBtn').addEventListener('click', async ()=>{
   const username = document.getElementById('newUserName').value.trim();
@@ -870,6 +930,7 @@ async function loadFeatureFlagsAdmin(){
         msg.textContent = describeChange(data.changed); msg.className = 'msg ok';
         loadFeatureFlagsAdmin();
         applyFeatureFlags();  // immediate refresh of this page's own nav, per the same-session re-enable requirement
+        if(window.AppShell) window.AppShell.refresh();  // and the shared shell's identity bar / role nav, same requirement
         return;
       }
       // Disabling a module other enabled modules depend on: the backend
@@ -883,6 +944,7 @@ async function loadFeatureFlagsAdmin(){
           msg.className = 'msg ' + (retry.status===200?'ok':'err');
           loadFeatureFlagsAdmin();
           applyFeatureFlags();
+          if(window.AppShell) window.AppShell.refresh();
           return;
         }
         msg.textContent = ''; return;
@@ -909,5 +971,6 @@ async function loadFeatureFlagsAdmin(){
 })();
 </script>
 <script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
 </body>
 </html>

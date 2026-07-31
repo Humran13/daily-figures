@@ -15,16 +15,33 @@ PAGES = {
     "dashboard.html": (STATIC_DIR / "dashboard.html").read_text(encoding="utf-8"),
     "admin.html": (STATIC_DIR / "admin.html").read_text(encoding="utf-8"),
 }
+APP_SHELL_JS = (STATIC_DIR / "app-shell.js").read_text(encoding="utf-8")
+
+# Stage 6 centralized every page's in-app brand slot into the shared,
+# dynamically-rendered identity bar (static/app-shell.js's
+# renderIdentityBar(), into each page's #appIdentityBar placeholder) instead
+# of a static data-brand-name/data-brand-logo pair baked into each page's
+# own HTML — only index.html's login screen (rendered before any session
+# exists, so app-shell.js has nothing to show yet) still has a static one
+# of its own. See tests/test_stage6_app_shell.py for the shared shell's own
+# coverage.
+PAGES_WITH_STATIC_BRAND_SLOT = {"index.html": PAGES["index.html"]}
 
 
 def test_every_page_has_a_brand_name_slot():
-    for name, source in PAGES.items():
+    for name, source in PAGES_WITH_STATIC_BRAND_SLOT.items():
         assert "data-brand-name" in source, f"{name} is missing a data-brand-name element"
+    assert "setAttribute('data-brand-name', '')" in APP_SHELL_JS
 
 
 def test_every_page_has_a_brand_logo_slot_hidden_by_default():
-    for name, source in PAGES.items():
+    for name, source in PAGES_WITH_STATIC_BRAND_SLOT.items():
         assert 'data-brand-logo class="hidden"' in source, f"{name} is missing a hidden-by-default data-brand-logo element"
+    # app-shell.js's identity-bar logo starts hidden the same way (a
+    # 'hidden' class, only removed once applyBranding() confirms a logo_url
+    # exists) — see the shared page's own applyBranding() for that check.
+    assert "logo.className = 'hidden';" in APP_SHELL_JS
+    assert "setAttribute('data-brand-logo', '')" in APP_SHELL_JS
 
 
 def test_every_page_fetches_public_branding_endpoint():
@@ -65,48 +82,49 @@ def _count_html_elements_with_attr(source, attr):
     return len(re.findall(rf"<\w+[^>]*\b{re.escape(attr)}\b", source))
 
 
-def test_index_html_has_two_distinct_brand_name_slots():
-    """One for the login screen, one for the shared in-app header (used by
-    both Enter and History & Export) — not merged into either."""
+def test_index_html_has_one_static_brand_name_slot_for_the_login_screen():
+    """Only the login screen needs a static brand slot baked into
+    index.html's own markup — the in-app header's brand slot (used by both
+    Enter and History & Export, since it lives in #appIdentityBar, a
+    sibling of <main> rather than nested inside either tab) is rendered
+    dynamically by static/app-shell.js once a session exists, same as
+    every other page. See test_app_shell_identity_bar_renders_brand_slot
+    below."""
     source = PAGES["index.html"]
     count = _count_html_elements_with_attr(source, "data-brand-name")
-    assert count == 2, (
-        f"expected exactly 2 data-brand-name elements in index.html (login screen + "
-        f"app header), found {count}"
-    )
+    assert count == 1, f"expected exactly 1 static data-brand-name element in index.html (login screen), found {count}"
 
 
-def test_index_html_has_two_distinct_brand_logo_slots():
+def test_index_html_has_one_static_brand_logo_slot_for_the_login_screen():
     source = PAGES["index.html"]
     count = _count_html_elements_with_attr(source, "data-brand-logo")
-    assert count == 2, (
-        f"expected exactly 2 data-brand-logo elements in index.html (login screen + "
-        f"app header), found {count}"
-    )
+    assert count == 1, f"expected exactly 1 static data-brand-logo element in index.html (login screen), found {count}"
 
 
-def test_index_html_app_header_brand_bar_is_shared_by_both_tabs():
+def test_app_shell_identity_bar_renders_brand_slot_outside_any_single_tab():
+    """The shared in-app header (#appIdentityBar) sits above <header>/<main>
+    in every page's markup — a sibling of both, not nested inside either of
+    index.html's own Enter/History & Export tab divs — so app-shell.js's
+    dynamically-rendered brand bar is never hidden by a tab switch."""
     source = PAGES["index.html"]
-    header_start = source.index("<header>")
-    main_start = source.index("<main>")
-    header_block = source[header_start:main_start]
-    assert "data-brand-name" in header_block, "the in-app header is missing a brand-name element"
-    assert "data-brand-logo" in header_block, "the in-app header is missing a brand-logo element"
-    # <header> is a sibling of <main> (which contains both #tab-entry and
-    # #tab-history) — confirms this brand bar isn't nested inside just one
-    # of the two tabs, so switching tabs never hides it.
-    assert 'id="tab-entry"' not in header_block
-    assert 'id="tab-history"' not in header_block
+    identity_idx = source.index('id="appIdentityBar"')
+    tab_entry_idx = source.index('id="tab-entry"')
+    assert identity_idx < tab_entry_idx, "#appIdentityBar must appear before the tab content, not nested inside it"
+    assert "renderIdentityBar(identityContainer" in APP_SHELL_JS
+    assert "data-brand-name" in APP_SHELL_JS and "data-brand-logo" in APP_SHELL_JS
 
 
 def test_index_html_product_heading_stays_fixed_text_not_overwritten_by_branding():
     """The "Daily Figures" product-identity heading must stay static text —
-    branding lives in its own small brand-bar, consistent with every other
-    page's header (dispatch.html says "Dispatch", history.html says
-    "History & Exports", etc. — none of those page titles get replaced by
-    the company name either)."""
+    branding lives in its own small brand-bar (now the shared identity bar
+    rendered by app-shell.js), consistent with every other page's header
+    (dispatch.html says "Dispatch", history.html says "History & Exports",
+    etc. — none of those page titles get replaced by the company name
+    either). Stage 6 also moved Log out out of this heading and into the
+    shared identity bar's own button."""
     source = PAGES["index.html"]
-    assert '<h1>Daily Figures <span class="logout" id="logoutBtn">Log out</span></h1>' in source
+    assert "<h1>Daily Figures</h1>" in source
+    assert 'id="logoutBtn"' not in source
 
 
 # ---------- dispatch.html print letterhead ----------

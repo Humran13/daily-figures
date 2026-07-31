@@ -149,11 +149,15 @@ def test_returns_has_no_shift_concept_anywhere():
 
 # ================= navigation cleanup =================
 
-def test_dispatch_returns_production_hide_duplicate_daily_figures_link_for_operator_viewer():
+def test_dispatch_returns_production_no_longer_hardcode_a_fake_back_link():
+    # Stage 6 explicitly removed the old "<- Daily Figures" links that were
+    # being used as a fake universal Back button (they always went to Daily
+    # Figures regardless of where the user actually came from) — real Back
+    # navigation is now a shared, history-aware control in the header
+    # rendered by static/app-shell.js. See tests/test_stage6_app_shell.py.
     for name, source in [("dispatch.html", DISPATCH_HTML), ("returns.html", RETURNS_HTML), ("production.html", PRODUCTION_HTML)]:
-        assert 'id="backToDailyFiguresLink"' in source, f"{name} is missing the back-link id"
-        assert "document.getElementById('backToDailyFiguresLink').classList.toggle('hidden', isOperatorOrViewer)" in source, \
-            f"{name} must hide the duplicate header link for Operator/Viewer"
+        assert 'id="backToDailyFiguresLink"' not in source, f"{name} still has the old fake Back link"
+        assert 'id="appIdentityBar"' in source, f"{name} is missing the shared header (with real Back) placeholder"
 
 
 def test_returns_and_production_history_tab_labels_are_disambiguated():

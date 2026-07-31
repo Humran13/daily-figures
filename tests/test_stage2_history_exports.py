@@ -177,16 +177,18 @@ def test_history_page_contains_no_write_requests():
         assert verb not in HISTORY_HTML, f"found a {verb} call in history.html — this page must stay read-only"
 
 
-def test_history_page_has_operator_nav_and_admin_tier_nav():
-    assert 'id="operatorNav"' in HISTORY_HTML
-    assert 'id="adminTierNav"' in HISTORY_HTML
-    op_nav = re.search(r'<div class="tabs hidden" id="operatorNav">.*?</div>', HISTORY_HTML, re.DOTALL).group(0)
-    labels = [l.strip().replace("&amp;", "&") for l in re.findall(r'>([^<]+)</a>', op_nav)]
-    assert labels == ["Dispatch", "Returns", "Production", "Daily Figures", "History & Exports"]
+def test_history_page_uses_the_shared_app_shell_nav():
+    """Stage 6 replaced history.html's own operatorNav/adminTierNav markup
+    with the shared, role-aware nav renderer (static/app-shell.js) — see
+    tests/test_stage6_app_shell.py for that architecture's own coverage."""
+    assert 'id="operatorNav"' not in HISTORY_HTML
+    assert 'id="adminTierNav"' not in HISTORY_HTML
+    assert 'id="appRoleNav"' in HISTORY_HTML
 
 
-def test_dispatch_html_and_index_html_link_to_new_history_page():
-    assert 'href="/history.html"' in DISPATCH_HTML
-    assert 'href="/history.html"' in INDEX_HTML
-    assert "tab=list" not in DISPATCH_HTML.split("operatorNav")[1][:400]
-    assert "tab=list" not in INDEX_HTML.split("operatorNav")[1][:400]
+def test_app_shell_links_every_page_to_the_history_page():
+    """Dispatch/Daily Figures no longer hardcode a History & Exports link
+    in their own markup — the shared nav renderer (static/app-shell.js)
+    is the one place that link is generated now, for every page at once."""
+    app_shell_js = (STATIC_DIR / "app-shell.js").read_text(encoding="utf-8")
+    assert "/history.html" in app_shell_js

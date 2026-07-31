@@ -21,19 +21,31 @@ reachable regardless of any flag's state.
 from flask import Blueprint, Response, current_app, redirect
 
 from webapp.auth import current_user
-from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import feature_flag_service as ffs
 
 pages_bp = Blueprint("pages", __name__)
 
-# Where to send a signed-in user who isn't allowed on the page they asked
-# for — their own first authorized screen, never a bare error page.
+# Stage 6: Viewer now lands on Dashboard alongside Manager/Super Admin
+# (read-only there, same as everywhere else) — only Operator gets a
+# different landing page, resolved below via OPERATOR_LANDING_CHAIN
+# instead of a fixed path, since which operational book is "first" depends
+# on which of Dispatch/Returns/Production is actually enabled.
 FIRST_AUTHORIZED_PAGE = {
     ROLE_SUPER_ADMIN: "/dashboard.html",
     ROLE_MANAGER: "/dashboard.html",
-    "operator": "/dispatch.html?tab=new",
-    "viewer": "/dispatch.html?tab=new",
+    ROLE_VIEWER: "/dashboard.html",
 }
+
+# Operator's landing page, and the "Home" destination the shared
+# static/app-shell.js mirrors client-side (see its resolveLanding()) —
+# the first enabled+authorized operational book, never Dashboard (Operators
+# never see Dashboard at all).
+OPERATOR_LANDING_CHAIN = [
+    ("dispatch", "/dispatch.html?tab=new"),
+    ("returns", "/returns.html?tab=new"),
+    ("production", "/production.html?tab=new"),
+]
 
 # Ordered fallback chain for "the module this page needs is off — where
 # else could this user reasonably go?"
@@ -49,7 +61,15 @@ _DISABLED_MODULE_MESSAGE = "This module is currently disabled. Contact your admi
 def first_authorized_page(user):
     if user is None:
         return "/"
-    return FIRST_AUTHORIZED_PAGE.get(user.role, "/")
+    if user.role == ROLE_OPERATOR:
+        for module_key, path in OPERATOR_LANDING_CHAIN:
+            if ffs.is_enabled(module_key):
+                return path
+        # Every operational book is disabled — still send them somewhere
+        # real rather than nowhere; the page itself shows the disabled-
+        # module fallback/message once they land there.
+        return OPERATOR_LANDING_CHAIN[0][1]
+    return FIRST_AUTHORIZED_PAGE.get(user.role, "/dashboard.html")
 
 
 def _fallback_for(exclude_module):
@@ -122,7 +142,7 @@ def production_page():
 
 @pages_bp.route("/dashboard.html")
 def dashboard_page():
-    return _guard_page("dashboard.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER), module_key="dashboard")
+    return _guard_page("dashboard.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_VIEWER), module_key="dashboard")
 
 
 @pages_bp.route("/admin.html")

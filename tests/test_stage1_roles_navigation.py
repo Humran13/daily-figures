@@ -30,10 +30,14 @@ def test_operator_cannot_get_dashboard_api(client, login_as):
     assert res.status_code == 403
 
 
-def test_viewer_cannot_get_dashboard_api(client, login_as):
+def test_viewer_can_get_dashboard_api(client, login_as):
+    # Stage 6 explicitly moved Viewer onto Dashboard as a read-only landing
+    # page (see tests/test_stage6_app_shell.py) — Viewer is no longer denied
+    # here, only write actions remain off-limits (there are none on the
+    # Dashboard API itself, which is GET-only).
     login_as("view1", "password123", "viewer")
     res = client.get("/api/dashboard?date=2026-07-28")
-    assert res.status_code == 403
+    assert res.status_code == 200
 
 
 def test_manager_can_get_dashboard_api(client, login_as):
@@ -69,11 +73,14 @@ def test_operator_redirected_away_from_dashboard_page(client, login_as):
     assert res.headers["Location"] == "/dispatch.html?tab=new"
 
 
-def test_viewer_redirected_away_from_dashboard_page(client, login_as):
+def test_viewer_can_reach_dashboard_page(client, login_as):
+    # Stage 6: Viewer now lands on Dashboard like Manager/Super Admin
+    # (read-only there, same as everywhere else) instead of being redirected
+    # away — see tests/test_stage6_app_shell.py for full role-landing
+    # coverage.
     login_as("view1", "password123", "viewer")
     res = client.get("/dashboard.html")
-    assert res.status_code == 302
-    assert res.headers["Location"] == "/dispatch.html?tab=new"
+    assert res.status_code == 200
 
 
 def test_operator_redirected_away_from_admin_page(client, login_as):

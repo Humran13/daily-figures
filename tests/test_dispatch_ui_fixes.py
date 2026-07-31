@@ -112,4 +112,9 @@ def test_both_dispatch_tabs_still_present_and_unrenamed():
 
 
 def test_dashboard_link_still_present():
-    assert '/dashboard.html' in DISPATCH_HTML
+    # Stage 6 moved dispatch.html's Dashboard link out of its own markup and
+    # into the shared, role-aware nav rendered by static/app-shell.js (see
+    # tests/test_stage6_app_shell.py) — the link itself still exists, just
+    # centralized rather than duplicated per page.
+    app_shell_js = (STATIC_DIR / "app-shell.js").read_text(encoding="utf-8")
+    assert '/dashboard.html' in app_shell_js

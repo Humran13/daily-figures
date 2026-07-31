@@ -20,20 +20,24 @@
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
-  .shell{ max-width:560px; margin:0 auto; min-height:100vh; background:var(--paper); }
-  header{ background:var(--ink); color:var(--paper); padding:18px 20px 14px; position:sticky; top:0; z-index:10; }
+  .shell{ max-width:640px; margin:0 auto; min-height:100vh; background:var(--paper); }
+  header{ background:var(--ink); color:var(--paper); padding:14px 20px; }
   header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
-  header h1{ margin:0; font-size:19px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
-  .nav-links{ display:flex; gap:14px; margin-top:12px; flex-wrap:wrap; }
-  .nav-links a{ color:#8A94A6; font-size:12px; font-weight:700; text-decoration:none; }
-  .nav-links a.home{ color:var(--amber); }
+  header h1{ margin:0; font-size:19px; font-weight:700; }
   main{ padding:16px; padding-bottom:60px; }
+  .date-bar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .date-bar input[type="date"]{ flex:1; min-width:140px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; background:white; }
+  .date-bar button{ font-family:inherit; cursor:pointer; border:none; border-radius:8px; padding:9px 12px; font-size:12px; font-weight:700; background:var(--paper-dim); color:var(--ink); }
+  .date-bar button.active{ background:var(--teal); color:white; }
+  .date-bar .date-nav{ display:flex; gap:4px; }
+  .last-updated{ font-size:11px; color:var(--ink-soft); margin:-6px 0 14px; }
   .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
   .card h2{ margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); }
   .stat-grid{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
   .stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
-  .stat .n{ font-family:var(--mono); font-size:20px; font-weight:800; color:var(--teal-dark); }
+  .stat .n{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--teal-dark); }
   .stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-top:2px; }
+  .stat .sub{ font-size:10px; color:var(--ink-soft); margin-top:2px; }
   .row-link{ display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; text-decoration:none; color:var(--ink); }
   .row-link:last-child{ border-bottom:none; }
   .row-link .meta{ font-size:11px; color:var(--ink-soft); }
@@ -44,9 +48,18 @@
   .pill-void{ background:#F3E4E4; color:var(--red); }
   .warn-row{ background:#FCEfe7; border-radius:10px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; font-size:13px; }
   .warn-row .name{ font-weight:700; }
+  .notice-row{ background:var(--paper-dim); border-radius:10px; padding:10px 12px; margin-bottom:8px; font-size:13px; }
+  .notice-row.negative{ background:#FCEfe7; }
   .empty{ color:var(--ink-soft); font-size:13px; padding:8px 0; }
   .hidden{ display:none !important; }
   .gate{ padding:60px 20px; text-align:center; color:white; }
+  .quick-actions{ display:flex; gap:8px; flex-wrap:wrap; }
+  .quick-actions a{ flex:1; min-width:130px; text-align:center; text-decoration:none; background:var(--ink); color:var(--paper); border-radius:10px; padding:12px 10px; font-size:12px; font-weight:700; }
+  .product-table{ width:100%; border-collapse:collapse; font-size:12px; }
+  .product-table th{ text-align:left; padding:6px 4px; color:var(--ink-soft); font-size:10px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1.5px solid var(--line); }
+  .product-table td{ padding:8px 4px; border-bottom:1px solid var(--paper-dim); font-family:var(--mono); white-space:nowrap; }
+  .product-table td:first-child{ font-family:var(--sans); font-weight:700; white-space:normal; }
+  .product-table-wrap{ overflow-x:auto; }
 </style>
 </head>
 <body>
@@ -54,29 +67,62 @@
 <div id="gate" class="gate hidden">Sign in from the main app first.</div>
 
 <div class="shell hidden" id="shell">
+  <div id="appIdentityBar"></div>
   <header>
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
-      <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
-      <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
-    </div>
-    <p class="eyebrow" id="userInfo">Overview</p>
+    <p class="eyebrow">Overview</p>
     <h1>Dashboard</h1>
-    <div class="nav-links">
-      <a href="/" class="home" data-module="daily_figures">Daily Figures</a>
-      <a href="/dispatch.html" data-module="dispatch">Dispatch</a>
-      <a href="/returns.html" data-module="returns">Returns</a>
-      <a href="/production.html" data-module="production">Production</a>
-      <a href="/history.html" data-module="history_exports">History &amp; Exports</a>
-      <a href="/admin.html" id="adminLink" class="hidden">Admin</a>
-    </div>
   </header>
+  <div id="appRoleNav"></div>
+
   <main>
+    <div class="date-bar">
+      <button type="button" id="quickToday" data-quick="today">Today</button>
+      <button type="button" id="quickYesterday" data-quick="yesterday">Yesterday</button>
+      <div class="date-nav">
+        <button type="button" id="prevDateBtn" aria-label="Previous date">&larr;</button>
+        <input type="date" id="dateInput">
+        <button type="button" id="nextDateBtn" aria-label="Next date">&rarr;</button>
+      </div>
+      <button type="button" id="refreshBtn">Refresh</button>
+    </div>
+    <p class="last-updated" id="lastUpdated"></p>
+
+    <!-- A. Daily activity -->
     <div class="card">
-      <h2 id="stockSummaryTitle">Today's stock</h2>
-      <div id="stockSummary"></div>
+      <h2 id="activityTitle">Daily activity</h2>
+      <div class="stat-grid">
+        <div class="stat"><div class="n" id="dispatchFinalizedStat">—</div><div class="l">Finalized Dispatches</div><div class="sub" id="dispatchDraftStat"></div></div>
+        <div class="stat"><div class="n" id="returnsFinalizedStat">—</div><div class="l">Finalized Returns</div><div class="sub" id="returnsDraftStat"></div></div>
+        <div class="stat"><div class="n" id="productionFinalizedStat">—</div><div class="l">Finalized Production</div><div class="sub" id="productionDraftStat"></div></div>
+      </div>
+      <p class="last-updated" id="lastActivityAt" style="margin-top:12px;"></p>
     </div>
 
-    <div class="card" id="lowStockCard">
+    <!-- D. Attention -->
+    <div class="card" id="attentionCard">
+      <h2>Attention</h2>
+      <div id="attentionList"></div>
+    </div>
+
+    <!-- E. Quick actions -->
+    <div class="card">
+      <h2>Quick actions</h2>
+      <div class="quick-actions" id="quickActions"></div>
+    </div>
+
+    <!-- B. Per-product daily figures summary -->
+    <div class="card">
+      <h2 id="stockSummaryTitle">Per-product Daily Figures</h2>
+      <div class="product-table-wrap">
+        <table class="product-table">
+          <thead><tr><th>Product</th><th>Opening Stock</th><th>Production</th><th>Returns</th><th>Issued</th><th>Closing Stock</th></tr></thead>
+          <tbody id="stockSummaryBody"></tbody>
+        </table>
+      </div>
+      <div class="empty hidden" id="stockSummaryEmpty">No product activity for this date.</div>
+    </div>
+
+    <div class="card hidden" id="lowStockCard">
       <h2>Low stock warnings</h2>
       <div id="lowStockList"></div>
     </div>
@@ -120,6 +166,8 @@
 </div>
 
 <script>
+let currentUser = null;
+
 async function api(path){
   const res = await fetch(path);
   return {status: res.status, data: await res.json().catch(()=>({}))};
@@ -142,46 +190,12 @@ async function applyBranding(){
 }
 applyBranding();
 
-// ---------- visibility: role and feature-flag state tracked independently ----------
-// adminLink is role-gated separately (see init()); [data-module] elements
-// here have no independent role check of their own, but this same
-// dual-state mechanism is used everywhere for consistency and so a role
-// check could be added to one of them later without reintroducing the
-// "flag re-enable never un-hides" bug this replaces.
-function setRoleVisible(el, visible){
-  el.dataset.roleVisible = visible ? 'true' : 'false';
-  _recomputeVisibility(el);
-}
-function setFlagVisible(el, visible){
-  el.dataset.flagVisible = visible ? 'true' : 'false';
-  _recomputeVisibility(el);
-}
-function _recomputeVisibility(el){
-  const roleOk = el.dataset.roleVisible !== 'false';
-  const flagOk = el.dataset.flagVisible !== 'false';
-  el.classList.toggle('hidden', !(roleOk && flagOk));
-}
-
-// ---------- feature flags ----------
-// login_required, so called from init() after a session is confirmed.
-// Safe to call again later too: setFlagVisible always reflects the
-// latest fetch in either direction.
-let featureFlagsCache = null;
-async function applyFeatureFlags(){
-  try{
-    const res = await fetch('/api/feature-flags');
-    const flags = await res.json();
-    featureFlagsCache = {};
-    (Array.isArray(flags) ? flags : []).forEach(f=>{ featureFlagsCache[f.module_key] = f.enabled; });
-    document.querySelectorAll('[data-module]').forEach(el=>{
-      setFlagVisible(el, featureFlagsCache[el.dataset.module] !== false);
-    });
-  } catch(e){ /* fail safe: leave nav exactly as it was rather than hiding everything */ }
-}
-
 function statusPill(status){ return `<span class="pill pill-${status}">${status}</span>`; }
 // The one centralized book-notation formatter — mirrors
-// webapp/services/quantity_format.qty_label() exactly.
+// webapp/services/quantity_format.qty_label() exactly. Every quantity on
+// this page comes straight from the backend (stock_service.py via
+// dashboard_service.py) — nothing here recomputes Opening/Production/
+// Returns/Issued/Closing Stock, only formats numbers already computed.
 function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
 function qty(part, rule){
   if(!part) return '—';
@@ -193,20 +207,70 @@ function qty(part, rule){
   return `${part.cartons}c ${part.packs}p ${part.pieces}pc`;
 }
 
-async function loadDashboard(){
-  const today = new Date().toISOString().slice(0,10);
-  const {data} = await api('/api/dashboard?date='+today);
+// ---------- local (not UTC) date helpers — avoids the rollover bug where
+// toISOString() shifts to UTC and can show the wrong calendar day near
+// midnight in the user's own timezone. ----------
+function localDateStr(d){
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function todayStr(){ return localDateStr(new Date()); }
+function addDays(dateStr, n){
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  dt.setDate(dt.getDate()+n);
+  return localDateStr(dt);
+}
 
-  document.getElementById('stockSummaryTitle').textContent = `Today's stock — ${data.date}`;
+function setActiveQuick(name){
+  document.getElementById('quickToday').classList.toggle('active', name==='today');
+  document.getElementById('quickYesterday').classList.toggle('active', name==='yesterday');
+}
+
+async function loadDashboard(){
+  const date = document.getElementById('dateInput').value || todayStr();
+  const {data} = await api('/api/dashboard?date='+date);
+
+  document.getElementById('lastUpdated').textContent = data.generated_at
+    ? `Generated ${new Date(data.generated_at + 'Z').toLocaleString()} — a snapshot, not a live feed.` : '';
+
+  // ---- A. daily activity ----
+  const activity = data.activity || {};
+  document.getElementById('activityTitle').textContent = `Daily activity — ${data.date || date}`;
+  document.getElementById('dispatchFinalizedStat').textContent = activity.dispatch ? activity.dispatch.finalized : 0;
+  document.getElementById('dispatchDraftStat').textContent = activity.dispatch && activity.dispatch.draft ? `${activity.dispatch.draft} draft` : '';
+  document.getElementById('returnsFinalizedStat').textContent = activity.returns ? activity.returns.finalized : 0;
+  document.getElementById('returnsDraftStat').textContent = activity.returns && activity.returns.draft ? `${activity.returns.draft} draft` : '';
+  const prod = activity.production || {};
+  document.getElementById('productionFinalizedStat').textContent = `${prod.day_finalized||0}D / ${prod.night_finalized||0}N`;
+  document.getElementById('productionDraftStat').textContent = prod.draft ? `${prod.draft} draft` : '';
+  document.getElementById('lastActivityAt').textContent = activity.last_activity_at
+    ? `Last recorded activity for this date: ${new Date(activity.last_activity_at + 'Z').toLocaleString()}`
+    : 'No recorded activity for this date yet.';
+
+  // ---- D. attention ----
+  const attention = data.attention || [];
+  document.getElementById('attentionList').innerHTML = attention.length ? attention.map(n => `
+    <div class="notice-row ${n.type==='negative_closing_stock' ? 'negative' : ''}">${escapeHtml(n.message)}</div>
+  `).join('') : '<div class="empty">Nothing needs attention for this date.</div>';
+
+  // ---- B. per-product summary ----
   const summary = data.stock_summary || [];
-  document.getElementById('stockSummary').innerHTML = summary.length ? summary.map(r => `
-    <a class="row-link" href="/?tab=history&product=${encodeURIComponent(r.product_name)}">
-      <div>
-        <div>${escapeHtml(r.product_name)}</div>
-        <div class="meta">Opening ${qty(r.opening, r.packaging_rule)} · Prod ${qty(r.production, r.packaging_rule)} · Issued ${qty(r.issued, r.packaging_rule)} · Returns ${qty(r.return_, r.packaging_rule)}</div>
-      </div>
-      <div class="val">${qty(r.closing, r.packaging_rule)}</div>
-    </a>`).join('') : '<div class="empty">No activity recorded yet.</div>';
+  const byShift = data.production_by_shift || {};
+  document.getElementById('stockSummaryTitle').textContent = `Per-product Daily Figures — ${data.date || date}`;
+  document.getElementById('stockSummaryBody').innerHTML = summary.map(r => {
+    const shift = byShift[r.product_id] || {};
+    return `
+    <tr>
+      <td><a href="/?tab=history&product=${encodeURIComponent(r.product_name)}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(r.product_name)}</a></td>
+      <td>${qty(r.opening, r.packaging_rule)}</td>
+      <td>${qty(r.production, r.packaging_rule)}<div style="font-family:var(--sans);font-size:10px;color:var(--ink-soft);">Day ${shift.day||0} · Night ${shift.night||0} pc</div></td>
+      <td>${qty(r.return_, r.packaging_rule)}</td>
+      <td>${qty(r.issued, r.packaging_rule)}</td>
+      <td>${qty(r.closing, r.packaging_rule)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('stockSummaryEmpty').classList.toggle('hidden', summary.length > 0);
 
   const lowStock = data.low_stock || [];
   document.getElementById('lowStockCard').classList.toggle('hidden', lowStock.length===0);
@@ -225,16 +289,16 @@ async function loadDashboard(){
         <div class="meta">${d.date} · ${d.shift}</div>
       </div>
       ${statusPill(d.status)}
-    </a>`).join('') : '<div class="empty">No dispatches yet.</div>';
+    </a>`).join('') : '<div class="empty">No dispatches for this date.</div>';
 
   const top = data.top_products || [];
   document.getElementById('topProducts').innerHTML = top.length ? top.map(p => `
     <a class="row-link" href="/?tab=history&product=${encodeURIComponent(p.product_name)}">
       <div>${escapeHtml(p.product_name)}</div>
-      <div class="val">${p.base_qty} pieces</div>
+      <div class="val">${qty(p, p.packaging_rule)}</div>
     </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
 
-  await loadRecipientTotals(today);
+  await loadRecipientTotals(date);
 
   document.getElementById('activeCustomersStat').textContent = data.active_customers ?? 0;
 
@@ -268,10 +332,9 @@ async function loadDashboard(){
   document.getElementById('correctionsList').innerHTML = (adjustments + voids) || '<div class="empty">No recent corrections.</div>';
 }
 
-async function loadRecipientTotals(today){
-  const from = new Date(today); from.setDate(from.getDate()-29);
-  const dateFrom = from.toISOString().slice(0,10);
-  const params = `date_from=${dateFrom}&date_to=${today}`;
+async function loadRecipientTotals(date){
+  const from = addDays(date, -29);
+  const params = `date_from=${from}&date_to=${date}`;
 
   const {data: byCategory} = await api(`/api/reports/recipient-totals?${params}&group_by=category`);
   document.getElementById('byCategory').innerHTML = (Array.isArray(byCategory) && byCategory.length) ? byCategory.map(r => `
@@ -294,19 +357,61 @@ async function loadRecipientTotals(today){
     </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
 }
 
+// ---------- quick actions (read-only links only — never a correction/edit
+// action, so Viewer stays fully read-only here too) ----------
+function renderQuickActions(role){
+  const actions = [];
+  if(role === 'manager' || role === 'super_admin'){
+    actions.push({href:'/dispatch.html', label:'Open Operations'});
+  }
+  actions.push({href:'/', label:'View Daily Figures'});
+  actions.push({href:'/history.html', label:'Open History & Exports'});
+  if(role === 'super_admin'){
+    actions.push({href:'/admin.html', label:'Open Admin'});
+  }
+  document.getElementById('quickActions').innerHTML = actions.map(a =>
+    `<a href="${a.href}">${escapeHtml(a.label)}</a>`).join('');
+}
+
+// ---------- date controls ----------
+document.getElementById('dateInput').addEventListener('change', ()=>{ setActiveQuick(null); loadDashboard(); });
+document.getElementById('quickToday').addEventListener('click', ()=>{
+  document.getElementById('dateInput').value = todayStr();
+  setActiveQuick('today');
+  loadDashboard();
+});
+document.getElementById('quickYesterday').addEventListener('click', ()=>{
+  document.getElementById('dateInput').value = addDays(todayStr(), -1);
+  setActiveQuick('yesterday');
+  loadDashboard();
+});
+document.getElementById('prevDateBtn').addEventListener('click', ()=>{
+  document.getElementById('dateInput').value = addDays(document.getElementById('dateInput').value || todayStr(), -1);
+  setActiveQuick(null);
+  loadDashboard();
+});
+document.getElementById('nextDateBtn').addEventListener('click', ()=>{
+  document.getElementById('dateInput').value = addDays(document.getElementById('dateInput').value || todayStr(), 1);
+  setActiveQuick(null);
+  loadDashboard();
+});
+document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
+
 (async function init(){
   const {data} = await api('/api/session');
   if(!data.authed || !data.user){
     document.getElementById('gate').classList.remove('hidden');
     return;
   }
+  currentUser = data.user;
   document.getElementById('shell').classList.remove('hidden');
-  document.getElementById('userInfo').textContent = `${data.user.username} · ${data.user.role.replace('_',' ')}`;
-  document.getElementById('adminLink').classList.toggle('hidden', data.user.role !== 'super_admin');
-  await applyFeatureFlags();
+  renderQuickActions(data.user.role);
+  document.getElementById('dateInput').value = todayStr();
+  setActiveQuick('today');
   await loadDashboard();
 })();
 </script>
 <script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
 </body>
 </html>

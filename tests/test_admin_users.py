@@ -53,9 +53,14 @@ def test_deactivated_user_loses_access(client, login_as):
 
 
 def test_reset_password(client, login_as):
+    # Stage 6 moved password changes out of the generic PATCH endpoint and
+    # into their own dedicated POST .../reset-password endpoint — see
+    # tests/test_stage6_app_shell.py for the full reset-password/session-
+    # invalidation/self-lockout coverage this stage added.
     login_as("root", "password123", "super_admin")
     created = client.post("/api/admin/users", json={"username": "temp", "password": "password123", "role": "operator"}).get_json()
-    client.patch(f"/api/admin/users/{created['id']}", json={"password": "brandnewpassword"})
+    client.post(f"/api/admin/users/{created['id']}/reset-password",
+                json={"password": "brandnewpassword", "confirm_password": "brandnewpassword"})
     client.post("/api/logout")
 
     res = client.post("/api/login", json={"username": "temp", "password": "brandnewpassword"})

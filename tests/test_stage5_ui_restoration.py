@@ -231,4 +231,8 @@ def test_closing_stock_formula_value_matches_opening_plus_production_plus_return
 def test_branding_and_role_based_nav_untouched():
     assert "async function applyBranding()" in INDEX_HTML
     assert "function setRoleVisible(el, visible){" in INDEX_HTML
-    assert "document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);" in INDEX_HTML
+    # Stage 6 replaced the old operatorNav visibility toggle with the
+    # shared, role-aware nav rendered by static/app-shell.js — see
+    # tests/test_stage6_app_shell.py for that architecture's coverage.
+    assert 'id="operatorNav"' not in INDEX_HTML
+    assert 'id="appRoleNav"' in INDEX_HTML

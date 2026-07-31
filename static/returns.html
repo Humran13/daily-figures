@@ -104,28 +104,16 @@
 <div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Sign in from the main app first.</div>
 
 <div class="shell hidden" id="appShell">
+  <div id="appIdentityBar" class="no-print"></div>
   <header class="no-print">
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
-      <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
-      <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
-    </div>
     <p class="eyebrow">Returns Book</p>
-    <h1>Returns <a href="/" id="backToDailyFiguresLink">&larr; Daily Figures</a></h1>
+    <h1>Returns</h1>
     <div class="tabs">
       <div class="tab" data-tab="new">New Return</div>
       <div class="tab active" data-tab="list">Returns History</div>
-      <a href="/dashboard.html" class="tab" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
-    </div>
-    <!-- Operator/Viewer only: the full 5-item operational nav, identical to
-         the block on every other operational page. Hidden for every other role. -->
-    <div class="tabs hidden" id="operatorNav">
-      <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
-      <a href="/returns.html?tab=new" class="tab" style="text-decoration:none;">Returns</a>
-      <a href="/production.html?tab=new" class="tab" data-module="production" style="text-decoration:none;">Production</a>
-      <a href="/" class="tab" data-module="daily_figures" style="text-decoration:none;">Daily Figures</a>
-      <a href="/history.html" class="tab" data-module="history_exports" style="text-decoration:none;">History &amp; Exports</a>
     </div>
   </header>
+  <div id="appRoleNav" class="no-print"></div>
 
   <main>
     <!-- LIST -->
@@ -652,12 +640,6 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
   }
   currentUser = data.user;
   const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
-  setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(data.user.role));
-  document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
-  // Operator/Viewer already get a "Daily Figures" link from operatorNav
-  // above — avoid a duplicate. Admin-tier keeps the header link since
-  // they have no other Daily Figures link on this page.
-  document.getElementById('backToDailyFiguresLink').classList.toggle('hidden', isOperatorOrViewer);
   await applyFeatureFlags();
   document.getElementById('appShell').classList.remove('hidden');
   await loadProducts();
@@ -677,5 +659,6 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
 })();
 </script>
 <script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
 </body>
 </html>

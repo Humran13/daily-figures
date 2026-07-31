@@ -27,6 +27,16 @@ def current_user():
     user = db.session.get(User, user_id)
     if user is None or not user.active:
         return None
+    # A session cookie stamped with an older session_version than the
+    # user's current one belongs to a password that's since been reset —
+    # treat it exactly like "not logged in" rather than trusting a
+    # possibly-compromised old credential. Missing from the session
+    # entirely (e.g. a cookie issued before this check existed) defaults
+    # to 0, matching a fresh user's column default, so this never forces
+    # every existing session to re-authenticate — only ones whose password
+    # was actually reset since they signed in.
+    if session.get("session_version", 0) != (user.session_version or 0):
+        return None
     return user
 
 
@@ -88,6 +98,7 @@ def login():
 
     session.clear()
     session["user_id"] = user.id
+    session["session_version"] = user.session_version or 0
     session.permanent = True
     user.last_login_at = datetime.now(timezone.utc).replace(tzinfo=None)
     record_audit(user, "login_success", "user", entity_id=user.id)

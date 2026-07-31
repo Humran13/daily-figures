@@ -338,8 +338,14 @@ def test_pwa_js_uses_branding_endpoint_and_has_its_own_fallback_text():
 
 # ---------- unrelated behavior unchanged ----------
 
-def test_existing_operator_nav_untouched_on_index_html():
-    assert "document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);" in PAGE_SOURCES["index.html"]
+def test_existing_role_aware_nav_still_present_on_index_html():
+    # Stage 6 replaced the old operatorNav visibility toggle with the
+    # shared, role-aware nav rendered by static/app-shell.js — this PWA
+    # patch predates that change, so this just pins that the PWA install
+    # wiring didn't remove the (now-relocated) role-aware nav entirely.
+    assert 'id="operatorNav"' not in PAGE_SOURCES["index.html"]
+    assert 'id="appRoleNav"' in PAGE_SOURCES["index.html"]
+    assert '<script src="/app-shell.js" defer></script>' in PAGE_SOURCES["index.html"]
 
 
 def test_existing_apply_branding_function_still_present_on_every_page():

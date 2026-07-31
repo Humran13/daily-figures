@@ -61,6 +61,53 @@ def logo_file_path(settings=None):
     return os.path.join(_uploads_dir(), settings.logo_path)
 
 
+def _icon_file_path(relative_path):
+    if not relative_path:
+        return None
+    return os.path.join(_uploads_dir(), relative_path)
+
+
+ICON_SPECS = (("icon_192_path", 192, False), ("icon_512_path", 512, False), ("icon_512_maskable_path", 512, True))
+
+
+def manifest_icons(settings=None):
+    """
+    The icon list for the PWA manifest (see webapp/routes/pwa.py) —
+    branding-derived variants when a logo has been uploaded and its icons
+    generated successfully, otherwise the generic ledger icon shipped as a
+    static asset. Cache-busted with a version derived from
+    CompanySettings.updated_at, exactly like logo_url already is, so a new
+    upload is never masked by a browser/CDN cache under the same URL.
+    """
+    settings = settings or get_settings()
+    if settings.icon_192_path and settings.icon_512_path and settings.icon_512_maskable_path:
+        v = f"{settings.updated_at.timestamp():.0f}" if settings.updated_at else "0"
+        return [
+            {"src": f"/api/branding/icon-192.png?v={v}", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": f"/api/branding/icon-512.png?v={v}", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": f"/api/branding/icon-512-maskable.png?v={v}", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ]
+    return [
+        {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+        {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+        {"src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+    ]
+
+
+def icon_file_path(size, maskable=False):
+    """Resolves one derived-icon variant to its file path on disk, or None
+    if it isn't configured (a caller falling back to the generic static
+    icon in that case) — used by webapp/routes/branding.py's icon routes."""
+    settings = get_settings()
+    if maskable:
+        return _icon_file_path(settings.icon_512_maskable_path)
+    if size == 192:
+        return _icon_file_path(settings.icon_192_path)
+    if size == 512:
+        return _icon_file_path(settings.icon_512_path)
+    return None
+
+
 def export_kwargs():
     """
     One-line spread for every export route: **branding_service.export_kwargs()
@@ -145,17 +192,62 @@ def _validate_and_read_logo(file_storage):
     return data, ext
 
 
+def _generate_derived_icons(image_bytes, uploads_dir):
+    """
+    Center-fit the uploaded logo onto a padded square canvas at each PWA
+    icon size, so a rectangular logo is never cropped into an unreadable
+    shape. Maskable gets extra padding since the OS may crop/round up to
+    ~20% off each edge; the two "any" variants get a smaller margin.
+    Filenames are always server-generated (uuid4), never derived from the
+    client's original filename, same as the logo file itself. Returns the
+    three relative filenames, or None on any failure (a corrupt-but-just-
+    barely-valid image, an unexpected color mode, etc.) — icon generation
+    is never allowed to fail the logo upload itself; the fallback generic
+    icon is always safe.
+    """
+    try:
+        source = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        background = (252, 250, 246, 255)  # --paper — matches the app's own palette
+
+        def build(size, maskable):
+            canvas = Image.new("RGBA", (size, size), background)
+            pad_ratio = 0.22 if maskable else 0.10
+            max_dim = max(1, int(size * (1 - 2 * pad_ratio)))
+            ratio = min(max_dim / source.width, max_dim / source.height, 1.0) if source.width and source.height else 1.0
+            new_w, new_h = max(1, round(source.width * ratio)), max(1, round(source.height * ratio))
+            resized = source.resize((new_w, new_h), Image.LANCZOS)
+            canvas.paste(resized, ((size - new_w) // 2, (size - new_h) // 2), resized)
+            return canvas.convert("RGB")  # flatten onto the opaque background — no transparency in an app icon
+
+        name_192 = f"{uuid.uuid4().hex}-icon192.png"
+        name_512 = f"{uuid.uuid4().hex}-icon512.png"
+        name_512_maskable = f"{uuid.uuid4().hex}-icon512m.png"
+        build(192, maskable=False).save(os.path.join(uploads_dir, name_192))
+        build(512, maskable=False).save(os.path.join(uploads_dir, name_512))
+        build(512, maskable=True).save(os.path.join(uploads_dir, name_512_maskable))
+        return name_192, name_512, name_512_maskable
+    except Exception:
+        return None, None, None
+
+
 def upload_logo(file_storage, user):
     data, ext = _validate_and_read_logo(file_storage)
     settings = get_settings()
     before = settings.to_dict()
     old_relative_path = settings.logo_path
+    old_icon_paths = [settings.icon_192_path, settings.icon_512_path, settings.icon_512_maskable_path]
 
+    uploads_dir = _uploads_dir()
     filename = f"{uuid.uuid4().hex}.{ext}"
-    with open(os.path.join(_uploads_dir(), filename), "wb") as f:
+    with open(os.path.join(uploads_dir, filename), "wb") as f:
         f.write(data)
 
+    icon_192, icon_512, icon_512_maskable = _generate_derived_icons(data, uploads_dir)
+
     settings.logo_path = filename
+    settings.icon_192_path = icon_192
+    settings.icon_512_path = icon_512
+    settings.icon_512_maskable_path = icon_512_maskable
     settings.updated_by = user.id
     db.session.flush()
     after = settings.to_dict()
@@ -164,6 +256,9 @@ def upload_logo(file_storage, user):
 
     if old_relative_path:
         _delete_logo_file(old_relative_path)
+    for old_icon_path in old_icon_paths:
+        if old_icon_path:
+            _delete_logo_file(old_icon_path)
     return settings
 
 
@@ -173,12 +268,19 @@ def remove_logo(user):
         raise BrandingError("No logo is currently set")
     before = settings.to_dict()
     old_relative_path = settings.logo_path
+    old_icon_paths = [settings.icon_192_path, settings.icon_512_path, settings.icon_512_maskable_path]
     settings.logo_path = None
+    settings.icon_192_path = None
+    settings.icon_512_path = None
+    settings.icon_512_maskable_path = None
     settings.updated_by = user.id
     db.session.flush()
     after = settings.to_dict()
     record_audit(user, "logo_remove", "company_settings", entity_id=1, before=before, after=after)
     _delete_logo_file(old_relative_path)
+    for old_icon_path in old_icon_paths:
+        if old_icon_path:
+            _delete_logo_file(old_icon_path)
     return settings
 
 

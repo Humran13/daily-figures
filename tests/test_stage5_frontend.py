@@ -109,20 +109,33 @@ def test_returns_page_has_signed_by_name_field():
 
 # ---------- nav ----------
 
-def test_dashboard_links_to_returns_and_production():
-    assert 'href="/returns.html" data-module="returns"' in DASHBOARD_HTML
-    assert 'href="/production.html" data-module="production"' in DASHBOARD_HTML
+def test_app_shell_links_to_returns_and_production():
+    # Stage 6 replaced dashboard.html's own hard-coded Returns/Production
+    # links and history.html's adminTierNav with one shared, flag/role-aware
+    # operational switcher rendered by static/app-shell.js for every page
+    # that reaches Dispatch/Returns/Production — see
+    # tests/test_stage6_app_shell.py for its role/flag-filtering coverage.
+    app_shell_js = (STATIC_DIR / "app-shell.js").read_text(encoding="utf-8")
+    assert "href: '/returns.html'" in app_shell_js
+    assert "href: '/production.html'" in app_shell_js
 
 
-def test_history_admin_tier_nav_links_to_returns_and_production():
-    admin_tier_nav = re.search(r'<div class="tabs" id="adminTierNav">.*?</div>', HISTORY_HTML, re.DOTALL).group(0)
-    assert 'data-module="returns"' in admin_tier_nav
-    assert 'data-module="production"' in admin_tier_nav
+def test_history_and_dashboard_no_longer_hardcode_admin_tier_nav():
+    # history.html's own internal Returns/Production History tabs still
+    # legitimately carry data-module="returns"/"production" (unrelated to
+    # the removed adminTierNav) — only the old adminTierNav container and
+    # dashboard.html's now-removed nav markup are asserted gone here.
+    assert 'id="adminTierNav"' not in HISTORY_HTML
+    assert 'data-module="' not in DASHBOARD_HTML
 
 
-def test_returns_and_production_pages_tagged_for_page_guards():
-    # webapp/routes/pages.py registers explicit /returns.html and
-    # /production.html routes — these are just the corresponding
-    # data-module fallback tags each page uses for its own nav links.
-    assert 'data-module="dashboard"' in RETURNS_HTML
-    assert 'data-module="dashboard"' in PRODUCTION_HTML
+def test_returns_and_production_pages_use_shared_app_shell_nav():
+    # webapp/routes/pages.py still registers explicit /returns.html and
+    # /production.html page guards (see test_returns_production.py) — the
+    # pages themselves no longer self-tag a dashboard link; app-shell.js's
+    # shared operational switcher (Dispatch/Returns/Production) plus the
+    # Review link group cover that navigation instead.
+    assert 'data-module="dashboard"' not in RETURNS_HTML
+    assert 'data-module="dashboard"' not in PRODUCTION_HTML
+    assert 'id="appRoleNav"' in RETURNS_HTML
+    assert 'id="appRoleNav"' in PRODUCTION_HTML

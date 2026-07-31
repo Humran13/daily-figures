@@ -26,6 +26,15 @@ class User(db.Model):
     active = db.Column(db.Boolean, nullable=False, default=True)
     created_at = db.Column(db.DateTime(), nullable=False, default=_utcnow)
     last_login_at = db.Column(db.DateTime(), nullable=True)
+    # Bumped whenever a super_admin resets this user's password (see
+    # webapp/routes/admin_users.py's reset_password()) — a session whose
+    # cookie carries an older value stops authenticating (see
+    # webapp/auth.py's current_user()), so every other device/tab that was
+    # already signed in as this user is forced to sign in again with the
+    # new password. Never touched by anything else (role/active changes
+    # already take effect immediately via the existing active-user check
+    # and don't need a session to be invalidated to do it).
+    session_version = db.Column(db.Integer, nullable=False, default=0)
 
     def to_dict(self):
         return {

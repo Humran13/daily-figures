@@ -132,32 +132,16 @@
 </div>
 
 <div class="shell hidden" id="appShell">
+  <div id="appIdentityBar"></div>
   <header>
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
-      <img data-brand-logo class="hidden" alt="" style="height:16px;width:auto;">
-      <span data-brand-name style="font-size:11px;color:#8A94A6;"></span>
-    </div>
-    <p class="eyebrow" id="userInfo">Production Log</p>
-    <h1>Daily Figures <span class="logout" id="logoutBtn">Log out</span></h1>
+    <p class="eyebrow">Production Log</p>
+    <h1>Daily Figures</h1>
     <div class="tabs" id="primaryTabs">
       <div class="tab active" data-tab="entry">Enter</div>
       <div class="tab" data-tab="history">History &amp; Export</div>
-      <a href="/dashboard.html" class="tab" id="dashboardLink" data-module="dashboard" style="text-decoration:none;">Dashboard</a>
-      <a href="/dispatch.html" class="tab" id="dispatchLink" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
-      <a href="/admin.html" class="tab hidden" id="adminLink" style="text-decoration:none;">Admin</a>
-    </div>
-    <!-- Operator/Viewer only: the full 5-item operational nav (Dispatch,
-         Returns, Production, Daily Figures, History & Exports), identical on
-         every page they can reach. Hidden for every other role — their
-         existing nav above is untouched. -->
-    <div class="tabs hidden" id="operatorNav">
-      <a href="/dispatch.html?tab=new" class="tab" data-module="dispatch" style="text-decoration:none;">Dispatch</a>
-      <a href="/returns.html?tab=new" class="tab" data-module="returns" style="text-decoration:none;">Returns</a>
-      <a href="/production.html?tab=new" class="tab" data-module="production" style="text-decoration:none;">Production</a>
-      <a href="/" class="tab" style="text-decoration:none;">Daily Figures</a>
-      <a href="/history.html" class="tab" data-module="history_exports" style="text-decoration:none;">History &amp; Exports</a>
     </div>
   </header>
+  <div id="appRoleNav"></div>
   <main>
     <div id="tab-entry">
       <div class="setup">
@@ -674,30 +658,33 @@ function switchTab(name){
 document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
 document.getElementById('dateInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
 document.getElementById('shiftInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
-document.getElementById('logoutBtn').addEventListener('click', async ()=>{
-  await fetch('/api/logout', {method:'POST'});
-  window.location.reload();
-});
-
 // ---------- login ----------
+// Every role now lands on its own role-aware page after login — Viewer/
+// Manager/Super Admin on Dashboard, Operator on the first enabled
+// operational book — never on Daily Figures itself (see
+// static/app-shell.js's resolveLanding(), which mirrors
+// webapp/routes/pages.py's first_authorized_page() exactly). Navigating
+// back to "/" later (e.g. via the reporting nav's "Daily Figures" link)
+// goes through init()/boot() below instead, which does not redirect.
 async function attemptLogin(){
   const username = document.getElementById('usernameInput').value;
   const password = document.getElementById('passwordInput').value;
   const res = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password})});
   const data = await res.json();
-  if(data.ok){
-    // Operator/Viewer land on Dispatch (New Dispatch tab) immediately after
-    // login. This only fires right after a fresh login — navigating back to
-    // "/" later (e.g. via the operator nav's "Daily Figures" link) goes
-    // through init()/boot() below instead, which does not redirect, so the
-    // link actually works.
-    if(['operator','viewer'].includes(data.user.role)){
-      window.location.href = '/dispatch.html?tab=new';
-      return;
-    }
-    await boot(data.user);
+  if(!data.ok){
+    document.getElementById('loginErr').textContent = data.error || 'Invalid username or password';
+    return;
   }
-  else { document.getElementById('loginErr').textContent = data.error || 'Invalid username or password'; }
+  let flags = {};
+  try{
+    const flagsRes = await fetch('/api/feature-flags');
+    const flagsData = await flagsRes.json();
+    (Array.isArray(flagsData) ? flagsData : []).forEach(f=>{ flags[f.module_key] = f.enabled; });
+  } catch(e){ /* resolveLanding treats an empty flags map as "everything enabled" */ }
+  const landing = (window.AppShell && window.AppShell.resolveLanding)
+    ? window.AppShell.resolveLanding(data.user.role, flags)
+    : '/dashboard.html';
+  window.location.href = landing;
 }
 document.getElementById('loginBtn').addEventListener('click', attemptLogin);
 document.getElementById('passwordInput').addEventListener('keydown', e=>{ if(e.key==='Enter') attemptLogin(); });
@@ -726,17 +713,13 @@ function _recomputeVisibility(el){
 function applyUser(user){
   if(!user) return;
   currentUser = user;
-  document.getElementById('userInfo').textContent = `${user.username} · ${user.role.replace('_',' ')}`;
-  const isOperatorOrViewer = ['operator','viewer'].includes(user.role);
-  document.getElementById('adminLink').classList.toggle('hidden', user.role !== 'super_admin');
-  setRoleVisible(document.getElementById('dashboardLink'), ['super_admin','manager'].includes(user.role));
-  setRoleVisible(document.getElementById('dispatchLink'), !isOperatorOrViewer);
-  document.getElementById('operatorNav').classList.toggle('hidden', !isOperatorOrViewer);
-  // Operator/Viewer see only the 3-item operatorNav (Dispatch, Daily
-  // Figures, History & Exports) — the old Enter/History & Export internal
-  // tabs are for Manager/Super Admin only now, to avoid showing both navs
-  // at once.
-  document.getElementById('primaryTabs').classList.toggle('hidden', isOperatorOrViewer);
+  // Identity, role label, Home/Back/Logout, and the role-aware top nav are
+  // all rendered by the shared static/app-shell.js into #appIdentityBar/
+  // #appRoleNav — nothing page-specific to do with the user object here
+  // beyond the entry wizard's own role-based field gating (see
+  // renderEntryCard()). The Enter/History & Export tabs below are this
+  // page's own internal tabs, shown to every role exactly like every other
+  // module's internal tabs (New Dispatch/Dispatches, etc.).
 }
 
 // ---------- feature flags ----------
@@ -798,5 +781,6 @@ async function boot(user){
 })();
 </script>
 <script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
 </body>
 </html>

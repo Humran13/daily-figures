@@ -7,9 +7,13 @@
  * the installed app shell feel instant are cached, and even those are
  * always network-refreshed on every new service worker version.
  */
-const CACHE_VERSION = 'df-shell-v1';
+const CACHE_VERSION = 'df-shell-v2';
+// "/manifest.webmanifest" is deliberately NOT precached here as of Stage 6 —
+// it's now served dynamically (see webapp/routes/pwa.py) and reflects the
+// current company logo/icons, so it must always be fetched fresh rather
+// than risk the service worker getting permanently stuck on an old logo.
+// The generic fallback icons stay precached since they're genuinely static.
 const SHELL_ASSETS = [
-  '/manifest.webmanifest',
   '/pwa.js',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
