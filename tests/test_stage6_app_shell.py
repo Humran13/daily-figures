@@ -33,6 +33,7 @@ from pathlib import Path
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 APP_SHELL_JS = (STATIC_DIR / "app-shell.js").read_text(encoding="utf-8")
+APP_SHELL_CSS = (STATIC_DIR / "app-shell.css").read_text(encoding="utf-8")
 PRIMARY_PAGES = {
     name: (STATIC_DIR / name).read_text(encoding="utf-8")
     for name in (
@@ -338,12 +339,16 @@ def test_active_state_derived_from_current_url_path_not_stored_client_state():
 
 def test_active_nav_style_uses_more_than_color_alone():
     """Section 6 requires a second cue beyond color (weight/border/
-    underline) for accessibility."""
-    assert 'border-bottom:2px solid var(--amber' in APP_SHELL_JS
+    underline) for accessibility. Styling itself lives in the shared
+    static/app-shell.css stylesheet (see tests/test_stage6_correction_shell_styling.py
+    for its full coverage) — this just pins that app-shell.js's nav links
+    are still built to be styleable via aria-current/a dedicated class."""
+    assert "border-bottom-color:var(--amber" in APP_SHELL_CSS
+    assert "setAttribute('aria-current', 'page')" in APP_SHELL_JS
 
 
 def test_focus_visible_styles_present_for_keyboard_users():
-    assert ":focus-visible{outline:" in APP_SHELL_JS
+    assert ":focus-visible{" in APP_SHELL_CSS
 
 
 # =====================================================================

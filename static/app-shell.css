@@ -1,0 +1,181 @@
+/*
+ * Shared authenticated app-shell styling — the header rendered into
+ * #appIdentityBar and the nav rendered into #appRoleNav by
+ * static/app-shell.js, one stylesheet for all seven primary pages
+ * (linked from each page's own <head>, see static/*.html).
+ *
+ * Loaded as a real <link rel="stylesheet"> rather than injected by JS: a
+ * <link> in <head> is applied before the page renders, so the moment
+ * app-shell.js creates the header/nav DOM (after its own /api/session
+ * fetch resolves) it is already styled — no flash of unstyled/oversized
+ * content while JS-injected rules would still be racing the first paint.
+ *
+ * Coordinates with each page's own dark header theme (--ink/--paper/
+ * --amber custom properties, already defined in every page's own <style>
+ * block) via var(..., <literal fallback>) — this file never assumes those
+ * variables exist yet, since it can be parsed before a page's own <style>
+ * block defines them.
+ */
+
+.ash-bar{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:10px;
+  min-height:44px;
+  padding:8px 14px;
+  background:var(--ink,#1B2430);
+  color:var(--paper,#FCFAF6);
+  font-family:inherit;
+  box-sizing:border-box;
+}
+
+/* ---------- branding: logo + company name, height-bounded ---------- */
+
+.ash-brand{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  flex:1 1 160px;
+  overflow:hidden;
+}
+/* The logo's box is bounded by this max-height/max-width pair regardless
+   of the source image's native resolution or aspect ratio — a very wide,
+   very tall, or very large logo is scaled down to fit and never controls
+   the header's height. object-fit:contain preserves aspect ratio (never
+   crops, never stretches); the stored source file itself is untouched. */
+.ash-brand img{
+  display:block;
+  height:auto;
+  width:auto;
+  max-height:44px;
+  max-width:160px;
+  object-fit:contain;
+  flex:0 0 auto;
+}
+.ash-brand img.hidden{ display:none; }
+.ash-brand span{
+  font-size:12px;
+  font-weight:700;
+  color:var(--paper,#FCFAF6);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+/* ---------- identity: username + role ---------- */
+
+.ash-identity{
+  font-size:11px;
+  color:#C7CDD6;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:32vw;
+  flex:0 1 auto;
+}
+.ash-identity .ash-role{ color:#8A94A6; }
+
+/* ---------- actions: Back / Home / Log out ---------- */
+
+.ash-actions{
+  display:flex;
+  gap:6px;
+  flex:0 0 auto;
+  margin-left:auto;
+}
+
+.ash-btn{
+  font-family:inherit;
+  cursor:pointer;
+  border:1.5px solid transparent;
+  border-radius:8px;
+  padding:7px 12px;
+  font-size:12px;
+  font-weight:700;
+  line-height:1.2;
+  background:rgba(255,255,255,.12);
+  color:var(--paper,#FCFAF6);
+  text-decoration:none;
+  display:inline-flex;
+  align-items:center;
+  white-space:nowrap;
+}
+.ash-btn:hover{ background:rgba(255,255,255,.22); }
+.ash-btn:active{ background:rgba(255,255,255,.3); }
+.ash-btn.ash-logout{ background:rgba(193,68,58,.85); }
+.ash-btn.ash-logout:hover{ background:rgba(193,68,58,1); }
+.ash-btn:focus-visible{ outline:2px solid var(--amber,#E2A93B); outline-offset:2px; }
+
+/* ---------- nav: reporting / operational switcher + review group ---------- */
+
+.ash-nav{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px;
+  padding:8px 14px;
+  background:var(--ink,#1B2430);
+  border-top:1px solid #333d4d;
+  font-family:inherit;
+  box-sizing:border-box;
+}
+.ash-nav a{
+  color:#8A94A6;
+  text-decoration:none;
+  font-size:12px;
+  font-weight:700;
+  padding:6px 12px;
+  border-radius:8px;
+  white-space:nowrap;
+  border-bottom:2px solid transparent;
+}
+.ash-nav a:hover{ background:rgba(255,255,255,.08); color:var(--paper,#FCFAF6); }
+.ash-nav a:focus-visible{ outline:2px solid var(--amber,#E2A93B); outline-offset:2px; }
+/* Active state never relies on color alone — background + a bottom border
+   accompany the color/contrast change (Stage 6 section 6 requirement). */
+.ash-nav a[aria-current="page"],
+.ash-nav a.ash-active{
+  color:var(--paper,#FCFAF6);
+  background:rgba(255,255,255,.14);
+  border-bottom-color:var(--amber,#E2A93B);
+}
+
+.ash-nav .ash-review-group{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-left:auto;
+  padding-left:12px;
+  border-left:1px solid #333d4d;
+}
+.ash-nav .ash-review-label{
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+  color:#8A94A6;
+  padding:0 2px;
+}
+
+/* ---------- narrow phone screens ---------- */
+
+@media (max-width:480px){
+  .ash-bar{ padding:8px 12px; }
+  /* When brand + identity + actions no longer fit on one row, the actions
+     group (Back/Home/Log out) wraps onto its own full-width row rather
+     than shrinking into unreadable/untappable buttons. */
+  .ash-actions{ width:100%; justify-content:flex-end; }
+  .ash-brand img{ max-height:34px; max-width:120px; }
+  .ash-identity{ max-width:55vw; }
+  .ash-nav{ padding:8px 12px; }
+  .ash-nav .ash-review-group{
+    margin-left:0;
+    padding-left:0;
+    border-left:none;
+    width:100%;
+    padding-top:6px;
+    border-top:1px solid #333d4d;
+  }
+}

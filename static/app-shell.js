@@ -96,44 +96,22 @@
   }
 
   // ---------- styles ----------
-  function injectStyles() {
-    if (document.getElementById('appShellStyles')) return;
-    var style = document.createElement('style');
-    style.id = 'appShellStyles';
-    style.textContent =
-      '.ash-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--ink,#1B2430);' +
-      'color:var(--paper,#FCFAF6);padding:8px 14px;font-family:inherit;}' +
-      '.ash-brand{display:flex;align-items:center;gap:6px;min-width:0;flex:1 1 auto;}' +
-      '.ash-brand img{height:16px;width:auto;}' +
-      '.ash-brand span{font-size:11px;color:#8A94A6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-      '.ash-identity{font-size:11px;color:#C7CDD6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw;}' +
-      '.ash-identity .ash-role{color:#8A94A6;}' +
-      '.ash-actions{display:flex;gap:6px;flex:0 0 auto;}' +
-      '.ash-btn{font-family:inherit;cursor:pointer;border:none;border-radius:7px;padding:6px 10px;' +
-      'font-size:11px;font-weight:700;background:rgba(255,255,255,.12);color:var(--paper,#FCFAF6);}' +
-      '.ash-btn.ash-logout{background:rgba(193,68,58,.85);}' +
-      '.ash-btn:focus-visible{outline:2px solid var(--amber,#E2A93B);outline-offset:2px;}' +
-      '.ash-nav{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;background:var(--ink,#1B2430);' +
-      'border-top:1px solid #333d4d;font-family:inherit;}' +
-      '.ash-nav a{color:#8A94A6;text-decoration:none;font-size:12px;font-weight:700;padding:6px 10px;' +
-      'border-radius:7px;white-space:nowrap;}' +
-      '.ash-nav a:focus-visible{outline:2px solid var(--amber,#E2A93B);outline-offset:2px;}' +
-      '.ash-nav a[aria-current="page"]{color:var(--paper,#FCFAF6);background:rgba(255,255,255,.12);' +
-      'border-bottom:2px solid var(--amber,#E2A93B);}' +
-      '.ash-nav .ash-review-group{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto;' +
-      'padding-left:10px;border-left:1px solid #333d4d;align-items:center;}' +
-      '.ash-nav .ash-review-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#8A94A6;' +
-      'padding:0 2px;}' +
-      '@media (max-width:420px){.ash-identity{max-width:32vw;}}';
-    document.head.appendChild(style);
-  }
+  // Deliberately NOT injected here — static/app-shell.css is a real
+  // <link rel="stylesheet"> loaded from every page's own <head> (see
+  // static/*.html), so the header/nav this file builds is already styled
+  // the instant it's inserted into the DOM. A JS-injected <style> tag can
+  // only run after this script itself has loaded and executed, which is
+  // exactly what caused the unstyled "flash" this file used to have.
 
   function navLink(item, activeKey) {
     var isActive = item.key === activeKey;
     var a = document.createElement('a');
     a.href = item.href;
     a.textContent = item.label;
-    if (isActive) a.setAttribute('aria-current', 'page');
+    if (isActive) {
+      a.setAttribute('aria-current', 'page');
+      a.classList.add('ash-active');
+    }
     return a;
   }
 
@@ -219,6 +197,10 @@
     logo.setAttribute('data-brand-logo', '');
     logo.className = 'hidden';
     logo.alt = '';
+    // A logo_url that 404s or otherwise fails to load must fall back to
+    // the text-only company name (already rendered alongside it) rather
+    // than leaving a broken-image glyph in its place.
+    logo.addEventListener('error', function () { logo.classList.add('hidden'); });
     var name = document.createElement('span');
     name.setAttribute('data-brand-name', '');
     brand.appendChild(logo);
