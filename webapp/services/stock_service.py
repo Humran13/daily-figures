@@ -4,16 +4,34 @@ Issued is always computed live from finalized dispatch lines (+ any manual
 adjustments) — never cached, never hand-typed — and Closing is always
 Opening + Return + Production - Issued, computed in exact integer base
 units. Nothing here uses floating point.
+
+Stage 8 — chronological carry-forward: stock is a running balance, not a
+per-date island. A DailyFigure row only ever exists at a product's
+first-ever period or at an explicit Manager/Super Admin correction (an
+"anchor") — every period after that is derived, and previously that
+derivation only looked at the anchor's own single-day closing, silently
+ignoring any finalized Production/Returns/Dispatch activity recorded on
+dates between the anchor and the date being viewed (see
+get_prior_closing_base_qty()'s docstring below for the exact fix). This is
+still fully computed live from source records on every read — no balance
+is ever stored or cached, so a later correction to historical activity
+ripples forward automatically the next time a later date is viewed.
 """
+from datetime import datetime, timedelta
+
 from webapp.extensions import db
 from webapp.models.daily_figure import DailyFigure, StockAdjustment
-from webapp.models.dispatch import SHIFT_DAY, STATUS_FINALIZED, Dispatch, DispatchLine
+from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, STATUS_FINALIZED, Dispatch, DispatchLine
 from webapp.models.production_record import ProductionLine, ProductionRecord
 from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.models.sales_category import SalesCategory
 from webapp.services.customer_service import resolve_canonical, resolve_customer_ids_for_filter
 from webapp.services.packaging import PackagingError, from_base_units, normalize, to_base_units
 
+# The one centralized period-ordering rule (Stage 8 section 2) — Day always
+# precedes Night on the same date; every date/shift comparison anywhere in
+# this module (and nowhere else — never duplicated in a route or in
+# frontend JS) goes through _sort_key().
 SHIFT_ORDER = {"Day": 0, "Night": 1}
 
 
@@ -25,8 +43,20 @@ def _sort_key(date, shift):
     return f"{date}-{SHIFT_ORDER.get(shift, 9)}"
 
 
-def get_prior_closing_base_qty(product_id, date, shift, exclude_id=None):
-    """The most recent DailyFigure strictly before (date, shift) for this product, if any."""
+def _shift_date(date_str, n):
+    d = datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=n)
+    return d.strftime("%Y-%m-%d")
+
+
+def _find_anchor_figure(product_id, date, shift, exclude_id=None):
+    """The most recent DailyFigure row strictly before (date, shift) for
+    this product, if any — the last point Opening Stock was explicitly set
+    (a product's first-ever period) or corrected (an authorized Manager/
+    Super Admin anchor, see upsert_daily_figure()). Every period between
+    two anchors — and every period after the latest one — has no row of
+    its own by design (Stage 7's "do not create meaningless stock rows"),
+    so this is a small scan bounded by the number of anchors ever created
+    for this product, not by the number of days that have passed."""
     target_key = _sort_key(date, shift)
     candidates = DailyFigure.query.filter(DailyFigure.product_id == product_id)
     if exclude_id is not None:
@@ -39,9 +69,97 @@ def get_prior_closing_base_qty(product_id, date, shift, exclude_id=None):
         if key < target_key and (best_key is None or key > best_key):
             best = row
             best_key = key
-    if best is None:
+    return best
+
+
+def _movement_between_periods(product_id, start_date, start_shift, end_date, end_shift):
+    """
+    Sum of (Production, Returns, Issued) across every period from
+    (start_date, start_shift) through (end_date, end_shift) INCLUSIVE — the
+    caller always passes the period immediately after an anchor and the
+    period immediately before a target, so "inclusive" here is exactly the
+    open interval strictly between the anchor and the target. An empty
+    range (the anchor and target are chronologically adjacent, e.g. a Day
+    anchor carrying straight into that same date's Night, or a Night
+    anchor carrying into the next date's Day) correctly contributes
+    nothing. Uses the same finalized-only, range-query building blocks
+    already used by date_range_summary() below — never a per-day Python
+    loop, so this stays cheap regardless of how many days have elapsed
+    since the anchor.
+    """
+    if _sort_key(start_date, start_shift) > _sort_key(end_date, end_shift):
+        return 0, 0, 0
+
+    production = 0
+    issued = 0
+    returns = 0
+
+    if start_date == end_date:
+        shifts = (SHIFT_DAY, SHIFT_NIGHT) if (start_shift == SHIFT_DAY and end_shift == SHIFT_NIGHT) else (start_shift,)
+        for s in shifts:
+            production += production_finalized_base_qty(product_id, start_date, s)
+            issued += dispatch_issued_base_qty(product_id, start_date, s) + adjustment_total_base_qty(product_id, start_date, s)
+            if s == SHIFT_DAY:
+                returns += returns_finalized_base_qty(product_id, start_date)
+        return production, returns, issued
+
+    if start_shift == SHIFT_NIGHT:
+        production += production_finalized_base_qty(product_id, start_date, SHIFT_NIGHT)
+        issued += dispatch_issued_base_qty(product_id, start_date, SHIFT_NIGHT) + adjustment_total_base_qty(product_id, start_date, SHIFT_NIGHT)
+        mid_from = _shift_date(start_date, 1)
+    else:
+        mid_from = start_date
+
+    if end_shift == SHIFT_DAY:
+        production += production_finalized_base_qty(product_id, end_date, SHIFT_DAY)
+        issued += dispatch_issued_base_qty(product_id, end_date, SHIFT_DAY) + adjustment_total_base_qty(product_id, end_date, SHIFT_DAY)
+        returns += returns_finalized_base_qty(product_id, end_date)
+        mid_to = _shift_date(end_date, -1)
+    else:
+        mid_to = end_date
+
+    if mid_from <= mid_to:
+        production += production_finalized_base_qty_range(product_id, mid_from, mid_to)
+        issued += dispatch_issued_base_qty_range(product_id, mid_from, mid_to) + adjustment_total_base_qty_range(product_id, mid_from, mid_to)
+        returns += returns_finalized_base_qty_range(product_id, mid_from, mid_to)
+
+    return production, returns, issued
+
+
+def get_prior_closing_base_qty(product_id, date, shift, exclude_id=None):
+    """
+    The running stock balance carried into (date, shift) — the anchor's own
+    closing PLUS every finalized Production/Returns/Issued movement on any
+    period strictly between the anchor and (date, shift), even when none of
+    those intervening periods ever got a DailyFigure row of their own (the
+    normal case — see _find_anchor_figure()). Previously this returned only
+    closing_base_qty(anchor), which is correct when the anchor is the
+    immediately-preceding period but silently dropped every subsequent
+    period's activity otherwise — the root cause of Opening Stock resetting
+    to zero (or freezing at a stale value) weeks after the last anchor.
+    Returns None only when there is no anchor at all (the product's actual
+    first-ever period, unchanged from before).
+    """
+    anchor = _find_anchor_figure(product_id, date, shift, exclude_id=exclude_id)
+    if anchor is None:
         return None
-    return closing_base_qty(best)
+
+    anchor_closing = closing_base_qty(anchor)
+
+    if anchor.shift == SHIFT_DAY:
+        range_start_date, range_start_shift = anchor.date, SHIFT_NIGHT
+    else:
+        range_start_date, range_start_shift = _shift_date(anchor.date, 1), SHIFT_DAY
+
+    if shift == SHIFT_NIGHT:
+        range_end_date, range_end_shift = date, SHIFT_DAY
+    else:
+        range_end_date, range_end_shift = _shift_date(date, -1), SHIFT_NIGHT
+
+    production, returns, issued = _movement_between_periods(
+        product_id, range_start_date, range_start_shift, range_end_date, range_end_shift
+    )
+    return anchor_closing + production + returns - issued
 
 
 def dispatch_issued_base_qty(product_id, date, shift):
@@ -136,6 +254,23 @@ def closing_base_qty(figure):
     return figure.opening_base_qty + return_total + production_total - issued
 
 
+def opening_base_qty_at(product_id, date, shift=SHIFT_DAY):
+    """
+    The resolved Opening Stock balance carried into (date, shift): whatever
+    explicit DailyFigure row exists exactly there, else the running balance
+    derived from the latest prior anchor (get_prior_closing_base_qty()), or
+    0 for a product with no anchor at all yet. The single shared
+    "what is Opening Stock right now, at this point in time" answer used
+    by date_range_summary() (and, through it, the Dashboard and any report
+    built on it) — never a second, duplicated derivation.
+    """
+    figure = DailyFigure.query.filter_by(product_id=product_id, date=date, shift=shift).first()
+    if figure is not None:
+        return figure.opening_base_qty
+    prior = get_prior_closing_base_qty(product_id, date, shift)
+    return prior if prior is not None else 0
+
+
 def _split_or_none(base_qty, rule):
     if base_qty is None or base_qty < 0:
         return None
@@ -205,14 +340,29 @@ def daily_figure_view(product, date, shift):
 def upsert_daily_figure(*, product, date, shift, opening, notes, user):
     """
     opening is a {cartons, packs, pieces} dict (or None to leave opening
-    as-is when it's locked to the prior period's closing) — the only
-    quantity Daily Figures still accepts directly. Return and Production
-    are no longer entered here: Stage 5 moved them to the dedicated
-    Returns Book / Production Book, and they're always read live from
-    there (see return_base_qty()/production_base_qty() above) — Daily
+    as-is when it's locked to the prior period's running balance) — the
+    only quantity Daily Figures still accepts directly. Return and
+    Production are no longer entered here: Stage 5 moved them to the
+    dedicated Returns Book / Production Book, and they're always read live
+    from there (see return_base_qty()/production_base_qty() above) — Daily
     Figures is a calculated summary for both, the same way Issued already
     was. Raises StockError for anything the user needs to fix.
+
+    Stage 8 section 3 — Opening Stock anchors: an Operator submitting
+    `opening` for a period whose Opening is derived (not this product's
+    first-ever period) has it silently ignored in favor of the derived
+    running balance, exactly as before — Operators never create a new
+    anchor. A Manager/Super Administrator submitting an explicit `opening`
+    for ANY period — including one that already has a derived value —
+    IS honored: that value becomes a new stock-balance anchor, its own
+    Closing recalculates from it, and every later period (which has no row
+    of its own) picks it up automatically the next time it's viewed, via
+    get_prior_closing_base_qty() finding this row as the new nearest
+    anchor. The audit trail (recorded by the route, before/after) captures
+    the correction; this function never restores an older value over it.
     """
+    from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+
     rule = product.current_packaging_rule()
     if rule is None:
         raise StockError(
@@ -220,17 +370,23 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
             "set one in Admin > Products first"
         )
 
+    is_elevated = user.role in (ROLE_MANAGER, ROLE_SUPER_ADMIN)
     figure = DailyFigure.query.filter_by(product_id=product.id, date=date, shift=shift).first()
     opening_locked = get_prior_closing_base_qty(
         product.id, date, shift, exclude_id=figure.id if figure else None
     )
 
+    submits_new_anchor = is_elevated and opening is not None
+    oc = op = opc = None
     try:
-        if opening_locked is not None:
+        if opening_locked is not None and not submits_new_anchor:
             opening_base = opening_locked
-        else:
-            if opening is None:
+        elif opening is None:
+            if opening_locked is not None:
+                opening_base = opening_locked  # elevated user touching this period without changing Opening
+            else:
                 raise StockError("Opening stock is required for this product's first-ever entry")
+        else:
             oc, op, opc = normalize(opening.get("cartons", 0), opening.get("packs", 0), opening.get("pieces", 0), rule)
             opening_base = to_base_units(oc, op, opc, rule)
     except PackagingError as e:
@@ -240,12 +396,15 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
         figure = DailyFigure(product_id=product.id, date=date, shift=shift, created_by=user.id)
         db.session.add(figure)
 
-    if opening_locked is None:
+    if oc is not None:
+        # An explicit value was submitted and accepted (first-ever entry,
+        # or an elevated correction) — store the exact split provided.
         figure.opening_cartons, figure.opening_packs, figure.opening_pieces = oc, op, opc
         figure.opening_base_qty = opening_base
     else:
-        # keep whatever's already stored (or, for a brand-new row inheriting
-        # a locked opening, store the prior period's closing split for display)
+        # Locked to the derived running balance — keep whatever's already
+        # stored (or, for a brand-new row inheriting a locked opening,
+        # store the split purely for display).
         if figure.id is None:
             split = from_base_units(opening_base, rule)
             figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
@@ -365,11 +524,23 @@ def date_range_summary(date_from, date_to):
         total_production = sum(r.production_base_qty for r in rows) + \
             production_finalized_base_qty_range(product.id, date_from, date_to)
 
-        if not rows and total_issued == 0 and total_return == 0 and total_production == 0:
+        # Stage 8: the range's Opening is the carried-forward running
+        # balance at date_from (see opening_base_qty_at()), not merely
+        # whichever DailyFigure row happens to be earliest within the
+        # range — a date range with no row of its own (the normal case for
+        # every period after a product's first) previously always reported
+        # Opening as a hard-coded 0, silently discarding all the finalized
+        # activity that happened between the last anchor and date_from.
+        opening_base = opening_base_qty_at(product.id, date_from, SHIFT_DAY)
+
+        # A product genuinely untouched — no carried balance, no rows, no
+        # movement in range — is still left out, exactly as before, rather
+        # than padding the report with all-zero rows. A product with a real
+        # carried balance (even a zero-activity day) is now correctly kept.
+        if not rows and total_issued == 0 and total_return == 0 and total_production == 0 and opening_base == 0:
             continue
 
         rule = product.current_packaging_rule()
-        opening_base = rows[0].opening_base_qty if rows else 0
         closing_base = opening_base + total_return + total_production - total_issued
 
         results.append({

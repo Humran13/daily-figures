@@ -14,6 +14,7 @@ from webapp.extensions import db
 from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
 from webapp.models.user import ROLE_SUPER_ADMIN
+from webapp.services import product_usage_service
 from webapp.services.audit_service import record_audit
 
 admin_products_bp = Blueprint("admin_products", __name__, url_prefix="/api/admin/products")
@@ -27,7 +28,24 @@ def _utcnow():
 @admin_products_bp.route("", methods=["GET"])
 @login_required
 def list_products():
+    """
+    Default order is unchanged (display_order, name) — the admin Products &
+    Packaging screen, and any other caller that doesn't ask for it, keeps
+    exactly the same list it always had. Passing `?sort=usage` (Stage 8
+    Part 2) switches to the global, shared quick-selection ranking instead
+    — used by the operational Dispatch/Returns/Production/Daily Figures
+    product selectors, never by admin configuration screens.
+    """
     include_inactive = request.args.get("include_inactive") == "1"
+    if request.args.get("sort") == "usage":
+        products = product_usage_service.ranked_active_products(include_inactive=include_inactive)
+        results = []
+        for p in products:
+            d = p.to_dict()
+            d["frequently_used"] = p.usage_score > 0
+            results.append(d)
+        return jsonify(results)
+
     query = Product.query.order_by(Product.display_order, Product.name)
     if not include_inactive:
         query = query.filter_by(active=True)

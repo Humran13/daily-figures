@@ -138,19 +138,23 @@ def test_editable_workflow_handlers_unchanged():
     # "Back" was later unified into the shared "Previous Product" button —
     # see tests/test_stage1_correction_previous_product_symmetry.py. Save &
     # Next and Skip are untouched by that change.
-    assert "if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));" in INDEX_HTML
+    # Stage 8 section 3 added a showOpeningInputs parameter so a Manager/
+    # Super Admin correction on a later (normally-derived) period is also
+    # submitted correctly — see tests/test_stage8_stock_carry_forward.py.
+    assert "if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view, showOpeningInputs));" in INDEX_HTML
     # Stage 7 added a fire-and-forget lock release before advancing.
     assert "if(skipBtn) skipBtn.addEventListener('click', ()=>{ releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard(); });" in INDEX_HTML
 
 
-# 8. isFullyReadOnly is false only when this is a first-ever entry the
-# current role is allowed to set Opening Stock on — Stage 5 removed the
-# separate Return/Production edit flags entirely (both are now always
-# read-only, sourced from their own Books, for every role), so read-only
-# no longer branches on three separately-negated permission flags.
+# 8. isFullyReadOnly is false only when this is a first-ever entry (or an
+# elevated correction — Stage 8 section 3's showOpeningInputs) the current
+# role is allowed to set Opening Stock on — Stage 5 removed the separate
+# Return/Production edit flags entirely (both are now always read-only,
+# sourced from their own Books, for every role), so read-only no longer
+# branches on three separately-negated permission flags.
 
 def test_is_fully_read_only_depends_only_on_opening_editability_and_permission():
     match = re.search(r"const isFullyReadOnly = isViewer \|\| !\((.*?)\);", INDEX_HTML)
     assert match
     condition = match.group(1)
-    assert condition == "view.opening_editable && canEditOpening"
+    assert condition == "showOpeningInputs && canEditOpening"

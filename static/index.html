@@ -249,7 +249,11 @@ async function apiDelete(path, body){
 }
 
 async function loadProducts(){
-  const data = await apiGet('/api/admin/products');
+  // Stage 8 Part 2: the review/entry wizard also walks products in the
+  // shared, global quick-selection order (frequency + recency of
+  // finalized use) — same endpoint and ranking every operational
+  // selector uses, never a separate per-user order.
+  const data = await apiGet('/api/admin/products?sort=usage');
   products = Array.isArray(data) ? data : [];
 }
 
@@ -388,8 +392,13 @@ async function renderEntryCard(){
   // are entered in the Returns Book / Production Book and shown here
   // read-only, exactly like Issued already was. So there is nothing left
   // to save unless this is that first-ever entry and the current role is
-  // allowed to set it.
-  const isFullyReadOnly = isViewer || !(view.opening_editable && canEditOpening);
+  // allowed to set it. Stage 8 section 3: Manager/Super Admin may ALSO
+  // correct Opening Stock on a later, normally-derived period — their own
+  // explicit value becomes a new carry-forward anchor (see
+  // stock_service.upsert_daily_figure()) — so the input shows for them
+  // regardless of view.opening_editable.
+  const showOpeningInputs = view.opening_editable || isElevated;
+  const isFullyReadOnly = isViewer || !(showOpeningInputs && canEditOpening);
   // No Activity Today is available to anyone who could otherwise act on
   // this entry, whether or not Opening Stock itself happens to be
   // editable right now — see Stage 7 section 6.
@@ -404,7 +413,8 @@ async function renderEntryCard(){
         <span class="lbl">Opening Stock</span>
         <span class="val qty-readout" id="openingReadout">${qtyLabel(view.opening, rule)}</span>
       </div>
-      ${view.opening_editable ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
+      ${showOpeningInputs ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
+      ${(showOpeningInputs && !view.opening_editable) ? `<p class="hint" style="margin:-8px 0 10px;">Correcting this becomes a new stock-balance anchor for every later date.</p>` : ''}
 
       <div class="stock-readout" style="margin-top:14px;">
         <span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
@@ -441,7 +451,7 @@ async function renderEntryCard(){
   `;
 
   function updatePreview(){
-    const o = view.opening_editable ? toBaseUnits(...Object.values(readQtyInputs('opening', rule)), rule) : view.opening.base_qty;
+    const o = showOpeningInputs ? toBaseUnits(...Object.values(readQtyInputs('opening', rule)), rule) : view.opening.base_qty;
     const closingBase = o + view.return_.base_qty + view.production.base_qty - view.issued.base_qty;
     const el = document.getElementById('closingPreview');
     if(closingBase < 0){ el.textContent = 'negative — check entries'; return; }
@@ -462,7 +472,7 @@ async function renderEntryCard(){
   // the DOM when isFullyReadOnly, so there is nothing to wire up and no
   // path that could ever call saveCurrentAndAdvance().
   const saveNextBtn = document.getElementById('saveNextBtn');
-  if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));
+  if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view, showOpeningInputs));
   const skipBtn = document.getElementById('skipBtn');
   if(skipBtn) skipBtn.addEventListener('click', ()=>{ releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard(); });
   const noActivityBtn = document.getElementById('noActivityBtn');
@@ -479,7 +489,7 @@ async function renderEntryCard(){
   // changes rather than silently dropping them.
   const prevProductBtn = document.getElementById('prevProductBtn');
   if(prevProductBtn) prevProductBtn.addEventListener('click', ()=>{
-    if(!isFullyReadOnly && hasUnsavedChanges(rule, view)){
+    if(!isFullyReadOnly && hasUnsavedChanges(rule, view, showOpeningInputs)){
       if(!confirm('You have unsaved changes for this product. Leave without saving?')) return;
     }
     releaseLockIfOwned(product, date, shift);
@@ -555,12 +565,13 @@ async function reopenEntry(product, date, shift){
   renderEntryCard();
 }
 
-function hasUnsavedChanges(rule, view){
+function hasUnsavedChanges(rule, view, showOpeningInputs){
   // Opening Stock is the only editable field left on this card — Return
   // and Production are always read-only readouts now (sourced from their
   // own Books), so there is nothing else that could ever have an unsaved
-  // change.
-  if(!view.opening_editable) return false;
+  // change. showOpeningInputs also covers a Manager/Super Admin correcting
+  // an otherwise-derived period (Stage 8 section 3).
+  if(!showOpeningInputs) return false;
   const differs = (current, saved) => {
     saved = saved || {cartons: 0, packs: 0, pieces: 0};
     return current.cartons !== (saved.cartons || 0) || current.packs !== (saved.packs || 0) || current.pieces !== (saved.pieces || 0);
@@ -568,8 +579,8 @@ function hasUnsavedChanges(rule, view){
   return differs(readQtyInputs('opening', rule), view.opening);
 }
 
-async function saveCurrentAndAdvance(product, date, shift, rule, view){
-  const opening = view.opening_editable ? readQtyInputs('opening', rule) : null;
+async function saveCurrentAndAdvance(product, date, shift, rule, view, showOpeningInputs){
+  const opening = showOpeningInputs ? readQtyInputs('opening', rule) : null;
 
   const {status, data} = await apiPost('/api/daily-figures', {
     product_id: product.id, date, shift, opening,

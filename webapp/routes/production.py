@@ -6,6 +6,7 @@ from webapp.models.dispatch import SHIFTS
 from webapp.models.production_record import STATUS_DRAFT, ProductionLine, ProductionRecord
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
 from webapp.services import branding_service, production_service as svc
+from webapp.services import product_usage_service
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services.packaging import PackagingError
@@ -282,6 +283,8 @@ def finalize(production_id):
     except ProductionError as e:
         return _error(e)
 
+    product_usage_service.record_usage("production", record.id, {line.product_id for line in record.lines})
+
     record_audit(user, "finalize", "production", entity_id=record.id, before=before, after=record.to_dict())
     db.session.commit()
     return jsonify(record.to_dict())
@@ -323,6 +326,8 @@ def void(production_id):
         svc.void_production(record, user, d.get("reason"))
     except ProductionError as e:
         return _error(e)
+
+    product_usage_service.remove_usage("production", record.id)
 
     record_audit(user, "void", "production", entity_id=record.id, before=before, after=record.to_dict())
     db.session.commit()

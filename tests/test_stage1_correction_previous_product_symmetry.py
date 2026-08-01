@@ -122,7 +122,10 @@ def test_previous_product_does_not_autosave():
 
 def test_previous_product_warns_before_discarding_unsaved_changes():
     body = _prev_product_handler_body()
-    assert "!isFullyReadOnly && hasUnsavedChanges(rule, view)" in body
+    # Stage 8 section 3 added a showOpeningInputs parameter (a Manager/
+    # Super Admin correction on a later, normally-derived period also
+    # needs this warning — see tests/test_stage8_stock_carry_forward.py).
+    assert "!isFullyReadOnly && hasUnsavedChanges(rule, view, showOpeningInputs)" in body
     assert "confirm(" in body
     assert "if(!confirm(" in body and "return;" in body  # cancelling must stop navigation
 
@@ -132,16 +135,17 @@ def test_has_unsaved_changes_checks_only_editable_opening():
     Stage 5 moved Return/Production entry to their own Books — Daily
     Figures no longer has editable inputs for either, so
     hasUnsavedChanges() has nothing left to check but Opening Stock (and
-    only when it's actually editable, i.e. a product's first-ever period).
+    only when it's actually editable — a product's first-ever period, or,
+    as of Stage 8 section 3, an elevated correction on a later period).
     """
-    match = re.search(r"function hasUnsavedChanges\(rule, view\)\{(.*?)\n\}", INDEX_HTML, re.DOTALL)
+    match = re.search(r"function hasUnsavedChanges\(rule, view, showOpeningInputs\)\{(.*?)\n\}", INDEX_HTML, re.DOTALL)
     assert match, "hasUnsavedChanges helper is missing"
     body = match.group(1)
     assert "readQtyInputs('ret', rule)" not in body
     assert "readQtyInputs('prod', rule)" not in body
-    assert "if(!view.opening_editable) return false;" in body
+    assert "if(!showOpeningInputs) return false;" in body
     assert "differs(readQtyInputs('opening', rule), view.opening)" in body
 
 
 def test_save_and_next_workflow_completely_unchanged():
-    assert "if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view));" in INDEX_HTML
+    assert "if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view, showOpeningInputs));" in INDEX_HTML

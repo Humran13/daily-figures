@@ -7,6 +7,7 @@ from webapp.models.customer import Customer
 from webapp.models.return_record import STATUS_DRAFT, STATUSES, ReturnLine, ReturnRecord
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
 from webapp.services import branding_service, customer_service, returns_service as svc
+from webapp.services import product_usage_service
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services.packaging import PackagingError
@@ -317,6 +318,8 @@ def finalize(return_id):
     except ReturnError as e:
         return _error(e)
 
+    product_usage_service.record_usage("returns", record.id, {line.product_id for line in record.lines})
+
     record_audit(user, "finalize", "return", entity_id=record.id, before=before, after=record.to_dict())
     db.session.commit()
     return jsonify(record.to_dict())
@@ -358,6 +361,8 @@ def void(return_id):
         svc.void_return(record, user, d.get("reason"))
     except ReturnError as e:
         return _error(e)
+
+    product_usage_service.remove_usage("returns", record.id)
 
     record_audit(user, "void", "return", entity_id=record.id, before=before, after=record.to_dict())
     db.session.commit()

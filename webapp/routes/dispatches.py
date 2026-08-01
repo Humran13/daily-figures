@@ -8,6 +8,7 @@ from webapp.models.dispatch import STATUS_DRAFT, STATUS_FINALIZED, STATUSES, Dis
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
 from webapp.services import branding_service, customer_service, dispatch_service as svc
+from webapp.services import product_usage_service
 from webapp.services.audit_service import record_audit
 from webapp.services.dispatch_service import DispatchError
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -403,6 +404,13 @@ def finalize(dispatch_id):
     except DispatchError as e:
         return _error(e)
 
+    # Stage 8 Part 2 — global product quick-selection ranking: one usage
+    # event per distinct product actually in this now-finalized dispatch,
+    # never per line. Re-finalizing after a reopen/correction upserts the
+    # same events rather than duplicating them (see
+    # product_usage_service.record_usage()).
+    product_usage_service.record_usage("dispatch", dispatch.id, {line.product_id for line in dispatch.lines})
+
     record_audit(user, "finalize", "dispatch", entity_id=dispatch.id, before=before, after=dispatch.to_dict())
     db.session.commit()
     return jsonify(dispatch.to_dict())
@@ -444,6 +452,10 @@ def void(dispatch_id):
         svc.void_dispatch(dispatch, user, d.get("reason"))
     except DispatchError as e:
         return _error(e)
+
+    # A voided dispatch is no longer valid completed activity — it must
+    # stop contributing to the ranking (Stage 8 Part 2).
+    product_usage_service.remove_usage("dispatch", dispatch.id)
 
     record_audit(user, "void", "dispatch", entity_id=dispatch.id, before=before, after=dispatch.to_dict())
     db.session.commit()

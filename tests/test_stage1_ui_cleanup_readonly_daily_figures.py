@@ -50,9 +50,11 @@ def test_primary_tabs_container_wraps_both_old_tabs():
 def test_fully_read_only_condition_covers_viewer_and_unpermitted_operator():
     # Stage 5 removed the separate Return/Production edit flags — Daily
     # Figures now only ever accepts Opening Stock directly (on a product's
-    # first-ever period), so isFullyReadOnly collapses to "Viewer, or
-    # anyone not allowed/able to edit Opening Stock right now".
-    match = re.search(r"const isFullyReadOnly = isViewer \|\| !\(view\.opening_editable && canEditOpening\);", INDEX_HTML)
+    # first-ever period, or, as of Stage 8 section 3, an elevated
+    # correction on a later period — see showOpeningInputs), so
+    # isFullyReadOnly collapses to "Viewer, or anyone not allowed/able to
+    # edit Opening Stock right now".
+    match = re.search(r"const isFullyReadOnly = isViewer \|\| !\(showOpeningInputs && canEditOpening\);", INDEX_HTML)
     assert match, "isFullyReadOnly definition not found"
 
 

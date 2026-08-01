@@ -317,12 +317,19 @@ document.addEventListener('click', (e)=>{
 
 // ---------- products & lines ----------
 async function loadProducts(){
-  const {data} = await api('/api/admin/products');
+  // Stage 8 Part 2: ?sort=usage ranks by the global, shared quick-selection
+  // score (frequency + recency of finalized use) — never a per-user or
+  // per-browser ranking, and never affects admin configuration screens,
+  // which still call this same endpoint with no sort param.
+  const {data} = await api('/api/admin/products?sort=usage');
   productsCache = Array.isArray(data) ? data : [];
   const select = document.getElementById('addProductSelect');
-  select.innerHTML = '<option value="">+ Add a product…</option>' + productsCache.map(p =>
-    `<option value="${p.id}" ${!p.packaging_rule ? 'disabled' : ''}>${escapeHtml(p.name)}${!p.packaging_rule ? ' (not configured)' : ''}</option>`
-  ).join('');
+  const optionHtml = p => `<option value="${p.id}" ${!p.packaging_rule ? 'disabled' : ''}>${escapeHtml(p.name)}${!p.packaging_rule ? ' (not configured)' : ''}</option>`;
+  const frequent = productsCache.filter(p=>p.frequently_used);
+  const rest = productsCache.filter(p=>!p.frequently_used);
+  select.innerHTML = '<option value="">+ Add a product…</option>' +
+    (frequent.length ? `<optgroup label="Frequently used">${frequent.map(optionHtml).join('')}</optgroup>` : '') +
+    (frequent.length && rest.length ? `<optgroup label="All products">${rest.map(optionHtml).join('')}</optgroup>` : rest.map(optionHtml).join(''));
 }
 document.getElementById('addProductSelect').addEventListener('change', (e)=>{
   const id = parseInt(e.target.value, 10);
