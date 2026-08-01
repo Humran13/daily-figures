@@ -39,7 +39,7 @@ Final aggregation formulas (see webapp/services/stock_service.py):
 import pytest
 
 from webapp.extensions import db
-from webapp.models.daily_figure import DailyFigure
+from webapp.models.daily_figure import OPENING_STOCK_SOURCE_INITIAL_MANUAL, DailyFigure
 from webapp.models.product import Product
 from webapp.models.user import User
 
@@ -73,8 +73,10 @@ def _insert_legacy_daily_figure(app, product_id, date, shift, *, opening, return
             # This helper simulates a genuine pre-Stage-5 historical row
             # (written directly, the way the old system left it on disk) —
             # exactly the same standing as a legacy-migration import, so it
-            # must always be trusted as an Opening Stock anchor (see
-            # webapp/services/stock_service.py's Stage 8 correction).
+            # must always be anchor-eligible (see
+            # webapp/services/stock_service.py's Stage 8 correction and
+            # production hotfix).
+            opening_stock_source=OPENING_STOCK_SOURCE_INITIAL_MANUAL,
             opening_stock_is_override=True,
             return_cartons=0, return_packs=0, return_pieces=0, return_base_qty=return_base,
             production_cartons=0, production_packs=0, production_pieces=0, production_base_qty=production_base,

@@ -9,7 +9,7 @@ Never modifies or deletes a single row of the legacy `entries` table.
 """
 from webapp.extensions import db
 from webapp.legacy_entries import get_db
-from webapp.models.daily_figure import DailyFigure, LegacyMigrationFlag, StockAdjustment
+from webapp.models.daily_figure import OPENING_STOCK_SOURCE_INITIAL_MANUAL, DailyFigure, LegacyMigrationFlag, StockAdjustment
 from webapp.models.product import Product
 from webapp.services.legacy_decode import AmbiguousLegacyValue, decode_legacy_value
 from webapp.services.packaging import to_base_units
@@ -126,10 +126,15 @@ def run_legacy_migration(user):
             opening_base_qty=to_base_units(*opening_cpp, rule),
             # A legacy `entries` row is a genuine standalone historical
             # record from before this app derived Opening Stock from a
-            # running balance at all — always trust it as an authoritative
-            # anchor (see webapp/services/stock_service.py's Stage 8
-            # correction), never treat it as an incidental/inherited row
-            # that later carry-forward is free to recompute over.
+            # running balance at all — always anchor-eligible (see
+            # webapp/services/stock_service.py's Stage 8 correction and
+            # production hotfix), never treated as an incidental/inherited
+            # row that later carry-forward is free to recompute over.
+            # initial_manual (not legacy_inferred): this is confidently
+            # provenanced — the migration itself is the evidence — and is
+            # still live-revalidated against any finalized movement dated
+            # before it, exactly like any other initial_manual row.
+            opening_stock_source=OPENING_STOCK_SOURCE_INITIAL_MANUAL,
             opening_stock_is_override=True,
             return_cartons=return_cpp[0], return_packs=return_cpp[1], return_pieces=return_cpp[2],
             return_base_qty=to_base_units(*return_cpp, rule),

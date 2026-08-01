@@ -20,7 +20,15 @@ ripples forward automatically the next time a later date is viewed.
 from datetime import datetime, timedelta
 
 from webapp.extensions import db
-from webapp.models.daily_figure import DailyFigure, StockAdjustment
+from webapp.models.daily_figure import (
+    OPENING_STOCK_SOURCE_DERIVED,
+    OPENING_STOCK_SOURCE_INITIAL_MANUAL,
+    OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
+    OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE,
+    OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR,
+    DailyFigure,
+    StockAdjustment,
+)
 from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, STATUS_FINALIZED, Dispatch, DispatchLine
 from webapp.models.production_record import ProductionLine, ProductionRecord
 from webapp.models.return_record import ReturnLine, ReturnRecord
@@ -54,36 +62,71 @@ def _shift_date(date_str, n):
     return d.strftime("%Y-%m-%d")
 
 
+def _is_trusted_anchor(figure):
+    """
+    Whether THIS row's stored Opening Stock should be trusted right now —
+    the single decision daily_figure_view() (for the exact row being
+    viewed) and _find_anchor_figure() (scanning for an anchor before some
+    later date) both defer to, so a row is never treated as authoritative
+    in one context and stale in another for the same underlying reason.
+
+    Stage 8 production hotfix (section 3/4): a plain "is this an override"
+    boolean can't say WHY a row is trusted, which is exactly what let a
+    real out-of-order data-entry case get stuck — a later period entered
+    before its own history was recorded genuinely was this product's
+    "first-ever period" at the moment it was saved, and correctly became
+    an anchor (opening_stock_source=initial_manual) — but once finalized
+    Production/Returns/Dispatch is later entered for an even earlier date,
+    that row was never really the first period at all. Only a
+    manual_correction (an elevated user's submission that provably
+    differed from live derivation at that moment) is trusted
+    unconditionally forever; every other anchor-eligible source
+    (initial_manual, legacy_inferred) is re-checked against finalized
+    history on every single read — never cached, never decided once and
+    remembered — so a later-entered earlier movement demotes it
+    automatically, with no reset, no reopening, and no new migration
+    required.
+    """
+    if figure.opening_stock_source not in OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE:
+        return False
+    if figure.opening_stock_source in OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR:
+        return True
+    if figure.shift == SHIFT_NIGHT:
+        end_date, end_shift = figure.date, SHIFT_DAY
+    else:
+        end_date, end_shift = _shift_date(figure.date, -1), SHIFT_NIGHT
+    return not _any_finalized_activity_at_or_before(figure.product_id, end_date, end_shift)
+
+
 def _find_anchor_figure(product_id, date, shift, exclude_id=None):
     """The most recent DailyFigure row strictly before (date, shift) for
-    this product that is a genuine Opening Stock override
-    (opening_stock_is_override=True) — a product's first-ever entry, or an
-    authorized Manager/Super Admin correction that actually changed
-    something (see upsert_daily_figure()). A non-override row (an
-    "inherited display" row a save happened to touch without changing
-    Opening, or a row cleared by Reset Daily Values) is invisible to this
-    lookup — it can never be mistaken for an authoritative anchor, however
-    old or however it came to exist. Every period between two real anchors
-    — and every period after the latest one — has no row of its own by
-    design (Stage 7's "do not create meaningless stock rows"), so this is
-    a small scan bounded by the number of anchors ever created for this
-    product, not by the number of days that have passed."""
+    this product that is still a TRUSTED anchor right now (see
+    _is_trusted_anchor()) — scanning backwards from just before the target
+    so that a disqualified candidate (an initial_manual/legacy_inferred row
+    that finalized history now predates) is skipped in favor of an older,
+    still-valid one, rather than being mistaken for "no anchor exists."
+    Every period between two real anchors — and every period after the
+    latest one — has no row of its own by design (Stage 7's "do not create
+    meaningless stock rows"), so this scan is bounded by the number of
+    anchor-eligible rows ever created for this product, not by the number
+    of days that have passed."""
     target_key = _sort_key(date, shift)
     candidates = DailyFigure.query.filter(
         DailyFigure.product_id == product_id,
-        DailyFigure.opening_stock_is_override.is_(True),
+        DailyFigure.opening_stock_source.in_(OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE),
     )
     if exclude_id is not None:
         candidates = candidates.filter(DailyFigure.id != exclude_id)
 
-    best = None
-    best_key = None
-    for row in candidates.all():
-        key = _sort_key(row.date, row.shift)
-        if key < target_key and (best_key is None or key > best_key):
-            best = row
-            best_key = key
-    return best
+    eligible = sorted(
+        (row for row in candidates.all() if _sort_key(row.date, row.shift) < target_key),
+        key=lambda row: _sort_key(row.date, row.shift),
+        reverse=True,
+    )
+    for row in eligible:
+        if _is_trusted_anchor(row):
+            return row
+    return None
 
 
 def _movement_between_periods(product_id, start_date, start_shift, end_date, end_shift):
@@ -368,7 +411,7 @@ def opening_base_qty_at(product_id, date, shift=SHIFT_DAY):
     """
     The resolved Opening Stock balance carried into (date, shift): the
     stored value on an explicit DailyFigure row exactly there ONLY when
-    that row is a genuine override (opening_stock_is_override=True — see
+    that row is a currently-trusted anchor (_is_trusted_anchor() — see
     daily_figure_view()'s identical rule), else the running balance
     derived live (get_prior_closing_base_qty()), or 0 for a product with
     no anchor and no finalized activity at all yet. The single shared
@@ -379,7 +422,7 @@ def opening_base_qty_at(product_id, date, shift=SHIFT_DAY):
     same product/date/shift.
     """
     figure = DailyFigure.query.filter_by(product_id=product_id, date=date, shift=shift).first()
-    if figure is not None and figure.opening_stock_is_override:
+    if figure is not None and _is_trusted_anchor(figure):
         return figure.opening_base_qty
     prior = get_prior_closing_base_qty(product_id, date, shift, exclude_id=figure.id if figure else None)
     return prior if prior is not None else 0
@@ -398,17 +441,22 @@ def daily_figure_view(product, date, shift):
     DailyFigure row has been saved yet — Issued (and its drill-down) must
     be visible even before Opening/Return/Production are entered.
 
-    Stage 8 correction: a row existing exactly at (date, shift) is only
-    ever trusted for its Opening Stock value when it's a genuine override
-    (opening_stock_is_override=True). A non-override row — one that a save
-    happened to touch without actually correcting Opening (see
-    upsert_daily_figure()), or one cleared by Reset Daily Values — has its
+    Stage 8 correction, extended by the production hotfix: a row existing
+    exactly at (date, shift) is only ever trusted for its Opening Stock
+    value when _is_trusted_anchor() says so right now — a non-anchor-
+    eligible row (opening_stock_source="derived", one that a save happened
+    to touch without actually correcting Opening, or one cleared by Reset
+    Daily Values), OR an anchor-eligible row that's been live-revalidated
+    away (an "initial_manual"/"legacy_inferred" row that finalized history
+    has since been entered before — see _is_trusted_anchor()) has its
     stored opening_base_qty ignored entirely and is treated exactly like
-    "no row exists here", so a later correction to earlier Production/
+    "no row exists here". Only "manual_correction" is exempt from that
+    revalidation. Either way, a later correction to earlier Production/
     Returns/Dispatch, or a later real anchor, is picked up live on every
-    read no matter how the row came to exist. Completion status (Stage 7's
-    DailyEntryStatus — "No Activity Today"/completed) never enters this
-    function at all, so it can never freeze or bypass this calculation.
+    read no matter how the row came to exist or when its history was
+    entered relative to it. Completion status (Stage 7's DailyEntryStatus
+    — "No Activity Today"/completed) never enters this function at all, so
+    it can never freeze or bypass this calculation.
     """
     rule = product.current_packaging_rule()
     figure = DailyFigure.query.filter_by(product_id=product.id, date=date, shift=shift).first()
@@ -419,7 +467,7 @@ def daily_figure_view(product, date, shift):
     return_base = return_base_qty(product.id, date, shift, legacy_return)
     production_base = production_base_qty(product.id, date, shift, legacy_production)
 
-    if figure is not None and figure.opening_stock_is_override:
+    if figure is not None and _is_trusted_anchor(figure):
         opening_base = figure.opening_base_qty
         opening_editable = get_prior_closing_base_qty(product.id, date, shift, exclude_id=figure.id) is None
         notes = figure.notes
@@ -489,9 +537,22 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
     also showed an editable Opening field) could silently freeze that
     date's Opening Stock forever at whatever was on screen at that moment
     — later Production/Returns/Dispatch corrections upstream would then
-    never ripple past it. See opening_stock_is_override on the model and
-    daily_figure_view() above, which now only ever trusts a row's stored
-    Opening when this flag is set.
+    never ripple past it.
+
+    Production hotfix, section 3/7 — WHICH kind of anchor a row becomes is
+    now recorded via opening_stock_source, not just a bare True/False:
+      - opening_locked is None (nothing before this period at all, not
+        even finalized movement) -> initial_manual. Any role may set
+        this; it's the genuine starting point. Only trusted live for as
+        long as it truly has nothing before it -- see _is_trusted_anchor()
+        -- so a later out-of-order historical entry doesn't leave it
+        stuck.
+      - An elevated user's submission genuinely differs from live
+        derivation -> manual_correction. Trusted unconditionally, forever
+        -- a deliberate correction is never second-guessed by history.
+      - Everything else -> derived. Never an anchor.
+    See daily_figure_view()'s _is_trusted_anchor() call, which is the one
+    place that actually decides whether a row's stored Opening is used.
     """
     from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
 
@@ -521,31 +582,35 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
         # from any role, and always becomes the anchor.
         if submitted_base_qty is None:
             raise StockError("Opening stock is required for this product's first-ever entry")
-        is_override = True
+        new_source = OPENING_STOCK_SOURCE_INITIAL_MANUAL
         opening_base = submitted_base_qty
     elif is_elevated and submitted_base_qty is not None and submitted_base_qty != opening_locked:
-        is_override = True
+        new_source = OPENING_STOCK_SOURCE_MANUAL_CORRECTION
         opening_base = submitted_base_qty
     else:
-        is_override = False
+        new_source = OPENING_STOCK_SOURCE_DERIVED
         opening_base = opening_locked
 
-    is_brand_new = figure is None
     if figure is None:
         figure = DailyFigure(product_id=product.id, date=date, shift=shift, created_by=user.id)
         db.session.add(figure)
 
-    if is_override:
+    if new_source != OPENING_STOCK_SOURCE_DERIVED:
         figure.opening_cartons, figure.opening_packs, figure.opening_pieces = oc, op, opc
         figure.opening_base_qty = opening_base
+        figure.opening_stock_source = new_source
         figure.opening_stock_is_override = True
     else:
         # Not a correction — always refresh the display split to the
         # current live-derived truth (self-healing: any write to a
-        # non-override row, even an unrelated notes edit, corrects a
-        # previously-stale value). Never flip an EXISTING row's override
-        # flag off here — only an explicit override write (above) or
-        # Reset Daily Values may retire a real anchor.
+        # non-manual_correction row, even an unrelated notes edit,
+        # corrects a previously-stale value AND its stored provenance --
+        # an initial_manual/legacy_inferred row that's since been
+        # live-disqualified by earlier history (see _is_trusted_anchor())
+        # gets its stored label corrected to "derived" too, the moment
+        # anyone next saves it. Only manual_correction is protected from
+        # this -- only a fresh override write (above) or Reset Daily
+        # Values may retire a real correction.
         try:
             split = from_base_units(opening_base, rule)
         except PackagingError:
@@ -561,7 +626,8 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
             split = (0, 0, 0)
         figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
         figure.opening_base_qty = opening_base
-        if is_brand_new:
+        if figure.opening_stock_source != OPENING_STOCK_SOURCE_MANUAL_CORRECTION:
+            figure.opening_stock_source = OPENING_STOCK_SOURCE_DERIVED
             figure.opening_stock_is_override = False
 
     figure.packaging_rule_id = rule.id

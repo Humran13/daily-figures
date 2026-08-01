@@ -28,7 +28,7 @@ name, per the hotfix's explicit universal-scope requirement.
 import pytest
 
 from webapp.extensions import db as _db
-from webapp.models.daily_figure import DailyFigure
+from webapp.models.daily_figure import OPENING_STOCK_SOURCE_LEGACY_INFERRED, DailyFigure
 from migrations.versions import d44646dd7efe_repair_opening_stock_override_backfill as repair_migration
 
 
@@ -108,12 +108,23 @@ def _view(client, product_id, date_str, shift="Day"):
     return client.get(f"/api/daily-figures/{product_id}?date={date_str}&shift={shift}").get_json()
 
 
-def _insert_stale_override_row(app, product_id, rule_id, date, shift, user_id):
+def _insert_stale_override_row(app, product_id, rule_id, date, shift, user_id,
+                                source=OPENING_STOCK_SOURCE_LEGACY_INFERRED):
+    """Simulates a row exactly as it would exist post-e91b6f3a2c07/
+    d44646dd7efe (the previous hotfix round) — opening_stock_is_override=
+    True with no informed opening_stock_source classification (the new
+    column this round introduces defaults new/unclassified rows to
+    legacy_inferred; see the new provenance migration). Anchor-eligible
+    but — like initial_manual — always live-revalidated against finalized
+    movement (see stock_service._is_trusted_anchor()), which is precisely
+    what now catches this exact stale-row scenario at READ time, without
+    needing any repair migration to run first."""
     with app.app_context():
         row = DailyFigure(
             product_id=product_id, date=date, shift=shift,
             opening_cartons=0, opening_packs=0, opening_pieces=0, opening_base_qty=0,
             opening_stock_is_override=True,
+            opening_stock_source=source,
             return_cartons=0, return_packs=0, return_pieces=0, return_base_qty=0,
             production_cartons=0, production_packs=0, production_pieces=0, production_base_qty=0,
             packaging_rule_id=rule_id, created_by=user_id, updated_by=user_id,
@@ -139,6 +150,16 @@ def setup(client, login_as):
 # =====================================================================
 
 def test_exact_staging_repro_repaired_through_the_real_endpoint(client, login_as, app):
+    """A later production hotfix (see test_stage8_production_hotfix.py)
+    replaced the plain opening_stock_is_override boolean with an explicit
+    opening_stock_source, and made anchor trust for every non-
+    manual_correction source (including legacy_inferred, what this stale
+    row is now classified as) a LIVE check against finalized history —
+    re-evaluated on every read, not decided once by a migration. That
+    means this exact scenario is now caught at read time, before the old
+    d44646dd7efe repair migration even runs; running it afterward is a
+    no-op (there's nothing left for it to fix) and is asserted here purely
+    to prove it stays safe to run against already-correct data."""
     setup = _setup_locals(client, login_as)
     pid = setup["product"]["id"]
     rule_id = setup["rule_id"]
@@ -150,13 +171,10 @@ def test_exact_staging_repro_repaired_through_the_real_endpoint(client, login_as
     with app.app_context():
         assert _db.session.get(DailyFigure, row_id).opening_stock_is_override is True
 
-    before = _view(client, pid, "2026-08-01")
-    assert before["opening"]["base_qty"] == 0  # proven-buggy state, pre-repair
+    already_correct = _view(client, pid, "2026-08-01")
+    assert already_correct["opening"]["base_qty"] == 10950  # fixed live, no migration needed
 
-    _run_repair_migration(app)
-
-    with app.app_context():
-        assert _db.session.get(DailyFigure, row_id).opening_stock_is_override is False
+    _run_repair_migration(app)  # safe no-op against already-correct data
 
     after = _view(client, pid, "2026-08-01")
     assert after["opening"]["base_qty"] == 10950

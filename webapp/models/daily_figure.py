@@ -7,6 +7,45 @@ def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# Stage 8 production hotfix — a bare boolean ("is this row an override")
+# couldn't say WHY a row was trusted, which is exactly what let a genuine
+# out-of-order data-entry case (a later period completed before its
+# earlier history was ever entered) get permanently stuck: the row
+# legitimately became "the first period" at the moment it was saved, but
+# a plain True/False can't later tell "that was a deliberate, still-valid
+# correction" apart from "that was only ever true because nothing earlier
+# had been entered yet." See stock_service.py's _find_anchor_figure() for
+# how each source is (or isn't) trusted.
+OPENING_STOCK_SOURCE_DERIVED = "derived"
+OPENING_STOCK_SOURCE_INITIAL_MANUAL = "initial_manual"
+OPENING_STOCK_SOURCE_MANUAL_CORRECTION = "manual_correction"
+OPENING_STOCK_SOURCE_LEGACY_INFERRED = "legacy_inferred"
+OPENING_STOCK_SOURCES = [
+    OPENING_STOCK_SOURCE_DERIVED,
+    OPENING_STOCK_SOURCE_INITIAL_MANUAL,
+    OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
+    OPENING_STOCK_SOURCE_LEGACY_INFERRED,
+]
+# Sources a row must have to even be a *candidate* anchor at all — every
+# other source is invisible to anchor lookup, exactly like "no row exists
+# here" (see stock_service._find_anchor_figure()).
+OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE = (
+    OPENING_STOCK_SOURCE_INITIAL_MANUAL,
+    OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
+    OPENING_STOCK_SOURCE_LEGACY_INFERRED,
+)
+# Only a deliberate, evidenced correction (the submitted value differed
+# from live derivation at the moment an elevated user saved it — see
+# upsert_daily_figure()) is trusted UNCONDITIONALLY, regardless of
+# whether finalized movement is later discovered before it. Every other
+# anchor-eligible source is *live-revalidated* on every read: if
+# finalized movement now exists before it, it is no longer trusted (see
+# _find_anchor_figure()) — this is what lets a later period entered
+# before its own history recalculate automatically once that history is
+# entered, without needing a fresh migration or a manual reset every time.
+OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR = (OPENING_STOCK_SOURCE_MANUAL_CORRECTION,)
+
+
 class DailyFigure(db.Model):
     """
     The new source of truth for Opening/Return/Production (Issued and
@@ -30,17 +69,36 @@ class DailyFigure(db.Model):
     opening_pieces = db.Column(db.Integer, nullable=False, default=0)
     opening_base_qty = db.Column(db.Integer, nullable=False, default=0)
     # Stage 8 correction: True only when this row's Opening Stock is a
-    # deliberate, authoritative value — a product's genuine first-ever
-    # entry, or an explicit Manager/Super Administrator correction whose
-    # value actually differs from what pure carry-forward derivation would
-    # otherwise produce (see stock_service.upsert_daily_figure()). False
-    # for every other row (an "inherited display" row a save happened to
-    # touch without changing Opening, or a row a Super Administrator reset
-    # to zero) — webapp.services.stock_service.daily_figure_view() ignores
-    # opening_base_qty entirely on a False row and recomputes it live from
-    # the nearest True anchor instead, so such a row can never permanently
-    # freeze a date's Opening Stock at a stale value.
+    # deliberate, authoritative value. Kept for backward compatibility
+    # (nothing outside this model reads it directly), but it is no longer
+    # the authoritative signal — opening_stock_source below is. Always
+    # kept in sync: True iff opening_stock_source is initial_manual,
+    # manual_correction, or legacy_inferred (i.e. "anchor-eligible" — see
+    # OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE above).
     opening_stock_is_override = db.Column(db.Boolean, nullable=False, default=False)
+    # Stage 8 production hotfix — WHY this row's stored opening is (or
+    # isn't) an anchor candidate, one of OPENING_STOCK_SOURCES above. This
+    # is the field _find_anchor_figure() actually decides on:
+    #   derived            — never an anchor; always recomputed live.
+    #   initial_manual     — a product's genuine first-ever entry (any
+    #                        role) or a legacy-migration row. Anchor-
+    #                        eligible, but only trusted for as long as no
+    #                        finalized movement is found before it —
+    #                        re-checked on every read, never cached.
+    #   manual_correction  — an elevated (Manager/Super Admin) user
+    #                        submitted a value that genuinely differed
+    #                        from live derivation at that moment. Trusted
+    #                        unconditionally, forever, regardless of any
+    #                        finalized movement discovered before it —
+    #                        that's the entire point of a correction.
+    #   legacy_inferred    — inherited from data written before this
+    #                        column existed, where historical intent
+    #                        can't be reliably recovered (see the
+    #                        corrective migration). Treated exactly like
+    #                        initial_manual for trust purposes (live-
+    #                        revalidated), but kept distinguishable for
+    #                        audit/reporting.
+    opening_stock_source = db.Column(db.String(20), nullable=False, default=OPENING_STOCK_SOURCE_DERIVED)
 
     return_cartons = db.Column(db.Integer, nullable=False, default=0)
     return_packs = db.Column(db.Integer, nullable=False, default=0)

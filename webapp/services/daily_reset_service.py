@@ -18,7 +18,7 @@ directly-resettable fields to begin with. If those figures are wrong, the
 fix is to edit/void/reopen the source record, not this reset.
 """
 from webapp.extensions import db
-from webapp.models.daily_figure import DailyFigure
+from webapp.models.daily_figure import OPENING_STOCK_SOURCE_DERIVED, DailyFigure
 from webapp.models.dispatch import SHIFTS
 from webapp.models.product import Product
 from webapp.models.user import ROLE_SUPER_ADMIN
@@ -73,6 +73,7 @@ def preview(date, shift, product_id, actor):
                 "cartons": figure.opening_cartons, "packs": figure.opening_packs, "pieces": figure.opening_pieces,
             } if figure is not None else None,
             "is_opening_override": bool(figure and figure.opening_stock_is_override),
+            "opening_stock_source": figure.opening_stock_source if figure is not None else None,
             "has_notes": bool(figure and figure.notes),
             "review_status": status["status"],
         })
@@ -97,6 +98,7 @@ def execute(date, shift, product_id, reason, actor):
                 "opening_cartons": figure.opening_cartons, "opening_packs": figure.opening_packs,
                 "opening_pieces": figure.opening_pieces, "opening_base_qty": figure.opening_base_qty,
                 "opening_stock_is_override": figure.opening_stock_is_override,
+                "opening_stock_source": figure.opening_stock_source,
                 "notes": figure.notes,
             }
             figure.opening_cartons = 0
@@ -104,10 +106,14 @@ def execute(date, shift, product_id, reason, actor):
             figure.opening_pieces = 0
             figure.opening_base_qty = 0
             # The repair mechanism for a stuck/stale row (Stage 8
-            # correction): clearing the override flag, not just the
-            # quantity, means carry-forward stops trusting this row at all
-            # and goes back to deriving this period live from whatever
-            # real anchor precedes it.
+            # correction): clearing the anchor classification, not just
+            # the quantity, means carry-forward stops trusting this row at
+            # all and goes back to deriving this period live from whatever
+            # real anchor precedes it. This is the one place besides an
+            # explicit correction write that may retire a manual_correction
+            # too — a Super Administrator reset is itself a deliberate,
+            # audited override of whatever was there before.
+            figure.opening_stock_source = OPENING_STOCK_SOURCE_DERIVED
             figure.opening_stock_is_override = False
             figure.notes = None
             figure.updated_by = actor.id
