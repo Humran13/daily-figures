@@ -50,15 +50,23 @@ def _shift_date(date_str, n):
 
 def _find_anchor_figure(product_id, date, shift, exclude_id=None):
     """The most recent DailyFigure row strictly before (date, shift) for
-    this product, if any — the last point Opening Stock was explicitly set
-    (a product's first-ever period) or corrected (an authorized Manager/
-    Super Admin anchor, see upsert_daily_figure()). Every period between
-    two anchors — and every period after the latest one — has no row of
-    its own by design (Stage 7's "do not create meaningless stock rows"),
-    so this is a small scan bounded by the number of anchors ever created
-    for this product, not by the number of days that have passed."""
+    this product that is a genuine Opening Stock override
+    (opening_stock_is_override=True) — a product's first-ever entry, or an
+    authorized Manager/Super Admin correction that actually changed
+    something (see upsert_daily_figure()). A non-override row (an
+    "inherited display" row a save happened to touch without changing
+    Opening, or a row cleared by Reset Daily Values) is invisible to this
+    lookup — it can never be mistaken for an authoritative anchor, however
+    old or however it came to exist. Every period between two real anchors
+    — and every period after the latest one — has no row of its own by
+    design (Stage 7's "do not create meaningless stock rows"), so this is
+    a small scan bounded by the number of anchors ever created for this
+    product, not by the number of days that have passed."""
     target_key = _sort_key(date, shift)
-    candidates = DailyFigure.query.filter(DailyFigure.product_id == product_id)
+    candidates = DailyFigure.query.filter(
+        DailyFigure.product_id == product_id,
+        DailyFigure.opening_stock_is_override.is_(True),
+    )
     if exclude_id is not None:
         candidates = candidates.filter(DailyFigure.id != exclude_id)
 
@@ -283,6 +291,18 @@ def daily_figure_view(product, date, shift):
     Full computed view for one product/date/shift, whether or not a
     DailyFigure row has been saved yet — Issued (and its drill-down) must
     be visible even before Opening/Return/Production are entered.
+
+    Stage 8 correction: a row existing exactly at (date, shift) is only
+    ever trusted for its Opening Stock value when it's a genuine override
+    (opening_stock_is_override=True). A non-override row — one that a save
+    happened to touch without actually correcting Opening (see
+    upsert_daily_figure()), or one cleared by Reset Daily Values — has its
+    stored opening_base_qty ignored entirely and is treated exactly like
+    "no row exists here", so a later correction to earlier Production/
+    Returns/Dispatch, or a later real anchor, is picked up live on every
+    read no matter how the row came to exist. Completion status (Stage 7's
+    DailyEntryStatus — "No Activity Today"/completed) never enters this
+    function at all, so it can never freeze or bypass this calculation.
     """
     rule = product.current_packaging_rule()
     figure = DailyFigure.query.filter_by(product_id=product.id, date=date, shift=shift).first()
@@ -293,15 +313,15 @@ def daily_figure_view(product, date, shift):
     return_base = return_base_qty(product.id, date, shift, legacy_return)
     production_base = production_base_qty(product.id, date, shift, legacy_production)
 
-    if figure is not None:
+    if figure is not None and figure.opening_stock_is_override:
         opening_base = figure.opening_base_qty
         opening_editable = get_prior_closing_base_qty(product.id, date, shift, exclude_id=figure.id) is None
         notes = figure.notes
     else:
-        prior = get_prior_closing_base_qty(product.id, date, shift)
+        prior = get_prior_closing_base_qty(product.id, date, shift, exclude_id=figure.id if figure else None)
         opening_base = prior if prior is not None else 0
         opening_editable = prior is None
-        notes = None
+        notes = figure.notes if figure is not None else None
 
     closing_base = opening_base + return_base + production_base - issued
 
@@ -348,18 +368,24 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
     Figures is a calculated summary for both, the same way Issued already
     was. Raises StockError for anything the user needs to fix.
 
-    Stage 8 section 3 — Opening Stock anchors: an Operator submitting
-    `opening` for a period whose Opening is derived (not this product's
-    first-ever period) has it silently ignored in favor of the derived
-    running balance, exactly as before — Operators never create a new
-    anchor. A Manager/Super Administrator submitting an explicit `opening`
-    for ANY period — including one that already has a derived value —
-    IS honored: that value becomes a new stock-balance anchor, its own
-    Closing recalculates from it, and every later period (which has no row
-    of its own) picks it up automatically the next time it's viewed, via
-    get_prior_closing_base_qty() finding this row as the new nearest
-    anchor. The audit trail (recorded by the route, before/after) captures
-    the correction; this function never restores an older value over it.
+    Stage 8 section 3 — Opening Stock anchors, corrected: an Operator
+    submitting `opening` for a period whose Opening is derived (not this
+    product's first-ever period) has it silently ignored in favor of the
+    derived running balance, exactly as before — Operators never create a
+    new anchor. A Manager/Super Administrator submitting an explicit
+    `opening` only becomes a new anchor when it actually DIFFERS from what
+    pure carry-forward would otherwise produce — a routine save that
+    happens to leave the pre-filled (already-correct) value unchanged is
+    never treated as a correction. This is the fix for a real regression:
+    treating every elevated submission as an override meant an elevated
+    user simply viewing-and-saving an already-derived-correct period (e.g.
+    while paging through, or completing "No Activity Today" on a page that
+    also showed an editable Opening field) could silently freeze that
+    date's Opening Stock forever at whatever was on screen at that moment
+    — later Production/Returns/Dispatch corrections upstream would then
+    never ripple past it. See opening_stock_is_override on the model and
+    daily_figure_view() above, which now only ever trusts a row's stored
+    Opening when this flag is set.
     """
     from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
 
@@ -376,39 +402,49 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
         product.id, date, shift, exclude_id=figure.id if figure else None
     )
 
-    submits_new_anchor = is_elevated and opening is not None
-    oc = op = opc = None
-    try:
-        if opening_locked is not None and not submits_new_anchor:
-            opening_base = opening_locked
-        elif opening is None:
-            if opening_locked is not None:
-                opening_base = opening_locked  # elevated user touching this period without changing Opening
-            else:
-                raise StockError("Opening stock is required for this product's first-ever entry")
-        else:
+    oc = op = opc = submitted_base_qty = None
+    if opening is not None:
+        try:
             oc, op, opc = normalize(opening.get("cartons", 0), opening.get("packs", 0), opening.get("pieces", 0), rule)
-            opening_base = to_base_units(oc, op, opc, rule)
-    except PackagingError as e:
-        raise StockError(str(e)) from e
+            submitted_base_qty = to_base_units(oc, op, opc, rule)
+        except PackagingError as e:
+            raise StockError(str(e)) from e
 
+    if opening_locked is None:
+        # Genuinely the first-ever period — an explicit value is required,
+        # from any role, and always becomes the anchor.
+        if submitted_base_qty is None:
+            raise StockError("Opening stock is required for this product's first-ever entry")
+        is_override = True
+        opening_base = submitted_base_qty
+    elif is_elevated and submitted_base_qty is not None and submitted_base_qty != opening_locked:
+        is_override = True
+        opening_base = submitted_base_qty
+    else:
+        is_override = False
+        opening_base = opening_locked
+
+    is_brand_new = figure is None
     if figure is None:
         figure = DailyFigure(product_id=product.id, date=date, shift=shift, created_by=user.id)
         db.session.add(figure)
 
-    if oc is not None:
-        # An explicit value was submitted and accepted (first-ever entry,
-        # or an elevated correction) — store the exact split provided.
+    if is_override:
         figure.opening_cartons, figure.opening_packs, figure.opening_pieces = oc, op, opc
         figure.opening_base_qty = opening_base
+        figure.opening_stock_is_override = True
     else:
-        # Locked to the derived running balance — keep whatever's already
-        # stored (or, for a brand-new row inheriting a locked opening,
-        # store the split purely for display).
-        if figure.id is None:
-            split = from_base_units(opening_base, rule)
-            figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
+        # Not a correction — always refresh the display split to the
+        # current live-derived truth (self-healing: any write to a
+        # non-override row, even an unrelated notes edit, corrects a
+        # previously-stale value). Never flip an EXISTING row's override
+        # flag off here — only an explicit override write (above) or
+        # Reset Daily Values may retire a real anchor.
+        split = from_base_units(opening_base, rule)
+        figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
         figure.opening_base_qty = opening_base
+        if is_brand_new:
+            figure.opening_stock_is_override = False
 
     figure.packaging_rule_id = rule.id
     figure.notes = notes

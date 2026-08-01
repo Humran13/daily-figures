@@ -124,6 +124,13 @@ def run_legacy_migration(user):
             product_id=product.id, date=row["date"], shift=row["shift"],
             opening_cartons=opening_cpp[0], opening_packs=opening_cpp[1], opening_pieces=opening_cpp[2],
             opening_base_qty=to_base_units(*opening_cpp, rule),
+            # A legacy `entries` row is a genuine standalone historical
+            # record from before this app derived Opening Stock from a
+            # running balance at all — always trust it as an authoritative
+            # anchor (see webapp/services/stock_service.py's Stage 8
+            # correction), never treat it as an incidental/inherited row
+            # that later carry-forward is free to recompute over.
+            opening_stock_is_override=True,
             return_cartons=return_cpp[0], return_packs=return_cpp[1], return_pieces=return_cpp[2],
             return_base_qty=to_base_units(*return_cpp, rule),
             production_cartons=production_cpp[0], production_packs=production_cpp[1], production_pieces=production_cpp[2],

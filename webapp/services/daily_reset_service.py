@@ -72,6 +72,7 @@ def preview(date, shift, product_id, actor):
             "opening_qty": {
                 "cartons": figure.opening_cartons, "packs": figure.opening_packs, "pieces": figure.opening_pieces,
             } if figure is not None else None,
+            "is_opening_override": bool(figure and figure.opening_stock_is_override),
             "has_notes": bool(figure and figure.notes),
             "review_status": status["status"],
         })
@@ -95,12 +96,19 @@ def execute(date, shift, product_id, reason, actor):
             before = {
                 "opening_cartons": figure.opening_cartons, "opening_packs": figure.opening_packs,
                 "opening_pieces": figure.opening_pieces, "opening_base_qty": figure.opening_base_qty,
+                "opening_stock_is_override": figure.opening_stock_is_override,
                 "notes": figure.notes,
             }
             figure.opening_cartons = 0
             figure.opening_packs = 0
             figure.opening_pieces = 0
             figure.opening_base_qty = 0
+            # The repair mechanism for a stuck/stale row (Stage 8
+            # correction): clearing the override flag, not just the
+            # quantity, means carry-forward stops trusting this row at all
+            # and goes back to deriving this period live from whatever
+            # real anchor precedes it.
+            figure.opening_stock_is_override = False
             figure.notes = None
             figure.updated_by = actor.id
 

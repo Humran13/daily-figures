@@ -444,9 +444,11 @@ def test_reset_affects_only_the_selected_scope(client, setup):
     client.post("/api/daily-reset", json={
         "date": "2026-07-15", "shift": "Day", "product_id": pid, "reason": "correction mistake",
     })
-    # The 07-15 anchor is now 0 — later periods derive from IT (07-01's
-    # anchor is untouched but no longer the nearest one).
-    assert _opening_cartons(client, pid, "2026-08-01") == 0
+    # Stage 8 correction: resetting a row clears its override/anchor
+    # status too, not just its stored quantity — a reset row must never
+    # act as a phantom zero anchor. Later periods now correctly skip past
+    # the reset 07-15 row and derive from the real 07-01 anchor instead.
+    assert _opening_cartons(client, pid, "2026-08-01") == 10
     assert _closing_cartons(client, pid, "2026-07-05") == 10  # before the reset date, untouched
 
 

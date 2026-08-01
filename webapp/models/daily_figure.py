@@ -29,6 +29,18 @@ class DailyFigure(db.Model):
     opening_packs = db.Column(db.Integer, nullable=False, default=0)
     opening_pieces = db.Column(db.Integer, nullable=False, default=0)
     opening_base_qty = db.Column(db.Integer, nullable=False, default=0)
+    # Stage 8 correction: True only when this row's Opening Stock is a
+    # deliberate, authoritative value — a product's genuine first-ever
+    # entry, or an explicit Manager/Super Administrator correction whose
+    # value actually differs from what pure carry-forward derivation would
+    # otherwise produce (see stock_service.upsert_daily_figure()). False
+    # for every other row (an "inherited display" row a save happened to
+    # touch without changing Opening, or a row a Super Administrator reset
+    # to zero) — webapp.services.stock_service.daily_figure_view() ignores
+    # opening_base_qty entirely on a False row and recomputes it live from
+    # the nearest True anchor instead, so such a row can never permanently
+    # freeze a date's Opening Stock at a stale value.
+    opening_stock_is_override = db.Column(db.Boolean, nullable=False, default=False)
 
     return_cartons = db.Column(db.Integer, nullable=False, default=0)
     return_packs = db.Column(db.Integer, nullable=False, default=0)

@@ -70,6 +70,12 @@ def _insert_legacy_daily_figure(app, product_id, date, shift, *, opening, return
         figure = DailyFigure(
             product_id=product_id, date=date, shift=shift,
             opening_cartons=0, opening_packs=0, opening_pieces=0, opening_base_qty=opening,
+            # This helper simulates a genuine pre-Stage-5 historical row
+            # (written directly, the way the old system left it on disk) —
+            # exactly the same standing as a legacy-migration import, so it
+            # must always be trusted as an Opening Stock anchor (see
+            # webapp/services/stock_service.py's Stage 8 correction).
+            opening_stock_is_override=True,
             return_cartons=0, return_packs=0, return_pieces=0, return_base_qty=return_base,
             production_cartons=0, production_packs=0, production_pieces=0, production_base_qty=production_base,
             packaging_rule_id=rule.id, created_by=user.id, updated_by=user.id,

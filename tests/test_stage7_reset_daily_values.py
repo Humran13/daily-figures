@@ -76,6 +76,14 @@ def test_super_admin_can_reset_all_products_for_a_date_shift(client, setup):
 
 
 def test_other_dates_remain_unchanged(client, setup):
+    """08-04's Opening Stock is deliberately set to a value that differs
+    from what pure carry-forward from 08-03 would derive (7 cartons, not
+    4), so it becomes a genuine independent anchor in its own right — not
+    one that merely happens to match 08-03's carried-forward balance. That
+    way, resetting 08-03 (which un-anchors it — see daily_reset_service.py)
+    is a real test of "reset doesn't affect an unrelated date", rather than
+    coincidentally relying on 08-04 having never been independently
+    anchored at all."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-03", "shift": "Day",
@@ -83,12 +91,12 @@ def test_other_dates_remain_unchanged(client, setup):
     })
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-04", "shift": "Day",
-        "opening": {"cartons": 4, "packs": 0, "pieces": 0},
+        "opening": {"cartons": 7, "packs": 0, "pieces": 0},
     })
     client.post("/api/daily-reset", json={"date": "2026-08-03", "shift": "Day", "reason": "scoped reset"})
 
     untouched = client.get(f"/api/daily-figures/{pid}?date=2026-08-04&shift=Day").get_json()
-    assert untouched["opening"]["base_qty"] == 400
+    assert untouched["opening"]["base_qty"] == 700
 
 
 def test_other_products_remain_unchanged_when_resetting_one(client, setup, login_as):
