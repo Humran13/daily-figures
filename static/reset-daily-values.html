@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1B2430">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Daily Figures">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/app-shell.css">
+<title>Reset Daily Values — Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:var(--sans); background:var(--paper-dim); color:var(--ink); }
+  header{ background:var(--ink); color:var(--paper); padding:18px 24px; display:flex; justify-content:space-between; align-items:center; }
+  header h1{ margin:0; font-size:18px; }
+  .wrap{ max-width:920px; margin:0 auto; padding:20px; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2{ margin:0 0 14px; font-size:15px; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th, td{ text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th{ color:var(--ink-soft); text-transform:uppercase; font-size:11px; letter-spacing:.05em; }
+  input, select, textarea{ font-family:var(--sans); font-size:13px; padding:8px; border:1.5px solid var(--line); border-radius:6px; width:100%; }
+  label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:4px; }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .row > div{ flex:1; min-width:140px; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:8px; padding:9px 14px; font-weight:700; font-size:13px; }
+  .btn-primary{ background:var(--teal); color:white; }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
+  .btn-danger{ background:var(--red); color:white; }
+  .msg{ font-size:12px; margin-top:6px; min-height:16px; }
+  .msg.err{ color:var(--red); }
+  .msg.ok{ color:var(--teal-dark); }
+  .hidden{ display:none !important; }
+  .small{ font-size:11px; color:var(--ink-soft); }
+  .gate{ text-align:center; padding:60px 20px; }
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.6); z-index:60; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .modal-sheet{ background:var(--paper); width:100%; max-width:420px; border-radius:14px; padding:20px; }
+  .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
+</style>
+</head>
+<body>
+
+<div id="appIdentityBar"></div>
+<header>
+  <h1>Reset Daily Values</h1>
+</header>
+<div id="appRoleNav"></div>
+
+<div class="wrap">
+  <!-- Client-side gate is cosmetic only — the real enforcement is
+       webapp/routes/pages.py's server-side page guard (Manager/Super
+       Administrator, redirecting anyone else) plus every API this page
+       calls being independently role-gated. -->
+  <div id="gate" class="gate hidden">
+    <p>You need a Manager or Super Administrator account to view this page.</p>
+  </div>
+
+  <div id="resetBody" class="hidden">
+    <!-- RESET DAILY VALUES — identical functionality to the panel inside
+         admin.html (Super Administrator only), exposed here so a Manager
+         (who cannot reach admin.html at all) has a real UI path to the
+         same, unmodified backend reset service. Nothing here reimplements
+         reset logic — every action below calls the exact same
+         /api/daily-reset* endpoints admin.html's panel calls. -->
+    <div class="card">
+      <h2>Reset daily values</h2>
+      <p class="small">Two reset modes are available for one Date + Shift, and either one product or every product:</p>
+      <div class="row">
+        <label><input type="radio" name="resetMode" id="resetModeFiguresOnly" value="figures_only" checked>
+          <strong>Reset Daily Figures Status Only</strong> — clears completion/No Activity status, in-progress locks, notes, and non-authoritative Opening Stock. Existing Dispatch, Returns, and Production records remain and continue affecting stock balances.
+        </label>
+      </div>
+      <div class="row">
+        <label><input type="radio" name="resetMode" id="resetModeFull" value="full">
+          <strong>Full Reset — Start This Period Again</strong> — does everything above, AND neutralizes (voids, or removes the affected product's lines from) matching finalized Dispatch, Returns, and Production records for this exact Date + Shift, so the period can be entered again from scratch. Neutralized records remain traceable in History — never hard-deleted.
+        </label>
+      </div>
+      <div class="row">
+        <div><label>Date</label><input type="date" id="resetDate"></div>
+        <div><label>Shift</label>
+          <select id="resetShift">
+            <option value="Day">Day</option>
+            <option value="Night">Night</option>
+          </select>
+        </div>
+        <div><label>Product</label><select id="resetProduct"><option value="">All products for this Date + Shift</option></select></div>
+      </div>
+      <button class="btn-primary" id="resetPreviewBtn">Preview affected products</button>
+      <div class="msg" id="resetPreviewMsg"></div>
+      <div id="resetPreviewResults" class="hidden">
+        <table><thead><tr><th>Product</th><th>Opening Stock entered</th><th>Notes</th><th>Review status</th><th>Dispatch</th><th>Returns</th><th>Production</th></tr></thead>
+        <tbody id="resetPreviewTable"></tbody></table>
+        <button class="btn-danger" id="resetOpenConfirmBtn" style="margin-top:10px;">Reset these values&hellip;</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Daily Values confirmation — mode-aware warning text, plus a
+     typed confirmation field that only Mode B (Full Reset) requires. -->
+<div class="modal-backdrop hidden" id="resetConfirmModal">
+  <div class="modal-sheet">
+    <h3 id="resetConfirmTitle">Confirm reset</h3>
+    <p class="small" id="resetConfirmScope"></p>
+    <p class="small" id="resetConfirmWarning"><strong></strong></p>
+    <div><label>Reason (required)</label><textarea id="resetConfirmReason" rows="2" placeholder="Why is this reset needed?"></textarea></div>
+    <div id="resetConfirmTypedWrap" class="hidden">
+      <label>Type <code id="resetConfirmTypedExpected"></code> to confirm</label>
+      <input type="text" id="resetConfirmTyped" autocomplete="off">
+    </div>
+    <div class="msg" id="resetConfirmMsg"></div>
+    <div class="row">
+      <button class="btn-danger" id="resetConfirmSubmitBtn">Reset daily values</button>
+      <button class="btn-ghost" id="resetConfirmCancelBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="/quantity_format.js"></script>
+<script>
+async function api(path, opts){
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await res.json().catch(()=>({}));
+  return {status: res.status, data};
+}
+
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- company branding ----------
+async function applyBranding(){
+  try{
+    const res = await fetch('/api/branding');
+    const b = await res.json();
+    document.querySelectorAll('[data-brand-name]').forEach(el=>{ el.textContent = b.display_name; });
+    document.querySelectorAll('[data-brand-logo]').forEach(el=>{
+      if(b.logo_url){ el.src = b.logo_url; el.classList.remove('hidden'); }
+      else { el.classList.add('hidden'); }
+    });
+  } catch(e){ /* branding is cosmetic — never block the app over a failed fetch */ }
+}
+applyBranding();
+
+// ---------- products (for the product-scope select + book-style Opening Stock formatting) ----------
+let productsCache = [];
+
+async function loadProducts(){
+  const {data} = await api('/api/admin/products?include_inactive=1');
+  productsCache = Array.isArray(data) ? data : [];
+  const select = document.getElementById('resetProduct');
+  select.innerHTML = '<option value="">All products for this Date + Shift</option>' +
+    productsCache.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+}
+
+// ---------- reset daily values ----------
+let resetPreviewCache = null;
+
+function currentResetMode(){
+  return document.getElementById('resetModeFull').checked ? 'full' : 'figures_only';
+}
+
+document.getElementById('resetPreviewBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('resetPreviewMsg');
+  const date = document.getElementById('resetDate').value;
+  const shift = document.getElementById('resetShift').value;
+  const productId = document.getElementById('resetProduct').value;
+  const mode = currentResetMode();
+  if(!date){ msg.textContent = 'Choose a date first.'; msg.className = 'msg err'; return; }
+
+  const {status, data} = await api('/api/daily-reset/preview', {
+    method:'POST', body: JSON.stringify({date, shift, product_id: productId || 'all', mode}),
+  });
+  if(status !== 200){
+    msg.textContent = data.error || 'Could not load preview.'; msg.className = 'msg err';
+    document.getElementById('resetPreviewResults').classList.add('hidden');
+    return;
+  }
+  msg.textContent = '';
+  resetPreviewCache = data;
+  // Never says "no affected products" while any real Daily Figures state
+  // OR finalized source-book activity exists for this scope — the fixed
+  // preview surfaces both explicitly (webapp/services/daily_reset_service.py).
+  const sourceCell = (rows) => rows.length
+    ? rows.map(r=>`${escapeHtml(r.label)}: ${escapeHtml(r.quantity_label)}`).join('<br>')
+    : '—';
+  document.getElementById('resetPreviewTable').innerHTML = data.products.map(p => {
+    // Centralized packaging-aware formatter (same book-style notation as
+    // every other screen), not a hand-built "Xc Yp Zpc" string.
+    const rule = productsCache.find(prod=>prod.id===p.product_id)?.packaging_rule;
+    const openingLabel = p.has_manual_opening_entry ? qtyLabel(p.opening_qty, rule) : '—';
+    return `
+    <tr>
+      <td>${escapeHtml(p.product_name)}</td>
+      <td>${openingLabel}</td>
+      <td>${p.has_notes ? 'Yes' : '—'}</td>
+      <td>${escapeHtml(p.review_status.replace('_',' '))}</td>
+      <td>${sourceCell(p.finalized_dispatch)}</td>
+      <td>${sourceCell(p.finalized_returns)}</td>
+      <td>${sourceCell(p.finalized_production)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="small">No products match this scope.</td></tr>';
+  if(!data.any_affected){
+    document.getElementById('resetPreviewMsg').textContent = 'Nothing to reset for this scope — no Daily Figures state or source-book activity found.';
+    document.getElementById('resetPreviewMsg').className = 'msg';
+  }
+  document.getElementById('resetPreviewResults').classList.remove('hidden');
+});
+
+document.getElementById('resetOpenConfirmBtn').addEventListener('click', ()=>{
+  if(!resetPreviewCache) return;
+  const productId = document.getElementById('resetProduct').value;
+  const mode = currentResetMode();
+  const scopeLabel = productId
+    ? `${resetPreviewCache.products[0] ? resetPreviewCache.products[0].product_name : 'this product'}`
+    : `all ${resetPreviewCache.products.length} product(s)`;
+  document.getElementById('resetConfirmTitle').textContent =
+    mode === 'full' ? 'Confirm Full Reset' : 'Confirm Daily Figures Status Reset';
+  document.getElementById('resetConfirmScope').textContent =
+    `This will reset ${scopeLabel} for ${resetPreviewCache.date} — ${resetPreviewCache.shift}.`;
+  document.getElementById('resetConfirmWarning').querySelector('strong').textContent = mode === 'full'
+    ? 'This full reset will neutralize matching Dispatch, Returns, and Production entries for the selected scope. Their audit history will remain, but they will stop affecting Daily Figures and carried stock balances.'
+    : 'This reset clears Daily Figures workflow status only. Existing Dispatch, Returns, and Production records will remain and will continue affecting stock balances.';
+  const typedWrap = document.getElementById('resetConfirmTypedWrap');
+  const typedInput = document.getElementById('resetConfirmTyped');
+  const expected = `FULL RESET ${resetPreviewCache.date} ${resetPreviewCache.shift.toUpperCase()}`;
+  if(mode === 'full'){
+    typedWrap.classList.remove('hidden');
+    document.getElementById('resetConfirmTypedExpected').textContent = expected;
+    typedInput.value = '';
+  } else {
+    typedWrap.classList.add('hidden');
+  }
+  document.getElementById('resetConfirmReason').value = '';
+  document.getElementById('resetConfirmMsg').textContent = '';
+  document.getElementById('resetConfirmModal').classList.remove('hidden');
+});
+document.getElementById('resetConfirmCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('resetConfirmModal').classList.add('hidden');
+});
+document.getElementById('resetConfirmModal').addEventListener('click', (e)=>{
+  if(e.target.id === 'resetConfirmModal') document.getElementById('resetConfirmModal').classList.add('hidden');
+});
+document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('resetConfirmMsg');
+  const reason = document.getElementById('resetConfirmReason').value.trim();
+  if(!reason){ msg.textContent = 'A reason is required.'; msg.className = 'msg err'; return; }
+  const date = document.getElementById('resetDate').value;
+  const shift = document.getElementById('resetShift').value;
+  const productId = document.getElementById('resetProduct').value;
+  const mode = currentResetMode();
+
+  const body = {date, shift, product_id: productId || 'all', reason, mode};
+  if(mode === 'full'){
+    const expected = `FULL RESET ${date} ${shift.toUpperCase()}`;
+    const typed = document.getElementById('resetConfirmTyped').value;
+    if(typed !== expected){
+      msg.textContent = `Type exactly "${expected}" to confirm a full reset.`; msg.className = 'msg err';
+      return;
+    }
+    body.confirmation_text = typed;
+  }
+
+  const {status, data} = await api('/api/daily-reset', {method:'POST', body: JSON.stringify(body)});
+  if(status !== 200){
+    msg.textContent = data.error || 'Could not reset daily values.'; msg.className = 'msg err';
+    return;
+  }
+  document.getElementById('resetConfirmModal').classList.add('hidden');
+  document.getElementById('resetPreviewResults').classList.add('hidden');
+  document.getElementById('resetPreviewMsg').textContent =
+    `Daily values reset (${data.mode === 'full' ? 'Full Reset' : 'Daily Figures Status Only'}) for ${data.date} — ${data.shift} — ${data.products.join(', ')}.`;
+  document.getElementById('resetPreviewMsg').className = 'msg ok';
+});
+
+// ---------- boot ----------
+(async function init(){
+  const {data} = await api('/api/session');
+  if(!data.authed || !data.user || !['manager','super_admin'].includes(data.user.role)){
+    document.getElementById('gate').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('resetBody').classList.remove('hidden');
+  await loadProducts();
+})();
+</script>
+<script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
+</body>
+</html>

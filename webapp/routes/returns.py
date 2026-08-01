@@ -7,11 +7,12 @@ from webapp.models.customer import Customer
 from webapp.models.return_record import STATUS_DRAFT, STATUSES, ReturnLine, ReturnRecord
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
 from webapp.services import branding_service, customer_service, returns_service as svc
-from webapp.services import product_usage_service
+from webapp.services import product_usage_service, record_correction_service
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services.packaging import PackagingError
 from webapp.services.quantity_format import qty_label
+from webapp.services.record_correction_service import RecordCorrectionConflict, RecordCorrectionError
 from webapp.services.returns_service import ReturnError
 
 returns_bp = Blueprint("returns", __name__, url_prefix="/api/returns")
@@ -367,3 +368,38 @@ def void(return_id):
     record_audit(user, "void", "return", entity_id=record.id, before=before, after=record.to_dict())
     db.session.commit()
     return jsonify(record.to_dict())
+
+
+@returns_bp.route("/<int:return_id>/correct", methods=["POST"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("returns")
+def correct(return_id):
+    """Final pre-deployment correction — "Correct Record": see
+    webapp/services/record_correction_service.py."""
+    user = current_user()
+    d = request.get_json(force=True) or {}
+    try:
+        record, summary = record_correction_service.correct_record(
+            "returns", return_id,
+            lines=d.get("lines"), notes=d.get("notes"), reason=d.get("reason"),
+            actor=user, expected_updated_at=d.get("expected_updated_at"),
+        )
+    except RecordCorrectionConflict as e:
+        db.session.rollback()
+        return _error(e, 409)
+    except (RecordCorrectionError, ReturnError, PackagingError) as e:
+        db.session.rollback()
+        return _error(e)
+
+    db.session.commit()
+    return jsonify({"return": record.to_dict(), "correction": summary})
+
+
+@returns_bp.route("/<int:return_id>/audit-history", methods=["GET"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("returns")
+def audit_history(return_id):
+    record = db.session.get(ReturnRecord, return_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(record_correction_service.audit_history("returns", return_id))

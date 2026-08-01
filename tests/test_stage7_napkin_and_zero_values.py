@@ -16,6 +16,7 @@ from webapp.services.quantity_format import qty_label
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+QUANTITY_FORMAT_JS = (STATIC_DIR / "quantity_format.js").read_text(encoding="utf-8")
 
 
 def rule(cartons_to_packs=None, packs_to_pieces=None, carton_to_pieces=None):
@@ -145,8 +146,11 @@ def test_dispatch_line_base_qty_stored_as_integer_not_real():
 
 
 def test_index_html_js_quantity_math_never_uses_parsefloat_or_tofixed():
-    idx = INDEX_HTML.index("function toBaseUnits(c, p, pc, rule)")
-    body = INDEX_HTML[idx:INDEX_HTML.index("function qtyLabel(", idx)]
+    # toBaseUnits/qtyLabel now live in the shared static/quantity_format.js
+    # (final pre-deployment correction — one centralized formatter).
+    js = QUANTITY_FORMAT_JS
+    idx = js.index("function toBaseUnits(c, p, pc, rule)")
+    body = js[idx:js.index("function qtyLabel(", idx)]
     assert "parseFloat" not in body
     assert "toFixed" not in body
     assert "Math.round(" not in body or "Math.floor(" in body  # only floor division ever used
@@ -286,18 +290,23 @@ def test_closing_stock_zero_uses_book_formatter_not_em_dash(client, login_as):
 
 def test_qty_label_zero_never_returns_em_dash():
     assert qty_label(0, 0, 0, COMPACT) == "0 Ctns"
-    assert qty_label(0, 0, 0, KINGMAX) == "0c 0pc"
+    # Final pre-deployment correction: a no-pack-tier product's zero
+    # quantity now uses the same book-style point notation as every other
+    # value for that product ("0.00 Ctns"), never dropped like the
+    # pack-tier "0 Ctns" case and never the older "0c 0pc" form — see
+    # tests/test_final_correction_packaging_notation.py.
+    assert qty_label(0, 0, 0, KINGMAX) == "0.00 Ctns"
 
 
 def test_qty_label_em_dash_only_for_genuinely_missing_part_not_zero():
     assert qty_label is not None  # sanity: formatter itself never emits '—'
-    idx = INDEX_HTML.index("function qtyLabel(part, rule){")
-    body = INDEX_HTML[idx:INDEX_HTML.index("\n}", idx)]
+    idx = QUANTITY_FORMAT_JS.index("function qtyLabel(part, rule){")
+    body = QUANTITY_FORMAT_JS[idx:QUANTITY_FORMAT_JS.index("\n}", idx)]
     assert "if(!part) return '—';" in body  # only a missing object, never a zero value, triggers it
 
 
 def test_zero_pack_and_piece_carton_only_products_still_display_correctly():
-    assert qty_label(3, 0, 0, KINGMAX) == "3c 0pc"
+    assert qty_label(3, 0, 0, KINGMAX) == "3.00 Ctns"
 
 
 def test_base_units_never_stored_as_sql_real_or_float():
@@ -346,4 +355,7 @@ def test_permission_gating_unchanged_by_text_removal():
 
 def test_view_link_and_book_notation_still_present():
     assert 'id="issuedBreakdownBtn">view</button>' in INDEX_HTML
-    assert "function qtyLabel(part, rule){" in INDEX_HTML
+    # qtyLabel now lives in the shared static/quantity_format.js, loaded by
+    # index.html via <script src="/quantity_format.js">.
+    assert '<script src="/quantity_format.js"></script>' in INDEX_HTML
+    assert "function qtyLabel(part, rule){" in QUANTITY_FORMAT_JS

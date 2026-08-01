@@ -196,6 +196,7 @@
   </div>
 </div>
 
+<script src="/quantity_format.js"></script>
 <script>
 let products = [];
 let currentIdx = 0;
@@ -249,54 +250,26 @@ async function apiDelete(path, body){
 }
 
 async function loadProducts(){
-  // Stage 8 Part 2: the review/entry wizard also walks products in the
-  // shared, global quick-selection order (frequency + recency of
-  // finalized use) — same endpoint and ranking every operational
-  // selector uses, never a separate per-user order.
-  const data = await apiGet('/api/admin/products?sort=usage');
+  // Stage 8 Part 2 + final pre-deployment correction: the review/entry
+  // wizard walks products in the shared, global quick-selection order
+  // (frequency + recency of finalized use) — same endpoint and ranking
+  // every operational selector uses, never a separate per-user order —
+  // additionally grouped for the CURRENT date+shift so a product that
+  // still needs review always sorts ahead of one already completed or
+  // marked No Activity, without changing the underlying usage ranking.
+  // Re-fetched only on date/shift change (see the change listeners
+  // below) — never mid-session, so the list never reorders underneath
+  // an Operator who is partway through it.
+  const date = document.getElementById('dateInput').value;
+  const shift = document.getElementById('shiftInput').value;
+  const data = await apiGet(`/api/admin/products?sort=usage&date=${date}&shift=${shift}`);
   products = Array.isArray(data) ? data : [];
 }
 
 // ---------- packaging helpers (display-only preview; backend is the source of truth) ----------
-function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
-function toBaseUnits(c, p, pc, rule){
-  if(!rule) return 0;
-  if(hasPackTier(rule)) return (c*rule.cartons_to_packs + p) * rule.packs_to_pieces + pc;
-  return c*rule.carton_to_pieces + pc;
-}
-// Pure integer split — mirrors webapp/services/packaging.py's from_base_units()
-// exactly, so the live Closing Stock preview (computed before a save request
-// round-trips) uses the same book notation as everything the server renders.
-function fromBaseUnitsPreview(total, rule){
-  if(!rule) return {cartons: total, packs: 0, pieces: 0};
-  if(hasPackTier(rule)){
-    const totalPacks = Math.floor(total / rule.packs_to_pieces);
-    const pieces = total % rule.packs_to_pieces;
-    const cartons = Math.floor(totalPacks / rule.cartons_to_packs);
-    const packs = totalPacks % rule.cartons_to_packs;
-    return {cartons, packs, pieces};
-  }
-  return {cartons: Math.floor(total / rule.carton_to_pieces), packs: 0, pieces: total % rule.carton_to_pieces};
-}
-// The one centralized book-notation formatter — mirrors
-// webapp/services/quantity_format.qty_label() exactly (same positional
-// "C.PP Ctns" notation, same single-digit-positional-slot guard, same
-// "Xc Ypc" fallback for products with no pack tier at all). `rule` is the
-// product's own packaging_rule object (never inferred from the value
-// itself — Stage 5's original hasPackTierFromParts(part) check couldn't
-// actually distinguish "no pack tier" from "pack tier, currently zero",
-// since from_base_units() always returns packs:0 either way).
-function qtyLabel(part, rule){
-  if(!part) return '—';
-  if(part.warning) return part.warning;
-  if(part.cartons === undefined) return String(part.base_qty);
-  if(!hasPackTier(rule)) return `${part.cartons}c ${part.pieces}pc`;
-  if(part.packs === 0 && part.pieces === 0) return `${part.cartons} Ctns`;
-  if(part.packs <= 9 && part.pieces <= 9) return `${part.cartons}.${part.packs}${part.pieces} Ctns`;
-  // Packs or Pieces don't fit a single positional digit for this product's
-  // configuration — never display an invalid/ambiguous remainder.
-  return `${part.cartons}c ${part.packs}p ${part.pieces}pc`;
-}
+// hasPackTier/toBaseUnits/fromBaseUnitsPreview/qtyLabel now live in the
+// shared /quantity_format.js (loaded above this script) — one centralized
+// formatter, no longer duplicated per page.
 
 function qtyInputsHtml(prefix, rule, vals, readOnly){
   vals = vals || {cartons:0, packs:0, pieces:0};
@@ -606,8 +579,8 @@ function showDone(date, shift){
       <p>${date} — figures recorded for all configured products.</p>
       <button class="btn btn-primary" id="restartBtn" style="width:100%;">Log another shift</button>
     </div>`;
-  document.getElementById('restartBtn').addEventListener('click', ()=>{
-    currentIdx = 0; sessionValues = {}; renderEntryCard();
+  document.getElementById('restartBtn').addEventListener('click', async ()=>{
+    currentIdx = 0; sessionValues = {}; await loadProducts(); renderEntryCard();
   });
 }
 
@@ -765,8 +738,8 @@ function switchTab(name){
   if(name==='history') renderHistory();
 }
 document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
-document.getElementById('dateInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
-document.getElementById('shiftInput').addEventListener('change', ()=>{ currentIdx=0; sessionValues={}; renderEntryCard(); });
+document.getElementById('dateInput').addEventListener('change', async ()=>{ currentIdx=0; sessionValues={}; await loadProducts(); renderEntryCard(); });
+document.getElementById('shiftInput').addEventListener('change', async ()=>{ currentIdx=0; sessionValues={}; await loadProducts(); renderEntryCard(); });
 // ---------- login ----------
 // Every role now lands on its own role-aware page after login — Viewer/
 // Manager/Super Admin on Dashboard, Operator on the first enabled

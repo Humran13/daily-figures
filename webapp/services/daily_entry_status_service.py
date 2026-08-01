@@ -259,6 +259,37 @@ def mark_completed_with_data_if_not_already(date, shift, product_id, user):
         return get_or_create(date, shift, product_id)
 
 
+def bucket_for_date_shift(date, shift, product_ids):
+    """
+    One query, not one per product (final pre-deployment correction,
+    Daily Figures usage-ranked ordering): returns {product_id: N} where
+    N is 0 (not started), 1 (in progress — a live, non-stale lock is
+    held), or 2 (completed — real data or No Activity Today) for this
+    exact date+shift. A product_id with no row at all is 0 implicitly
+    (via .get(..., 0) at the call site) — nothing to query for a product
+    that was never touched on this date+shift.
+
+    This is purely a read — it never creates a row, never claims a lock,
+    and is safe to call on every Daily Figures list load.
+    """
+    if not product_ids:
+        return {}
+    rows = DailyEntryStatus.query.filter(
+        DailyEntryStatus.date == date,
+        DailyEntryStatus.shift == shift,
+        DailyEntryStatus.product_id.in_(product_ids),
+    ).all()
+    buckets = {}
+    for row in rows:
+        if row.completed:
+            buckets[row.product_id] = 2
+        elif row.lock_user_id is not None and not _is_stale(row.lock_acquired_at):
+            buckets[row.product_id] = 1
+        else:
+            buckets[row.product_id] = 0
+    return buckets
+
+
 def takeover_lock(date, shift, product_id, actor):
     """Manager/Super Administrator clears a stuck lock (stale or not) so
     another Operator (or themselves) can proceed — audited either way,

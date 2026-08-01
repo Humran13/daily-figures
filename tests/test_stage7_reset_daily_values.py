@@ -1,8 +1,14 @@
 """
-Stage 7 section 4: Super-Administrator-only "Reset Daily Values" control —
-narrow scope (one Date + Shift, one product or all), preview before
-confirm, transactional execute, and the hard guarantee that it never
-touches source-derived Dispatch/Returns/Production totals.
+Stage 7 section 4: "Reset Daily Values" control — narrow scope (one Date +
+Shift, one product or all), preview before confirm, transactional
+execute, and the hard guarantee that its default mode (figures_only)
+never touches source-derived Dispatch/Returns/Production totals.
+
+Final pre-deployment correction: permission widened from Super-
+Administrator-only to Manager-or-Super-Administrator (see
+tests/test_final_correction_reset_modes.py for the two-mode
+figures_only/full behavior this correction introduced — full-source-book
+neutralization coverage lives there, not in this file).
 """
 from pathlib import Path
 
@@ -31,18 +37,30 @@ def setup(client, login_as):
 # Permissions
 # =====================================================================
 
-@pytest.mark.parametrize("role", ["manager", "operator", "viewer"])
-def test_non_super_admin_cannot_preview_reset(client, login_as, role):
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_non_elevated_role_cannot_preview_reset(client, login_as, role):
     login_as(f"reset_prev_{role}", "password123", role)
     res = client.post("/api/daily-reset/preview", json={"date": "2026-08-01", "shift": "Day"})
     assert res.status_code == 403
 
 
-@pytest.mark.parametrize("role", ["manager", "operator", "viewer"])
-def test_non_super_admin_cannot_execute_reset(client, login_as, role):
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_non_elevated_role_cannot_execute_reset(client, login_as, role):
     login_as(f"reset_exec_{role}", "password123", role)
     res = client.post("/api/daily-reset", json={"date": "2026-08-01", "shift": "Day", "reason": "trying anyway"})
     assert res.status_code == 403
+
+
+def test_manager_can_preview_reset(client, login_as):
+    login_as("reset_mgr_prev", "password123", "manager")
+    res = client.post("/api/daily-reset/preview", json={"date": "2026-08-01", "shift": "Day"})
+    assert res.status_code == 200
+
+
+def test_manager_can_execute_reset(client, login_as):
+    login_as("reset_mgr_exec", "password123", "manager")
+    res = client.post("/api/daily-reset", json={"date": "2026-08-01", "shift": "Day", "reason": "manager cleanup"})
+    assert res.status_code == 200
 
 
 # =====================================================================
@@ -153,7 +171,12 @@ def test_reset_never_touches_finalized_production_totals(client, setup):
 
 
 def test_reset_response_warns_source_totals_are_not_deleted():
-    assert "Dispatch, Returns, and Production totals are calculated from their source books" in ADMIN_HTML
+    """Final pre-deployment correction: the warning is now mode-aware
+    (see tests/test_final_correction_reset_modes.py for Mode B's own
+    warning text) — Mode A (the default/only mode this file otherwise
+    exercises) still explicitly warns that Dispatch/Returns/Production
+    records are preserved and keep affecting stock balances."""
+    assert "Existing Dispatch, Returns, and Production records will remain and will continue affecting stock balances" in ADMIN_HTML
 
 
 # =====================================================================

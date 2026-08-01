@@ -236,6 +236,7 @@
   </div>
 </div>
 
+<script src="/quantity_format.js"></script>
 <script>
 let currentUser = null;
 let productsCache = [];
@@ -665,22 +666,9 @@ document.getElementById('pClearFiltersBtn').addEventListener('click', ()=>{
 // supports (index.html's own History tab just never exposed date/shift in
 // its UI — no backend change needed here).
 
-// The one centralized book-notation formatter — mirrors
-// webapp/services/quantity_format.qty_label() exactly. `rule` is the
-// product's own packaging_rule object; pack-tier-ness is never inferred
-// from the value itself (from_base_units() always returns packs:0 for a
-// no-pack-tier product too, so checking "packs !== null" can't actually
-// distinguish the two cases).
-function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
-function qtyLabel(part, rule){
-  if(!part) return '—';
-  if(part.warning) return part.warning;
-  if(part.cartons === undefined) return String(part.base_qty);
-  if(!hasPackTier(rule)) return `${part.cartons}c ${part.pieces}pc`;
-  if(part.packs === 0 && part.pieces === 0) return `${part.cartons} Ctns`;
-  if(part.packs <= 9 && part.pieces <= 9) return `${part.cartons}.${part.packs}${part.pieces} Ctns`;
-  return `${part.cartons}c ${part.packs}p ${part.pieces}pc`;
-}
+// hasPackTier/qtyLabel now live in the shared /quantity_format.js (loaded
+// above this script) — one centralized formatter, no longer duplicated
+// per page.
 
 function dailyFiguresFilterParams(){
   const params = new URLSearchParams();

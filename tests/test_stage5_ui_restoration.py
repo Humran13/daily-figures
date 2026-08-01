@@ -18,6 +18,7 @@ import pytest
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+QUANTITY_FORMAT_JS = (STATIC_DIR / "quantity_format.js").read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -93,17 +94,21 @@ def test_closing_preview_never_renders_raw_pieces_suffix():
 def test_qty_label_formats_zero_as_ctns_never_em_dash():
     """A valid zero must display as '0 Ctns', never '—' — qtyLabel only
     ever returns '—' when there's no part object at all (nothing computed
-    yet), never for an actual zero quantity."""
-    idx = INDEX_HTML.index("function qtyLabel(part, rule){")
-    body = INDEX_HTML[idx:INDEX_HTML.index("\n}", idx)]
+    yet), never for an actual zero quantity. qtyLabel now lives in the
+    shared static/quantity_format.js (final pre-deployment correction —
+    one centralized formatter, no longer duplicated per page)."""
+    js = QUANTITY_FORMAT_JS
+    idx = js.index("function qtyLabel(part, rule){")
+    body = js[idx:js.index("\n}", idx)]
     assert "if(!part) return '—';" in body
     assert "part.packs === 0 && part.pieces === 0" in body
     assert "return `${part.cartons} Ctns`;" in body
 
 
 def test_book_notation_examples_match_spec():
-    idx = INDEX_HTML.index("function qtyLabel(part, rule){")
-    body = INDEX_HTML[idx:INDEX_HTML.index("\n}", idx)]
+    js = QUANTITY_FORMAT_JS
+    idx = js.index("function qtyLabel(part, rule){")
+    body = js[idx:js.index("\n}", idx)]
     # 0 Ctns / 5 Ctns (packs=0,pieces=0 branch) and positional two-digit
     # notation (6.11 Ctns style) both come from this one function body.
     assert "`${part.cartons} Ctns`" in body
@@ -121,11 +126,13 @@ def test_closing_stock_computed_values_render_in_book_notation(client, setup):
     assert qty_label(6, 1, 1, rule) == "6.11 Ctns"
 
 
-def test_no_pack_tier_product_keeps_existing_carton_and_piece_display():
+def test_no_pack_tier_product_uses_book_style_point_notation():
+    """Final pre-deployment correction: superseded the older "Xc Ypc" form
+    with the same point notation pack-tier products use — see
+    tests/test_final_correction_packaging_notation.py."""
     kingmax_rule = {"cartons_to_packs": None, "packs_to_pieces": None, "carton_to_pieces": 60}
     from webapp.services.quantity_format import qty_label
-    assert qty_label(2, 0, 5, kingmax_rule) == "2c 5pc"
-    assert "Ctns" not in qty_label(2, 0, 5, kingmax_rule)
+    assert qty_label(2, 0, 5, kingmax_rule) == "2.05 Ctns"
 
 
 # ================= Returns/Production remain source-derived and read-only =================

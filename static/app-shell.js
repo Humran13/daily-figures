@@ -59,6 +59,7 @@
     if (path === '/history.html') return 'history_exports';
     if (path === '/dashboard.html') return 'dashboard';
     if (path === '/admin.html') return 'admin';
+    if (path === '/reset-daily-values.html') return 'reset_daily_values';
     return null;
   }
 
@@ -124,6 +125,12 @@
     }
     if (enabled(flags, 'daily_figures')) items.push({ key: 'daily_figures', label: 'Daily Figures', href: '/' });
     if (enabled(flags, 'history_exports')) items.push({ key: 'history_exports', label: 'History & Exports', href: '/history.html' });
+    // Final UI correction: Reset Daily Values is Manager-or-Super-
+    // Administrator — its own dedicated page (never inside admin.html,
+    // which stays Super-Administrator-only for unrelated controls).
+    if ((role === 'manager' || role === 'super_admin') && enabled(flags, 'daily_figures')) {
+      items.push({ key: 'reset_daily_values', label: 'Reset Daily Values', href: '/reset-daily-values.html' });
+    }
     if (role === 'super_admin') items.push({ key: 'admin', label: 'Admin', href: '/admin.html' });
     return items;
   }

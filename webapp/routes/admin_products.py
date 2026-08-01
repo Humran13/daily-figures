@@ -11,10 +11,11 @@ from flask import Blueprint, jsonify, request
 
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
+from webapp.models.dispatch import SHIFTS
 from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
 from webapp.models.user import ROLE_SUPER_ADMIN
-from webapp.services import product_usage_service
+from webapp.services import daily_entry_status_service, product_usage_service
 from webapp.services.audit_service import record_audit
 
 admin_products_bp = Blueprint("admin_products", __name__, url_prefix="/api/admin/products")
@@ -35,10 +36,33 @@ def list_products():
     Part 2) switches to the global, shared quick-selection ranking instead
     — used by the operational Dispatch/Returns/Production/Daily Figures
     product selectors, never by admin configuration screens.
+
+    Final pre-deployment correction: passing `?sort=usage` together with
+    `date=&shift=` (as the Daily Figures wizard now does) additionally
+    reorders into three priority groups for that exact date+shift —
+    not-started, then in-progress, then completed/no-activity — each
+    group still internally ordered by the same global usage ranking. This
+    is a single extra batched query
+    (daily_entry_status_service.bucket_for_date_shift(), one row set for
+    every product at once) and a stable re-sort of the already-ranked
+    list — never a query per product, and never a second/competing
+    ranking system.
     """
     include_inactive = request.args.get("include_inactive") == "1"
     if request.args.get("sort") == "usage":
         products = product_usage_service.ranked_active_products(include_inactive=include_inactive)
+
+        date = request.args.get("date")
+        shift = request.args.get("shift")
+        if date and shift in SHIFTS:
+            buckets = daily_entry_status_service.bucket_for_date_shift(date, shift, [p.id for p in products])
+            # Stable sort: within each bucket, the existing usage-rank
+            # order (score desc, recency desc, total-uses desc,
+            # display_order, name) from ranked_active_products() above is
+            # preserved exactly — this only ever moves a product between
+            # the three priority groups, never re-ranks within one.
+            products.sort(key=lambda p: buckets.get(p.id, 0))
+
         results = []
         for p in products:
             d = p.to_dict()

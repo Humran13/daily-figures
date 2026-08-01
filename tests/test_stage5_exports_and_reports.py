@@ -55,12 +55,16 @@ def test_dispatch_csv_shows_business_friendly_quantity_string(client, setup):
     assert b"2.34 Ctns" in res.data
 
 
-def test_dispatch_no_pack_tier_product_shows_cartons_and_pieces_only(client, setup):
+def test_dispatch_no_pack_tier_product_shows_book_style_point_notation(client, setup):
+    """Final pre-deployment correction: a no-pack-tier product's book-style
+    quantity now uses the same "C.PP Ctns" point notation as pack-tier
+    products — the loose-piece remainder positioned after the point, not
+    the older "Xc Ypc" form."""
     kingmax = client.post("/api/admin/products", json={"name": "KingMax Test"}).get_json()
     client.post(f"/api/admin/products/{kingmax['id']}/packaging-rules", json={"carton_to_pieces": 60})
     _finalize_dispatch(client, kingmax["id"], setup["customer"]["id"], "2026-07-28", "Day", 2, 0, 5, "RPT-3")
     res = client.get("/api/dispatches/export.csv")
-    assert b"2c 5pc" in res.data
+    assert b"2.05 Ctns" in res.data
 
 
 def test_dispatch_csv_has_no_total_pieces_or_base_unit_row_at_all(client, setup):

@@ -150,6 +150,19 @@ def admin_page():
     return _guard_page("admin.html", (ROLE_SUPER_ADMIN,))
 
 
+@pages_bp.route("/reset-daily-values.html")
+def reset_daily_values_page():
+    # Final UI correction: Reset Daily Values is Manager-or-Super-
+    # Administrator (unlike admin.html, which stays Super-Administrator-
+    # only for its unrelated Users/Company-Settings/Feature-Flags/
+    # branding controls) — a dedicated page rather than widening
+    # admin.html's own access. Gated on the same "daily_figures" module
+    # the underlying /api/daily-reset* endpoints already require via
+    # @feature_required, so a disabled Daily Figures module hides this
+    # page exactly the same way it already hides the reset APIs.
+    return _guard_page("reset-daily-values.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER), module_key="daily_figures")
+
+
 @pages_bp.route("/history.html")
 def history_page():
     return _guard_flag_and_auth("history.html", "history_exports")

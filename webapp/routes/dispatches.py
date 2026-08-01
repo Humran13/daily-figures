@@ -8,12 +8,13 @@ from webapp.models.dispatch import STATUS_DRAFT, STATUS_FINALIZED, STATUSES, Dis
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, User
 from webapp.services import branding_service, customer_service, dispatch_service as svc
-from webapp.services import product_usage_service
+from webapp.services import product_usage_service, record_correction_service
 from webapp.services.audit_service import record_audit
 from webapp.services.dispatch_service import DispatchError
 from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services.packaging import PackagingError
 from webapp.services.quantity_format import qty_label
+from webapp.services.record_correction_service import RecordCorrectionConflict, RecordCorrectionError
 
 dispatches_bp = Blueprint("dispatches", __name__, url_prefix="/api/dispatches")
 
@@ -489,3 +490,42 @@ def duplicate(dispatch_id):
                  after={"duplicated_from": source.id, **new_dispatch.to_dict()})
     db.session.commit()
     return jsonify(new_dispatch.to_dict()), 201
+
+
+@dispatches_bp.route("/<int:dispatch_id>/correct", methods=["POST"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("dispatch")
+def correct(dispatch_id):
+    """
+    Final pre-deployment correction — "Correct Record": amends this exact
+    dispatch in place (same id, full audit trail) rather than reopening it
+    manually, editing, and refinalizing by hand, or Duplicate (a separate
+    new record). See webapp/services/record_correction_service.py.
+    """
+    user = current_user()
+    d = request.get_json(force=True) or {}
+    try:
+        dispatch, summary = record_correction_service.correct_record(
+            "dispatch", dispatch_id,
+            lines=d.get("lines"), notes=d.get("notes"), reason=d.get("reason"),
+            actor=user, expected_updated_at=d.get("expected_updated_at"),
+        )
+    except RecordCorrectionConflict as e:
+        db.session.rollback()
+        return _error(e, 409)
+    except (RecordCorrectionError, DispatchError, PackagingError) as e:
+        db.session.rollback()
+        return _error(e)
+
+    db.session.commit()
+    return jsonify({"dispatch": dispatch.to_dict(), "correction": summary})
+
+
+@dispatches_bp.route("/<int:dispatch_id>/audit-history", methods=["GET"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("dispatch")
+def audit_history(dispatch_id):
+    dispatch = db.session.get(Dispatch, dispatch_id)
+    if dispatch is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(record_correction_service.audit_history("dispatch", dispatch_id))

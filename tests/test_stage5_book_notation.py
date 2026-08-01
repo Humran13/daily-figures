@@ -9,7 +9,11 @@ mirrored in JS on every page that displays a read-only quantity.
 Book notation for a product WITH a pack tier: "C.PP Ctns", where the two
 digits after the decimal point are POSITIONAL — first digit is Packs,
 second is Pieces — never a base-10 fraction. Products WITHOUT a pack tier
-keep their existing "Xc Ypc" convention unchanged.
+(carton + loose pieces only) also use "C.PP Ctns" as of the final
+pre-deployment correction — see
+tests/test_final_correction_packaging_notation.py — where the digits
+after the point are the loose-piece remainder, zero-padded to at least
+two digits and sized from the product's own carton capacity.
 """
 import inspect
 
@@ -80,16 +84,22 @@ def test_napkin_max_pack_value_five_still_single_digit():
 
 
 # ---------- no-pack-tier products keep their existing rule, never a fake pack ----------
+#
+# Final pre-deployment correction: no-pack-tier products (KingMax,
+# JumboMax, Kitchen Towel Singles, ...) now use the same book-style
+# positional point notation as pack-tier products — "C.PP Ctns", where
+# the digits after the point are the loose-piece remainder (never a real
+# Packs tier — there still isn't one). See
+# tests/test_final_correction_packaging_notation.py for the full
+# carton-plus-piece notation spec (normalization, digit width, suffix
+# consistency).
 
 def test_kingmax_never_receives_a_fake_pack_tier():
-    assert qty_label(2, 0, 10, KINGMAX_RULE) == "2c 10pc"
-    assert "Ctns" not in qty_label(2, 0, 10, KINGMAX_RULE)
-    assert "." not in qty_label(2, 0, 10, KINGMAX_RULE)
+    assert qty_label(2, 0, 10, KINGMAX_RULE) == "2.10 Ctns"
 
 
 def test_jumbomax_never_receives_a_fake_pack_tier():
-    assert qty_label(3, 0, 1, JUMBOMAX_RULE) == "3c 1pc"
-    assert "Ctns" not in qty_label(3, 0, 1, JUMBOMAX_RULE)
+    assert qty_label(3, 0, 1, JUMBOMAX_RULE) == "3.01 Ctns"
 
 
 def test_no_rule_configured_falls_back_safely():

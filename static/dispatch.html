@@ -218,6 +218,28 @@
       <div class="card" id="detailLines"></div>
       <div class="msg" id="detailMsg"></div>
       <div class="nav-row no-print" id="detailActions"></div>
+
+      <!-- Correct Record — final pre-deployment correction. Manager/Super
+           Administrator only (gated the same way as Reopen/Void). Amends
+           this exact record in place via POST .../correct, one atomic
+           reason-required call, rather than the manual reopen -> edit ->
+           finalize round trip. -->
+      <div class="card hidden no-print" id="correctPanel">
+        <h3 style="margin-top:0;">Correct record</h3>
+        <div id="correctLineList"></div>
+        <div class="row">
+          <div style="flex:1;"><label>Add a product</label>
+            <select id="correctAddProductSelect"><option value="">+ Add a product…</option></select>
+          </div>
+        </div>
+        <div><label>Notes</label><textarea id="correctNotes" rows="2"></textarea></div>
+        <div><label>Correction reason (required)</label><textarea id="correctReason" rows="2" placeholder="Why is this correction needed?"></textarea></div>
+        <div class="msg" id="correctMsg"></div>
+        <div class="nav-row">
+          <button class="btn btn-primary" id="correctSaveBtn">Save correction</button>
+          <button class="btn btn-ghost" id="correctCancelBtn">Cancel</button>
+        </div>
+      </div>
     </div>
   </main>
 </div>
@@ -817,11 +839,16 @@ async function openDetail(id){
   if(currentUser && ['super_admin','manager'].includes(currentUser.role)){
     if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
     if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="void">Void</button>`);
+    // Correct Record: amends and refinalizes the original in one step.
+    // Reopen (above) is kept for anyone who deliberately wants the record
+    // left open instead — the two are not the same action.
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Correct record</button>`);
   }
   buttons.push(`<button class="btn btn-ghost" data-action="duplicate">Duplicate</button>`);
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
+  document.getElementById('correctPanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
   msg.textContent = '';
 
@@ -848,10 +875,99 @@ async function openDetail(id){
         if(r.status===201){ toast('Duplicated as a new draft.'); openDetail(r.data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
+      if(action === 'correct'){ openCorrectPanel(data); return; }
     });
   });
 }
 document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab('list'));
+
+// ---------- Correct Record ----------
+let correctLines = [];
+
+function openCorrectPanel(data){
+  correctLines = data.lines.map(l => ({
+    id: l.id, product_id: l.product_id, product_name: l.product_name,
+    rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
+    cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes,
+  }));
+  document.getElementById('correctNotes').value = data.notes || '';
+  document.getElementById('correctReason').value = '';
+  document.getElementById('correctMsg').textContent = '';
+  const select = document.getElementById('correctAddProductSelect');
+  select.innerHTML = '<option value="">+ Add a product…</option>' +
+    productsCache.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  renderCorrectLines();
+  document.getElementById('correctPanel').classList.remove('hidden');
+  document.getElementById('correctPanel').scrollIntoView({behavior:'smooth'});
+}
+
+function renderCorrectLines(){
+  const container = document.getElementById('correctLineList');
+  if(correctLines.length === 0){
+    container.innerHTML = '<p class="hint">No product lines — add one below (at least one is required).</p>';
+    return;
+  }
+  container.innerHTML = correctLines.map((line, idx) => `
+    <div class="line-card">
+      <div class="head">
+        <span class="name">${escapeHtml(line.product_name)}</span>
+        <button class="remove" data-correct-remove="${idx}">Remove</button>
+      </div>
+      <div class="qty-row">
+        <div class="qty-field"><label>Cartons</label><input type="number" min="0" inputmode="numeric" data-correct-qty="${idx}" data-unit="cartons" value="${line.cartons}"></div>
+        ${line.rule && !line.rule.carton_to_pieces ? `<div class="qty-field"><label>Packs</label><input type="number" min="0" inputmode="numeric" data-correct-qty="${idx}" data-unit="packs" value="${line.packs}"></div>` : ''}
+        <div class="qty-field"><label>Pieces</label><input type="number" min="0" inputmode="numeric" data-correct-qty="${idx}" data-unit="pieces" value="${line.pieces}"></div>
+      </div>
+    </div>
+  `).join('');
+  container.querySelectorAll('[data-correct-remove]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ correctLines.splice(parseInt(btn.dataset.correctRemove,10),1); renderCorrectLines(); });
+  });
+  container.querySelectorAll('[data-correct-qty]').forEach(input=>{
+    input.addEventListener('input', ()=>{
+      const idx = parseInt(input.dataset.correctQty, 10);
+      const unit = input.dataset.unit;
+      const parsed = parseInt(input.value, 10);
+      correctLines[idx][unit] = Number.isNaN(parsed) ? 0 : parsed;
+    });
+    attachZeroClearBehavior(input);
+  });
+}
+
+document.getElementById('correctAddProductSelect').addEventListener('change', (e)=>{
+  const id = parseInt(e.target.value, 10);
+  if(!id) return;
+  const product = productsCache.find(p=>p.id===id);
+  if(correctLines.some(l=>l.product_id===id)){ toast('Already on this record — edit the existing line.'); e.target.value=''; return; }
+  correctLines.push({id: null, product_id: id, product_name: product.name, rule: product.packaging_rule, cartons:0, packs:0, pieces:0, line_notes:null});
+  e.target.value = '';
+  renderCorrectLines();
+});
+
+document.getElementById('correctCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('correctPanel').classList.add('hidden');
+});
+
+document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('correctMsg');
+  const reason = document.getElementById('correctReason').value.trim();
+  if(!reason){ msg.textContent = 'A correction reason is required.'; msg.className = 'msg err'; return; }
+  if(correctLines.length === 0){ msg.textContent = 'At least one product line is required.'; msg.className = 'msg err'; return; }
+
+  const body = {
+    reason, notes: document.getElementById('correctNotes').value,
+    expected_updated_at: currentDetail.updated_at,
+    lines: correctLines.map(l => ({id: l.id, product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes})),
+  };
+  const r = await api(`/api/dispatches/${currentDetail.id}/correct`, {method:'POST', body: JSON.stringify(body)});
+  if(r.status !== 200){
+    msg.textContent = r.data.error || 'Could not save correction.'; msg.className = 'msg err';
+    return;
+  }
+  toast('Correction saved.');
+  document.getElementById('correctPanel').classList.add('hidden');
+  openDetail(currentDetail.id);
+});
 
 // ---------- boot ----------
 (async function init(){

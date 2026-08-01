@@ -131,13 +131,19 @@
 
     <!-- Reset Daily Values confirmation — always shows the exact scope
          (date/shift/products) already fetched by the preview, and always
-         requires a reason before the reset control becomes reachable. -->
+         requires a reason before the reset control becomes reachable.
+         Final pre-deployment correction: mode-aware warning text, plus a
+         typed confirmation field that only Mode B (Full Reset) requires. -->
     <div class="modal-backdrop hidden" id="resetConfirmModal">
       <div class="modal-sheet">
-        <h3>Confirm reset</h3>
+        <h3 id="resetConfirmTitle">Confirm reset</h3>
         <p class="small" id="resetConfirmScope"></p>
-        <p class="small"><strong>Dispatch, Returns, and Production totals are calculated from their source books and will not be deleted by this reset.</strong></p>
+        <p class="small" id="resetConfirmWarning"><strong></strong></p>
         <div><label>Reason (required)</label><textarea id="resetConfirmReason" rows="2" placeholder="Why is this reset needed?"></textarea></div>
+        <div id="resetConfirmTypedWrap" class="hidden">
+          <label>Type <code id="resetConfirmTypedExpected"></code> to confirm</label>
+          <input type="text" id="resetConfirmTyped" autocomplete="off">
+        </div>
         <div class="msg" id="resetConfirmMsg"></div>
         <div class="row">
           <button class="btn-danger" id="resetConfirmSubmitBtn">Reset daily values</button>
@@ -339,7 +345,17 @@
     <div class="panel" id="panel-reset">
       <div class="card">
         <h2>Reset daily values</h2>
-        <p class="small">Clears manually-entered Opening Stock, Notes, and in-progress/completed review status for one Date + Shift, and either one product or every product. Dispatch, Returns, and Production totals are calculated from their source books and will not be deleted by this reset — correct, void, or reopen the source record instead if those figures are wrong.</p>
+        <p class="small">Two reset modes are available for one Date + Shift, and either one product or every product:</p>
+        <div class="row">
+          <label><input type="radio" name="resetMode" id="resetModeFiguresOnly" value="figures_only" checked>
+            <strong>Reset Daily Figures Status Only</strong> — clears completion/No Activity status, in-progress locks, notes, and non-authoritative Opening Stock. Existing Dispatch, Returns, and Production records remain and continue affecting stock balances.
+          </label>
+        </div>
+        <div class="row">
+          <label><input type="radio" name="resetMode" id="resetModeFull" value="full">
+            <strong>Full Reset — Start This Period Again</strong> — does everything above, AND neutralizes (voids, or removes the affected product's lines from) matching finalized Dispatch, Returns, and Production records for this exact Date + Shift, so the period can be entered again from scratch. Neutralized records remain traceable in History — never hard-deleted.
+          </label>
+        </div>
         <div class="row">
           <div><label>Date</label><input type="date" id="resetDate"></div>
           <div><label>Shift</label>
@@ -353,7 +369,7 @@
         <button class="btn-primary" id="resetPreviewBtn">Preview affected products</button>
         <div class="msg" id="resetPreviewMsg"></div>
         <div id="resetPreviewResults" class="hidden">
-          <table><thead><tr><th>Product</th><th>Opening Stock entered</th><th>Notes</th><th>Review status</th></tr></thead>
+          <table><thead><tr><th>Product</th><th>Opening Stock entered</th><th>Notes</th><th>Review status</th><th>Dispatch</th><th>Returns</th><th>Production</th></tr></thead>
           <tbody id="resetPreviewTable"></tbody></table>
           <button class="btn-danger" id="resetOpenConfirmBtn" style="margin-top:10px;">Reset these values&hellip;</button>
         </div>
@@ -1008,15 +1024,20 @@ function populateResetProductSelect(){
     productsCache.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 }
 
+function currentResetMode(){
+  return document.getElementById('resetModeFull').checked ? 'full' : 'figures_only';
+}
+
 document.getElementById('resetPreviewBtn').addEventListener('click', async ()=>{
   const msg = document.getElementById('resetPreviewMsg');
   const date = document.getElementById('resetDate').value;
   const shift = document.getElementById('resetShift').value;
   const productId = document.getElementById('resetProduct').value;
+  const mode = currentResetMode();
   if(!date){ msg.textContent = 'Choose a date first.'; msg.className = 'msg err'; return; }
 
   const {status, data} = await api('/api/daily-reset/preview', {
-    method:'POST', body: JSON.stringify({date, shift, product_id: productId || 'all'}),
+    method:'POST', body: JSON.stringify({date, shift, product_id: productId || 'all', mode}),
   });
   if(status !== 200){
     msg.textContent = data.error || 'Could not load preview.'; msg.className = 'msg err';
@@ -1025,24 +1046,53 @@ document.getElementById('resetPreviewBtn').addEventListener('click', async ()=>{
   }
   msg.textContent = '';
   resetPreviewCache = data;
+  // Never says "no affected products" while any real Daily Figures state
+  // OR finalized source-book activity exists for this scope — the fixed
+  // preview surfaces both explicitly.
+  const sourceCell = (rows, label) => rows.length
+    ? rows.map(r=>`${escapeHtml(r.label)}: ${escapeHtml(r.quantity_label)}`).join('<br>')
+    : '—';
   document.getElementById('resetPreviewTable').innerHTML = data.products.map(p => `
     <tr>
       <td>${escapeHtml(p.product_name)}</td>
       <td>${p.has_manual_opening_entry ? `${p.opening_qty.cartons}c ${p.opening_qty.packs}p ${p.opening_qty.pieces}pc` : '—'}</td>
       <td>${p.has_notes ? 'Yes' : '—'}</td>
       <td>${escapeHtml(p.review_status.replace('_',' '))}</td>
-    </tr>`).join('') || '<tr><td colspan="4" class="small">No products match this scope.</td></tr>';
+      <td>${sourceCell(p.finalized_dispatch)}</td>
+      <td>${sourceCell(p.finalized_returns)}</td>
+      <td>${sourceCell(p.finalized_production)}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="small">No products match this scope.</td></tr>';
+  if(!data.any_affected){
+    document.getElementById('resetPreviewMsg').textContent = 'Nothing to reset for this scope — no Daily Figures state or source-book activity found.';
+    document.getElementById('resetPreviewMsg').className = 'msg';
+  }
   document.getElementById('resetPreviewResults').classList.remove('hidden');
 });
 
 document.getElementById('resetOpenConfirmBtn').addEventListener('click', ()=>{
   if(!resetPreviewCache) return;
   const productId = document.getElementById('resetProduct').value;
+  const mode = currentResetMode();
   const scopeLabel = productId
     ? `${resetPreviewCache.products[0] ? resetPreviewCache.products[0].product_name : 'this product'}`
     : `all ${resetPreviewCache.products.length} product(s)`;
+  document.getElementById('resetConfirmTitle').textContent =
+    mode === 'full' ? 'Confirm Full Reset' : 'Confirm Daily Figures Status Reset';
   document.getElementById('resetConfirmScope').textContent =
     `This will reset ${scopeLabel} for ${resetPreviewCache.date} — ${resetPreviewCache.shift}.`;
+  document.getElementById('resetConfirmWarning').querySelector('strong').textContent = mode === 'full'
+    ? 'This neutralizes matching Dispatch, Returns, and Production records for this Date + Shift — they will stop affecting stock balances, but remain traceable in History as reset/voided. Replacement entries may be submitted afterward.'
+    : 'This reset clears Daily Figures workflow status only. Existing Dispatch, Returns, and Production records will remain and will continue affecting stock balances.';
+  const typedWrap = document.getElementById('resetConfirmTypedWrap');
+  const typedInput = document.getElementById('resetConfirmTyped');
+  const expected = `FULL RESET ${resetPreviewCache.date} ${resetPreviewCache.shift.toUpperCase()}`;
+  if(mode === 'full'){
+    typedWrap.classList.remove('hidden');
+    document.getElementById('resetConfirmTypedExpected').textContent = expected;
+    typedInput.value = '';
+  } else {
+    typedWrap.classList.add('hidden');
+  }
   document.getElementById('resetConfirmReason').value = '';
   document.getElementById('resetConfirmMsg').textContent = '';
   document.getElementById('resetConfirmModal').classList.remove('hidden');
@@ -1060,10 +1110,20 @@ document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async
   const date = document.getElementById('resetDate').value;
   const shift = document.getElementById('resetShift').value;
   const productId = document.getElementById('resetProduct').value;
+  const mode = currentResetMode();
 
-  const {status, data} = await api('/api/daily-reset', {
-    method:'POST', body: JSON.stringify({date, shift, product_id: productId || 'all', reason}),
-  });
+  const body = {date, shift, product_id: productId || 'all', reason, mode};
+  if(mode === 'full'){
+    const expected = `FULL RESET ${date} ${shift.toUpperCase()}`;
+    const typed = document.getElementById('resetConfirmTyped').value;
+    if(typed !== expected){
+      msg.textContent = `Type exactly "${expected}" to confirm a full reset.`; msg.className = 'msg err';
+      return;
+    }
+    body.confirmation_text = typed;
+  }
+
+  const {status, data} = await api('/api/daily-reset', {method:'POST', body: JSON.stringify(body)});
   if(status !== 200){
     msg.textContent = data.error || 'Could not reset daily values.'; msg.className = 'msg err';
     return;
@@ -1071,7 +1131,7 @@ document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async
   document.getElementById('resetConfirmModal').classList.add('hidden');
   document.getElementById('resetPreviewResults').classList.add('hidden');
   document.getElementById('resetPreviewMsg').textContent =
-    `Daily values reset for ${data.date} — ${data.shift} — ${data.products.join(', ')}.`;
+    `Daily values reset (${data.mode === 'full' ? 'Full Reset' : 'Daily Figures Status Only'}) for ${data.date} — ${data.shift} — ${data.products.join(', ')}.`;
   document.getElementById('resetPreviewMsg').className = 'msg ok';
 });
 
