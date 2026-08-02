@@ -41,7 +41,7 @@ from webapp.models.production_record import (
 )
 from webapp.models.return_record import STATUS_VOID as RETURNS_VOID, ReturnLine, ReturnRecord
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
-from webapp.services import daily_entry_status_service, dispatch_service, production_service, returns_service
+from webapp.services import daily_entry_status_service, daily_review_service, dispatch_service, production_service, returns_service
 from webapp.services.audit_service import record_audit
 from webapp.services.quantity_format import qty_label
 
@@ -167,6 +167,11 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
     dispatch_by_product = _dispatch_rows_by_product(date, shift)
     returns_by_product = _returns_rows_by_product(date, shift)
     production_by_product = _production_rows_by_product(date, shift)
+    # Safety correction, item 2 — the preview must also show whether the
+    # selected scope touches a submitted/in-progress review session or any
+    # already-reviewed/edited/skipped product, so a Manager/Super
+    # Administrator sees that consequence before confirming a reset.
+    review_info = daily_review_service.preview_review_state(date, shift, [p.id for p in products])
 
     rows = []
     for product in products:
@@ -179,6 +184,7 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
         returns_rows = returns_by_product.get(product.id, [])
         production_rows = production_by_product.get(product.id, [])
         has_source_activity = bool(dispatch_rows or returns_rows or production_rows)
+        review_state = review_info["product_states"].get(product.id, "not_reviewed")
 
         rows.append({
             "product_id": product.id,
@@ -199,13 +205,25 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
             # Mode B neutralizes exactly what's listed above, nothing else.
             "preserved_in_mode_a": has_source_activity,
             "neutralized_in_mode_b": has_source_activity,
+            # Daily Figures review workflow state this reset would clear —
+            # "not_reviewed" means the reset has nothing to clear for this
+            # product, regardless of what the review session's own status is.
+            "review_state": review_state,
         })
 
     any_affected = any(
-        r["has_manual_opening_entry"] or r["has_notes"] or r["review_status"] != "not_started" or r["has_source_activity"]
+        r["has_manual_opening_entry"] or r["has_notes"] or r["review_status"] != "not_started"
+        or r["has_source_activity"] or r["review_state"] != "not_reviewed"
         for r in rows
     )
-    return {"date": date, "shift": shift, "mode": mode, "any_affected": any_affected, "products": rows}
+    return {
+        "date": date, "shift": shift, "mode": mode, "any_affected": any_affected, "products": rows,
+        "review_session_status": review_info["session_status"],
+        "affects_submitted_review": review_info["session_status"] == daily_review_service.REVIEW_STATUS_SUBMITTED,
+        "affects_in_progress_review": review_info["session_status"] in (
+            daily_review_service.REVIEW_STATUS_IN_PROGRESS, daily_review_service.REVIEW_STATUS_REOPENED,
+        ),
+    }
 
 
 def _remove_product_from_record(source_type, record, product_id, actor, reason):
@@ -304,6 +322,16 @@ def execute(date, shift, product_id, reason, actor, mode=MODE_FIGURES_ONLY, conf
 
     products = _target_products(product_id)
 
+    # Safety correction, item 2 — cleared BEFORE the per-product/source
+    # work below (not after) so that a later failure anywhere in this same
+    # transaction — a bad product, a source-book conflict during Mode B
+    # neutralization, anything — rolls this back too, exactly like every
+    # other part of the reset. See clear_product_states_for_reset()'s
+    # docstring; a no-op if this date+shift was never reviewed.
+    review_reset = daily_review_service.clear_product_states_for_reset(
+        date, shift, [p.id for p in products], actor, reason, mode
+    )
+
     affected = []
     source_summary = {"dispatch": [], "returns": [], "production": []}
     for product in products:
@@ -352,10 +380,12 @@ def execute(date, shift, product_id, reason, actor, mode=MODE_FIGURES_ONLY, conf
         after={
             "reason": reason, "product_count": len(affected), "mode": mode,
             "actor_role": actor.role, "source_records_affected": source_summary,
+            "review_reset": review_reset,
         },
     )
     return {
         "date": date, "shift": shift, "mode": mode,
         "products": [a["product_name"] for a in affected],
         "source_records_affected": source_summary,
+        "review_reset": review_reset,
     }

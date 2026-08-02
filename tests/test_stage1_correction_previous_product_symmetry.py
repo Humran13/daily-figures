@@ -61,9 +61,13 @@ def test_next_product_hidden_on_last_product_read_only():
 
 
 def test_previous_product_present_and_gated_identically_in_both_branches():
+    # The Manager/Super Admin review workflow added a third (isElevated)
+    # branch between the read-only and Operator branches, each with its
+    # own identically-gated Previous Product button — so this is now 3,
+    # not 2, but the gating expression itself is unchanged.
     block = _nav_row_block()
-    assert block.count('id="prevProductBtn">Previous Product</button>') == 2
-    assert block.count('currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : \'\'') == 2
+    assert block.count('id="prevProductBtn">Previous Product</button>') == 3
+    assert block.count('currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : \'\'') == 3
 
 
 # ---------- progress indicator ----------
@@ -103,7 +107,10 @@ def test_issued_drilldown_still_unconditional():
 def test_skip_still_hidden_in_read_only_mode():
     # Stage 7 renamed Skip's label — see
     # tests/test_stage1_correction_next_product_review.py's equivalent test.
-    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
+    # The Manager/Super Admin review workflow later nested an isElevated
+    # choice inside the '' branch — see that test's updated version.
+    assert '${isFullyReadOnly ? \'\' : (isElevated' in INDEX_HTML
+    assert '<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
 
 
 # ---------- editable workflow: Previous Product added, no auto-save, warns if dirty ----------

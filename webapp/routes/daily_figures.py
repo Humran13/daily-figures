@@ -132,10 +132,22 @@ def upsert():
     # the narrow window between that pre-check and here, this raises and
     # the rollback below discards the DailyFigure write too, so no
     # duplicate/conflicting row and no double-counted total ever lands.
+    #
+    # Final pre-deployment correction — Manager/Super Administrator review
+    # workflow: a review-mode save (the "Next Product" action while
+    # reviewing, see webapp/routes/daily_review.py) explicitly opts out of
+    # this per-product completion claim. Without this, EVERY elevated save
+    # — including a no-op resave made purely by navigating past an
+    # already-correct product — silently marked that product "completed",
+    # which is exactly the false-completion problem this correction fixes.
+    # Operators are entirely unaffected: `review_mode` is only ever
+    # consulted in the non-Operator branch, and the operational workflow
+    # never sends it.
+    review_mode = bool(d.get("review_mode"))
     try:
         if user.role == ROLE_OPERATOR:
             entry_status_svc.mark_completed_with_data(d["date"], d["shift"], product.id, user)
-        else:
+        elif not review_mode:
             entry_status_svc.mark_completed_with_data_if_not_already(d["date"], d["shift"], product.id, user)
     except entry_status_svc.DailyEntryStatusConflict as e:
         db.session.rollback()

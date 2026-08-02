@@ -61,7 +61,26 @@
   .btn-ghost{ background:var(--paper-dim); color:var(--ink-soft); flex:0 0 90px; }
   .btn-small{ padding:8px 12px; font-size:12px; border-radius:8px; flex:0 0 auto; }
   .btn-skip{ background:none; color:var(--ink-soft); text-decoration:underline; padding:10px; font-size:13px; width:100%; margin-top:4px; font-weight:600; }
+  /* Final pre-deployment correction: a REAL secondary button for
+     Manager/Super Administrator "Skip for now" — never the unstyled
+     text-link look .btn-skip still uses for the Operator workflow
+     (unchanged). */
+  .btn-skip-review{ background:var(--paper-dim); color:var(--ink-soft); border:1.5px solid var(--line); border-radius:10px; padding:12px; font-size:14px; width:100%; margin-top:8px; font-weight:700; }
   .done-card{ text-align:center; padding:40px 20px; }
+  .review-summary{ display:flex; gap:10px; margin-bottom:14px; }
+  .review-summary .stat{ flex:1; background:white; border:1.5px solid var(--line); border-radius:10px; padding:10px; text-align:center; }
+  .review-summary .stat .n{ font-family:var(--mono); font-size:18px; font-weight:800; }
+  .review-summary .stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); }
+  .review-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; }
+  .review-row .name{ font-weight:700; font-size:14px; }
+  .review-row .figures{ font-size:12px; color:var(--ink-soft); font-family:var(--mono); margin:4px 0; }
+  .review-row .state{ display:inline-block; padding:2px 8px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .review-state-reviewed, .review-state-edited{ background:#E4F3EC; color:var(--teal-dark); }
+  .review-state-skipped{ background:#FBEFD9; color:#8A5A17; }
+  .review-state-not_reviewed{ background:var(--paper-dim); color:var(--ink-soft); }
+  .review-state-blocked{ background:#F3E4E4; color:var(--red); }
+  .review-row .attribution{ font-size:11px; color:var(--ink-soft); margin-top:4px; }
+  .review-row .goto{ font-size:12px; text-decoration:underline; color:var(--teal-dark); background:none; padding:0; margin-top:6px; font-weight:600; }
   .done-card .check{ font-size:44px; margin-bottom:10px; }
   .done-card h2{ margin:0 0 8px; font-size:19px; }
   .done-card p{ color:var(--ink-soft); font-size:14px; margin:0 0 20px; }
@@ -162,6 +181,12 @@
       </div>
       <div id="entryCard"></div>
       <div id="doneCard" class="hidden"></div>
+      <!-- Final pre-deployment correction: Manager/Super Administrator
+           final review screen — replaces the Operator-only "done" card
+           for elevated roles. Reaching the end of the product list never
+           submits anything by itself; this screen is where an explicit,
+           confirmed submission actually happens (see showReviewScreen()). -->
+      <div id="reviewCard" class="hidden"></div>
     </div>
     <div id="tab-history" class="hidden">
       <div class="quick-filters">
@@ -308,11 +333,23 @@ function attachZeroClearBehavior(input){
 async function renderEntryCard(){
   const date = document.getElementById('dateInput').value;
   const shift = document.getElementById('shiftInput').value;
+  const role = currentUser && currentUser.role;
+  const isElevated = role === 'super_admin' || role === 'manager';
+
   document.getElementById('doneCard').classList.add('hidden');
+  document.getElementById('reviewCard').classList.add('hidden');
   document.getElementById('entryCard').classList.remove('hidden');
   document.getElementById('progressWrap').classList.remove('hidden');
 
-  if(currentIdx >= products.length){ showDone(date, shift); return; }
+  // Final pre-deployment correction: reaching the end of the product list
+  // is navigation, never submission — for Manager/Super Administrator it
+  // opens the final review screen (nothing is marked submitted merely by
+  // arriving there); Operator/Viewer keep the existing "done" card
+  // unchanged.
+  if(currentIdx >= products.length){
+    if(isElevated){ showReviewScreen(date, shift); } else { showDone(date, shift); }
+    return;
+  }
 
   const product = products[currentIdx];
   document.getElementById('progressFill').style.width = ((currentIdx)/products.length*100)+'%';
@@ -340,8 +377,6 @@ async function renderEntryCard(){
   const view = await apiGet(`/api/daily-figures/${product.id}?date=${date}&shift=${shift}`);
   const rule = view.packaging_rule;
 
-  const role = currentUser && currentUser.role;
-  const isElevated = role === 'super_admin' || role === 'manager';
   const isViewer = role === 'viewer';
 
   // Ownership/completion (Stage 7 section 1): an Operator asking for this
@@ -413,13 +448,18 @@ async function renderEntryCard(){
         ${isFullyReadOnly ? `
           ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
           ${currentIdx<products.length-1 ? `<button class="btn btn-primary" id="nextProductBtn">Next Product</button>` : ''}
+        ` : isElevated ? `
+          ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
+          <button class="btn btn-primary" id="reviewNextBtn">${currentIdx<products.length-1 ? 'Next Product' : 'Review Daily Figures'}</button>
         ` : `
           ${currentIdx>0 ? `<button class="btn btn-ghost" id="prevProductBtn">Previous Product</button>` : ''}
           <button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>
         `}
       </div>
       ${canMarkNoActivity ? `<button class="btn-no-activity" id="noActivityBtn">No Activity Today</button>` : ''}
-      ${isFullyReadOnly ? '' : `<button class="btn-skip" id="skipBtn">Skip for now — leave this product unreviewed and come back later</button>`}
+      ${isFullyReadOnly ? '' : (isElevated
+        ? `<button class="btn-skip-review" id="skipReviewBtn">Skip for now — return before submitting</button>`
+        : `<button class="btn-skip" id="skipBtn">Skip for now — leave this product unreviewed and come back later</button>`)}
     </div>
   `;
 
@@ -448,6 +488,14 @@ async function renderEntryCard(){
   if(saveNextBtn) saveNextBtn.addEventListener('click', ()=>saveCurrentAndAdvance(product, date, shift, rule, view, showOpeningInputs));
   const skipBtn = document.getElementById('skipBtn');
   if(skipBtn) skipBtn.addEventListener('click', ()=>{ releaseLockIfOwned(product, date, shift); currentIdx++; renderEntryCard(); });
+  // Manager/Super Administrator review workflow — "Next Product"/"Review
+  // Daily Figures" saves (review_mode: true, never claims per-product
+  // completion) and records review progress; "Skip for now" records the
+  // product as skipped and never saves anything.
+  const reviewNextBtn = document.getElementById('reviewNextBtn');
+  if(reviewNextBtn) reviewNextBtn.addEventListener('click', ()=>saveAndAdvanceReview(product, date, shift, rule, view, showOpeningInputs));
+  const skipReviewBtn = document.getElementById('skipReviewBtn');
+  if(skipReviewBtn) skipReviewBtn.addEventListener('click', ()=>skipAndAdvanceReview(product, date, shift));
   const noActivityBtn = document.getElementById('noActivityBtn');
   if(noActivityBtn) noActivityBtn.addEventListener('click', ()=>markNoActivity(product, date, shift));
   const takeoverBtn = document.getElementById('takeoverLockBtn');
@@ -565,6 +613,151 @@ async function saveCurrentAndAdvance(product, date, shift, rule, view, showOpeni
   }
   currentIdx++;
   renderEntryCard();
+}
+
+// ---------- Manager/Super Administrator review-and-submit workflow ----------
+// "Next Product"/"Review Daily Figures": saves a genuine Opening Stock
+// correction if one was typed (review_mode: true so it never silently
+// claims per-product completion — see webapp/routes/daily_figures.py),
+// then records this product as reviewed (or edited) in the review
+// session before advancing. Navigation and temporary edits are never
+// treated as final submission — only the review screen's own explicit
+// "Submit Daily Figures Review" button can do that.
+async function saveAndAdvanceReview(product, date, shift, rule, view, showOpeningInputs){
+  const edited = showOpeningInputs && hasUnsavedChanges(rule, view, showOpeningInputs);
+  let reason = null;
+  if(edited){
+    const opening = readQtyInputs('opening', rule);
+    const {status, data} = await apiPost('/api/daily-figures', {
+      product_id: product.id, date, shift, opening, review_mode: true,
+    });
+    if(status !== 200){
+      toast(data.error || 'Could not save — check the values');
+      if(status === 409) renderEntryCard();
+      return;
+    }
+    // Section 12: a correction reason is required before the review can
+    // be SUBMITTED, not before moving on — declining here is fine, the
+    // final review screen will block submission and let the reviewer
+    // return to this product to supply one later.
+    reason = prompt('Reason for this correction (required before submitting the review):');
+  }
+  const {status: rStatus, data: rData} = await apiPost('/api/daily-review/mark-reviewed', {
+    date, shift, product_id: product.id, edited, reason,
+  });
+  if(rStatus !== 200){
+    toast(rData.error || 'Could not record review progress');
+    return;
+  }
+  currentIdx++;
+  renderEntryCard();
+}
+
+async function skipAndAdvanceReview(product, date, shift){
+  const {status, data} = await apiPost('/api/daily-review/mark-skipped', {date, shift, product_id: product.id});
+  if(status !== 200){ toast(data.error || 'Could not skip this product'); return; }
+  currentIdx++;
+  renderEntryCard();
+}
+
+async function showReviewScreen(date, shift){
+  document.getElementById('entryCard').classList.add('hidden');
+  document.getElementById('doneCard').classList.add('hidden');
+  document.getElementById('progressWrap').classList.add('hidden');
+  const reviewCard = document.getElementById('reviewCard');
+  reviewCard.classList.remove('hidden');
+  reviewCard.innerHTML = '<div class="card"><p class="hint">Loading review…</p></div>';
+
+  const summary = await apiGet(`/api/daily-review?date=${date}&shift=${shift}`);
+  if(summary.unauthorized){ reviewCard.innerHTML = '<div class="card"><p>Session expired — sign in again.</p></div>'; return; }
+
+  const session = summary.session;
+  const submitted = session && session.status === 'submitted';
+
+  const stateLabel = (row) => {
+    if(row.source_changed_since_review) return 'Source record changed — needs re-review';
+    if(row.daily_figure_changed_since_review) return 'Daily record changed — needs re-review';
+    if(row.locked_by) return `Locked by ${row.locked_by}`;
+    if(row.validation_error) return 'Validation error';
+    if(row.missing_correction_reason) return 'Correction reason required';
+    if(row.review_state === 'reviewed') return 'Reviewed — unchanged';
+    if(row.review_state === 'edited') return 'Edited';
+    if(row.review_state === 'skipped') return 'Skipped for now';
+    return 'Not yet reviewed';
+  };
+  const stateClass = (row) => {
+    if(row.locked_by || row.validation_error || row.source_changed_since_review || row.daily_figure_changed_since_review || row.missing_correction_reason) return 'review-state-blocked';
+    if(row.review_state === 'skipped') return 'review-state-skipped';
+    if(row.review_state === 'reviewed' || row.review_state === 'edited') return `review-state-${row.review_state}`;
+    return 'review-state-not_reviewed';
+  };
+
+  const rows = summary.products.map((row, idx) => {
+    const view = row.view;
+    const figures = view
+      ? `Opening ${qtyLabel(view.opening, view.packaging_rule)} · Production ${qtyLabel(view.production, view.packaging_rule)} · Returns ${qtyLabel(view.return_, view.packaging_rule)} · Issued ${qtyLabel(view.issued, view.packaging_rule)} · Closing ${qtyLabel(view.closing, view.packaging_rule)}`
+      : (row.validation_error || '');
+    let attribution = '';
+    if(row.completed_by) attribution += `Entered by ${escapeHtml(row.completed_by)}${row.completed_at ? ' at ' + escapeHtml(new Date(row.completed_at).toLocaleString()) : ''}. `;
+    if(row.source_changed_since_review || row.daily_figure_changed_since_review) attribution += 'This product changed while you were reviewing it. Reload the current figures before submitting.';
+    return `
+      <div class="review-row">
+        <span class="name">${escapeHtml(row.product_name)}</span>
+        <span class="state ${stateClass(row)}">${escapeHtml(stateLabel(row))}</span>
+        <div class="figures">${figures}</div>
+        ${attribution ? `<div class="attribution">${attribution}</div>` : ''}
+        <div><button class="goto" data-goto-product="${idx}">Return to this product</button></div>
+      </div>`;
+  }).join('');
+
+  const dateLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-US', {day:'numeric', month:'long', year:'numeric'});
+
+  reviewCard.innerHTML = `
+    <div class="card">
+      <h2>Daily Figures review — ${escapeHtml(shift)}, ${escapeHtml(date)}</h2>
+      ${submitted
+        ? `<p class="hint">Daily Figures review submitted by ${escapeHtml(session.submitted_by_username || '')} at ${escapeHtml(session.submitted_at ? new Date(session.submitted_at).toLocaleString() : '')}.</p>`
+        : `<p class="hint">Review in progress — nothing is submitted until you explicitly confirm below.</p>`}
+      <div class="review-summary">
+        <div class="stat"><div class="n">${summary.reviewed_count} / ${summary.total}</div><div class="l">reviewed</div></div>
+        <div class="stat"><div class="n">${summary.skipped_count}</div><div class="l">skipped for later</div></div>
+        <div class="stat"><div class="n">${summary.blocking_count}</div><div class="l">need attention</div></div>
+      </div>
+      ${rows}
+      <div class="msg" id="reviewSubmitMsg"></div>
+      ${submitted ? `
+        <button class="btn btn-ghost" id="reopenReviewBtn" style="width:100%;">Reopen this submitted review</button>
+      ` : `
+        ${summary.blocking_count > 0 ? `<p class="hint" style="color:var(--red);">${summary.blocking_count} product(s) still require review before submission.</p>` : ''}
+        <button class="btn btn-primary" id="submitReviewBtn" style="width:100%;" ${summary.blocking_count > 0 || summary.total === 0 ? 'disabled' : ''}>Submit Daily Figures Review</button>
+      `}
+      <button class="btn btn-ghost" id="reviewBackBtn" style="width:100%;margin-top:8px;">Back to products</button>
+    </div>`;
+
+  reviewCard.querySelectorAll('[data-goto-product]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ currentIdx = parseInt(btn.dataset.gotoProduct, 10); renderEntryCard(); });
+  });
+  document.getElementById('reviewBackBtn').addEventListener('click', ()=>{ currentIdx = 0; renderEntryCard(); });
+
+  const submitBtn = document.getElementById('submitReviewBtn');
+  if(submitBtn) submitBtn.addEventListener('click', async ()=>{
+    const msg = document.getElementById('reviewSubmitMsg');
+    if(!confirm(`Submit the Daily Figures review for ${dateLabel} — ${shift}?`)) return;
+    const {status, data} = await apiPost('/api/daily-review/submit', {date, shift});
+    if(status !== 200){ msg.textContent = data.error || 'Could not submit review.'; msg.className = 'msg err'; return; }
+    toast('Daily Figures review submitted.');
+    showReviewScreen(date, shift);
+  });
+
+  const reopenBtn = document.getElementById('reopenReviewBtn');
+  if(reopenBtn) reopenBtn.addEventListener('click', async ()=>{
+    const reason = prompt('Reason to reopen this submitted review:');
+    if(!reason) return;
+    const {status, data} = await apiPost('/api/daily-review/reopen', {date, shift, reason});
+    if(status !== 200){ toast(data.error || 'Could not reopen review.'); return; }
+    toast('Review reopened.');
+    showReviewScreen(date, shift);
+  });
 }
 
 function showDone(date, shift){

@@ -13,6 +13,7 @@ from webapp.models.return_record import ReturnRecord, ReturnLine
 from webapp.models.production_record import ProductionRecord, ProductionLine
 from webapp.models.daily_entry_status import DailyEntryStatus
 from webapp.models.product_usage_event import ProductUsageEvent
+from webapp.models.daily_review_session import DailyReviewSession, DailyReviewProductState
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -25,4 +26,5 @@ __all__ = [
     "ProductionRecord", "ProductionLine",
     "DailyEntryStatus",
     "ProductUsageEvent",
+    "DailyReviewSession", "DailyReviewProductState",
 ]

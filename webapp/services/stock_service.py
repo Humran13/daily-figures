@@ -49,6 +49,17 @@ SHIFT_ORDER = {"Day": 0, "Night": 1}
 _EPOCH_DATE = "0001-01-01"
 
 
+def _user_label(user_id):
+    """Mirrors daily_entry_status_service._user_label() — used by
+    daily_figure_view() for the original-entry/corrector attribution
+    fields (final pre-deployment correction, section 11)."""
+    if user_id is None:
+        return None
+    from webapp.models.user import User
+    user = db.session.get(User, user_id)
+    return user.username if user else "a former user"
+
+
 class StockError(ValueError):
     pass
 
@@ -508,6 +519,20 @@ def daily_figure_view(product, date, shift):
         } if rule else None,
         "closing": {"base_qty": closing_base, **(_split_or_none(closing_base, rule) or {"warning": "negative — check entries"})} if rule else None,
         "notes": notes,
+        # Final pre-deployment correction (Manager/Super Administrator
+        # review workflow, section 11): who originally entered this row
+        # and who most recently touched it — never overwritten, so a
+        # later elevated correction is always distinguishable from the
+        # original entry rather than looking like a second independent
+        # one. created_by/created_at never change once the row exists;
+        # updated_by/updated_at reflect the most recent save (which may
+        # be the same person, or a correction by someone else).
+        "created_by": figure.created_by if figure is not None else None,
+        "created_by_username": _user_label(figure.created_by) if figure is not None else None,
+        "created_at": figure.created_at.isoformat() if figure is not None and figure.created_at else None,
+        "updated_by": figure.updated_by if figure is not None else None,
+        "updated_by_username": _user_label(figure.updated_by) if figure is not None else None,
+        "updated_at": figure.updated_at.isoformat() if figure is not None and figure.updated_at else None,
     }
 
 

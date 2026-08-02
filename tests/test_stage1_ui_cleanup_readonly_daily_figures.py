@@ -62,9 +62,14 @@ def test_save_and_skip_buttons_not_rendered_when_fully_read_only():
     # Superseded by the Next Product/Previous Product split — see
     # tests/test_stage1_correction_next_product_review.py for the current
     # read-only nav-row assertions. This just pins that saveNextBtn/skipBtn
-    # are still conditioned on isFullyReadOnly, not unconditional.
+    # are still conditioned on isFullyReadOnly, not unconditional. The
+    # Manager/Super Admin review workflow split the old single-branch skip
+    # ternary into a nested isElevated choice (see
+    # tests/test_stage1_correction_next_product_review.py::test_skip_button_hidden_when_fully_read_only),
+    # but the outer isFullyReadOnly gate is unchanged: still '' when true.
     assert '<button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>' in INDEX_HTML
-    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
+    assert '${isFullyReadOnly ? \'\' : (isElevated' in INDEX_HTML
+    assert '<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
 
 
 def test_read_only_explanatory_sentence_removed():
@@ -136,5 +141,12 @@ def test_operator_with_one_permitted_field_still_gets_save_controls():
     """When isFullyReadOnly is false (at least one edit flag on), the
     ternary falls through to rendering the real Save & Next / Skip
     buttons — unauthorized individual fields stay disabled via
-    canEditOpening/Returns/Production, proven separately above."""
-    assert "${isFullyReadOnly ? '' : `<button" in INDEX_HTML
+    canEditOpening/Returns/Production, proven separately above. The
+    Manager/Super Admin review workflow added an isElevated branch inside
+    the nav-row's own isFullyReadOnly ternary (nav-row now always renders
+    *something* even when isFullyReadOnly is true — Previous/Next Product
+    pure navigation — so the bare `'' : `<button` pattern moved to the
+    skip-button ternary, which still has the same "'' when fully
+    read-only, otherwise real buttons" shape)."""
+    assert "${isFullyReadOnly ? '' : (isElevated" in INDEX_HTML
+    assert '<button class="btn btn-primary" id="saveNextBtn">Save &amp; Next</button>' in INDEX_HTML

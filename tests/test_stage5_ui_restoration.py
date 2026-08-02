@@ -197,7 +197,16 @@ def test_viewer_cannot_save_opening_stock(client, setup, login_as):
 # ================= Save & Next / Skip only where authorized =================
 
 def test_save_and_next_and_skip_conditioned_on_is_fully_read_only():
-    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
+    """Final pre-deployment correction: the Skip button now branches a
+    second time on isElevated (a real .btn-skip-review button with
+    different wording for Manager/Super Administrator — see
+    tests/test_final_correction_review_workflow.py — vs the unchanged
+    .btn-skip text-link for Operator), so the exact old single-branch
+    literal no longer appears verbatim; both branches are still present
+    and reachable from the same isFullyReadOnly ? '' : (...) guard."""
+    assert "${isFullyReadOnly ? '' : (isElevated" in INDEX_HTML
+    assert '<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
+    assert '<button class="btn-skip-review" id="skipReviewBtn">Skip for now' in INDEX_HTML
     nav_row = re.search(r'<div class="nav-row">\s*\$\{isFullyReadOnly.*?</div>', INDEX_HTML, re.DOTALL).group(0)
     assert 'id="saveNextBtn">Save &amp; Next<' in nav_row
     assert 'id="nextProductBtn">Next Product<' in nav_row

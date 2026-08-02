@@ -124,7 +124,13 @@ def test_skip_button_hidden_when_fully_read_only():
     # Stage 7 renamed Skip's label to disambiguate it from the new explicit
     # "No Activity Today" completion (see tests/test_stage7_daily_entry_ownership.py)
     # — Skip means "come back later, not reviewed", never "reviewed as zero".
-    assert '${isFullyReadOnly ? \'\' : `<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
+    # The Manager/Super Admin review workflow later split the single
+    # isFullyReadOnly ? '' : <skip> ternary into a nested isElevated choice
+    # (real "Skip for now — return before submitting" button vs. the
+    # Operator's original text-link Skip) — the outer read-only gate is
+    # unchanged, still '' when fully read-only.
+    assert '${isFullyReadOnly ? \'\' : (isElevated' in INDEX_HTML
+    assert '<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
 
 
 def test_read_only_branch_of_nav_row_contains_no_skip_reference():
