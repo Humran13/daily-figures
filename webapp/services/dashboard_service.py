@@ -19,6 +19,7 @@ from webapp.models.return_record import ReturnRecord
 from webapp.models.return_record import STATUS_DRAFT as RETURN_STATUS_DRAFT
 from webapp.models.return_record import STATUS_FINALIZED as RETURN_STATUS_FINALIZED
 from webapp.services import stock_service as svc
+from webapp.services.quantity_format import qty_label
 
 RECENT_WINDOW_DAYS = 7
 
@@ -117,6 +118,33 @@ def _production_by_shift(stock_summary, date):
     return result
 
 
+def _adjustments_view(adjustments):
+    """Dashboard-only enrichment of StockAdjustment.to_dict() (never
+    changes the model's own to_dict() or the general
+    GET /api/daily-figures/adjustments endpoint — those are unaffected)
+    — adds product_name and a signed, packaging-aware quantity_label
+    (e.g. "+2 Ctns" / "-1.05 Ctns") so 'Recent corrections' never shows a
+    raw, unlabeled base-unit delta. One batched product query regardless
+    of how many adjustments are shown, never one per row."""
+    product_ids = {a.product_id for a in adjustments}
+    products_by_id = {p.id: p for p in Product.query.filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+
+    rows = []
+    for a in adjustments:
+        d = a.to_dict()
+        product = products_by_id.get(a.product_id)
+        d["product_name"] = product.name if product else None
+        rule = product.current_packaging_rule() if product else None
+        if rule:
+            sign = "+" if a.delta_base_qty >= 0 else "-"
+            cartons, packs, pieces = svc.from_base_units(abs(a.delta_base_qty), rule)
+            d["quantity_label"] = f"{sign}{qty_label(cartons, packs, pieces, rule)}"
+        else:
+            d["quantity_label"] = f"{a.delta_base_qty:+d} pc"
+        rows.append(d)
+    return rows
+
+
 def build_dashboard(date):
     stock_summary = svc.date_range_summary(date, date)
 
@@ -181,6 +209,7 @@ def build_dashboard(date):
     recent_voids = (
         Dispatch.query.filter_by(status=STATUS_VOID).order_by(Dispatch.voided_at.desc()).limit(5).all()
     )
+    recent_adjustments_view = _adjustments_view(recent_adjustments)
 
     return {
         "date": date,
@@ -198,6 +227,6 @@ def build_dashboard(date):
             "count": len(draft_dispatches),
             "items": [d.to_dict(include_lines=False) for d in draft_dispatches],
         },
-        "recent_adjustments": [a.to_dict() for a in recent_adjustments],
+        "recent_adjustments": recent_adjustments_view,
         "recent_voids": [d.to_dict(include_lines=False) for d in recent_voids],
     }

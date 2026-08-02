@@ -35,6 +35,7 @@ from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.models.sales_category import SalesCategory
 from webapp.services.customer_service import resolve_canonical, resolve_customer_ids_for_filter
 from webapp.services.packaging import PackagingError, from_base_units, normalize, to_base_units
+from webapp.services.quantity_format import qty_label
 
 # The one centralized period-ordering rule (Stage 8 section 2) — Day always
 # precedes Night on the same date; every date/shift comparison anywhere in
@@ -811,7 +812,24 @@ def recipient_totals(date_from, date_to, group_by):
     merges (via customer_service.resolve_canonical) so a customer's
     history recorded both before and after a merge is combined under the
     canonical name — merging must never split a recipient's totals.
+
+    Dashboard safety correction: `total_issued_base_qty` is a raw base-unit
+    sum across every product in the group — different products have
+    different carton capacities, so this must never be presented to a user
+    as one carton figure (existing exports that show it as a plain,
+    explicitly-labeled "(pieces)" number are unaffected — this field's
+    shape and meaning are unchanged). `products` is the additive fix: one
+    packaging-aware line per product actually contributing to this group
+    (product id/name, exact integer base_qty, its packaging rule, and a
+    backend-formatted book-notation label via the one centralized
+    qty_label() — never a second, drifting reimplementation), sorted by
+    descending quantity, omitting any product whose total is zero. Product
+    lookups are batched into one extra query for every distinct product
+    touched across all groups combined, never one query per group/dispatch
+    line.
     """
+    from webapp.models.product import Product  # local import avoids a circular import at module load time
+
     if group_by not in ("category", "recipient"):
         raise ValueError("group_by must be 'category' or 'recipient'")
 
@@ -830,9 +848,12 @@ def recipient_totals(date_from, date_to, group_by):
             if key not in category_cache:
                 category = db.session.get(SalesCategory, key) if key else None
                 category_cache[key] = category.name if category else "Uncategorized"
-            group = groups.setdefault(key, {"group_id": key, "group_name": category_cache[key], "dispatch_ids": set(), "total": 0})
+            group = groups.setdefault(key, {
+                "group_id": key, "group_name": category_cache[key], "dispatch_ids": set(), "total": 0, "product_totals": {},
+            })
             group["dispatch_ids"].add(dispatch.id)
             group["total"] += line.base_unit_qty
+            group["product_totals"][line.product_id] = group["product_totals"].get(line.product_id, 0) + line.base_unit_qty
     else:
         canonical_cache = {}
         for dispatch, line in rows:
@@ -844,15 +865,49 @@ def recipient_totals(date_from, date_to, group_by):
                     canonical_cache[customer.id] = resolve_canonical(customer)
                 canonical = canonical_cache[customer.id]
                 key, name = canonical.id, canonical.name
-            group = groups.setdefault(key, {"group_id": key, "group_name": name, "dispatch_ids": set(), "total": 0})
+            group = groups.setdefault(key, {
+                "group_id": key, "group_name": name, "dispatch_ids": set(), "total": 0, "product_totals": {},
+            })
             group["dispatch_ids"].add(dispatch.id)
             group["total"] += line.base_unit_qty
+            group["product_totals"][line.product_id] = group["product_totals"].get(line.product_id, 0) + line.base_unit_qty
 
-    results = [
-        {"group_id": g["group_id"], "group_name": g["group_name"],
-         "dispatch_count": len(g["dispatch_ids"]), "total_issued_base_qty": g["total"]}
-        for g in groups.values()
-    ]
+    all_product_ids = {pid for g in groups.values() for pid in g["product_totals"]}
+    products_by_id = (
+        {p.id: p for p in Product.query.filter(Product.id.in_(all_product_ids)).all()} if all_product_ids else {}
+    )
+
+    results = []
+    for g in groups.values():
+        product_lines = []
+        for pid, qty in g["product_totals"].items():
+            if qty <= 0:
+                continue
+            product = products_by_id.get(pid)
+            if product is None:
+                continue
+            rule = product.current_packaging_rule()
+            if rule:
+                cartons, packs, pieces = from_base_units(qty, rule)
+                label = qty_label(cartons, packs, pieces, rule)
+            else:
+                # No packaging rule configured for this product right now —
+                # never guess a "Ctns" figure without one to derive it from.
+                cartons = packs = pieces = None
+                label = f"{qty} pc"
+            product_lines.append({
+                "product_id": pid, "product_name": product.name, "base_qty": qty,
+                "packaging_rule": rule.to_dict() if rule else None,
+                "cartons": cartons, "packs": packs, "pieces": pieces,
+                "quantity_label": label,
+            })
+        product_lines.sort(key=lambda r: -r["base_qty"])
+
+        results.append({
+            "group_id": g["group_id"], "group_name": g["group_name"],
+            "dispatch_count": len(g["dispatch_ids"]), "total_issued_base_qty": g["total"],
+            "products": product_lines,
+        })
     results.sort(key=lambda r: -r["total_issued_base_qty"])
     return results
 

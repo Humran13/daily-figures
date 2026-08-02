@@ -43,6 +43,12 @@
   .row-link:last-child{ border-bottom:none; }
   .row-link .meta{ font-size:11px; color:var(--ink-soft); }
   .row-link .val{ font-family:var(--mono); font-weight:700; }
+  .group-block{ border-bottom:1px solid var(--paper-dim); }
+  .group-block:last-child{ border-bottom:none; }
+  .group-block .row-link{ border-bottom:none; }
+  .group-products{ padding:0 0 8px 10px; }
+  .group-product-row{ display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:12px; color:var(--ink-soft); }
+  .group-product-row .val{ font-family:var(--mono); font-weight:600; color:var(--ink); }
   .pill{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; }
   .pill-draft{ background:#FCEfd7; color:#8a5a12; }
   .pill-finalized{ background:#E4F3EC; color:var(--teal-dark); }
@@ -66,6 +72,8 @@
 <body>
 
 <div id="gate" class="gate hidden">Sign in from the main app first.</div>
+
+<script src="/quantity_format.js"></script>
 
 <div class="shell hidden" id="shell">
   <div id="appIdentityBar"></div>
@@ -192,21 +200,16 @@ async function applyBranding(){
 applyBranding();
 
 function statusPill(status){ return `<span class="pill pill-${status}">${status}</span>`; }
-// The one centralized book-notation formatter — mirrors
-// webapp/services/quantity_format.qty_label() exactly. Every quantity on
-// this page comes straight from the backend (stock_service.py via
+// Dashboard safety correction — this page used to carry its own local,
+// stale reimplementation of the book-notation formatter (it never got
+// the point-notation fix for carton+piece-only products like KingMax/
+// JumboMax, so it showed "5c 3pc" instead of "5.03 Ctns"). It now loads
+// the same shared /quantity_format.js index.html/history.html already
+// use (hasPackTier/qtyLabel), so there is exactly one formatter, never a
+// second copy that can drift out of sync again. Every quantity on this
+// page comes straight from the backend (stock_service.py via
 // dashboard_service.py) — nothing here recomputes Opening/Production/
 // Returns/Issued/Closing Stock, only formats numbers already computed.
-function hasPackTier(rule){ return rule && rule.carton_to_pieces === null; }
-function qty(part, rule){
-  if(!part) return '—';
-  if(part.warning) return part.warning;
-  if(part.cartons === undefined) return String(part.base_qty);
-  if(!hasPackTier(rule)) return `${part.cartons}c ${part.pieces}pc`;
-  if(part.packs === 0 && part.pieces === 0) return `${part.cartons} Ctns`;
-  if(part.packs <= 9 && part.pieces <= 9) return `${part.cartons}.${part.packs}${part.pieces} Ctns`;
-  return `${part.cartons}c ${part.packs}p ${part.pieces}pc`;
-}
 
 // ---------- local (not UTC) date helpers — avoids the rollover bug where
 // toISOString() shifts to UTC and can show the wrong calendar day near
@@ -264,11 +267,11 @@ async function loadDashboard(){
     return `
     <tr>
       <td><a href="/?tab=history&product=${encodeURIComponent(r.product_name)}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(r.product_name)}</a></td>
-      <td>${qty(r.opening, r.packaging_rule)}</td>
-      <td>${qty(r.production, r.packaging_rule)}<div style="font-family:var(--sans);font-size:10px;color:var(--ink-soft);">Day ${shift.day||0} · Night ${shift.night||0} pc</div></td>
-      <td>${qty(r.return_, r.packaging_rule)}</td>
-      <td>${qty(r.issued, r.packaging_rule)}</td>
-      <td>${qty(r.closing, r.packaging_rule)}</td>
+      <td>${qtyLabel(r.opening, r.packaging_rule)}</td>
+      <td>${qtyLabel(r.production, r.packaging_rule)}<div style="font-family:var(--sans);font-size:10px;color:var(--ink-soft);">Day ${shift.day||0} · Night ${shift.night||0} pc</div></td>
+      <td>${qtyLabel(r.return_, r.packaging_rule)}</td>
+      <td>${qtyLabel(r.issued, r.packaging_rule)}</td>
+      <td>${qtyLabel(r.closing, r.packaging_rule)}</td>
     </tr>`;
   }).join('');
   document.getElementById('stockSummaryEmpty').classList.toggle('hidden', summary.length > 0);
@@ -278,7 +281,7 @@ async function loadDashboard(){
   document.getElementById('lowStockList').innerHTML = lowStock.map(r => `
     <div class="warn-row">
       <span class="name">${escapeHtml(r.product_name)}</span>
-      <span>${qty(r.closing, r.packaging_rule)}</span>
+      <span>${qtyLabel(r.closing, r.packaging_rule)}</span>
     </div>`).join('');
   document.getElementById('lowStockCountStat').textContent = lowStock.length;
 
@@ -296,7 +299,7 @@ async function loadDashboard(){
   document.getElementById('topProducts').innerHTML = top.length ? top.map(p => `
     <a class="row-link" href="/?tab=history&product=${encodeURIComponent(p.product_name)}">
       <div>${escapeHtml(p.product_name)}</div>
-      <div class="val">${qty(p, p.packaging_rule)}</div>
+      <div class="val">${qtyLabel(p, p.packaging_rule)}</div>
     </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
 
   await loadRecipientTotals(date);
@@ -317,10 +320,10 @@ async function loadDashboard(){
   const adjustments = (data.recent_adjustments || []).map(a => `
     <div class="row-link">
       <div>
-        <div>Adjustment · ${a.date} ${a.shift}</div>
+        <div>Adjustment · ${escapeHtml(a.product_name || '—')} · ${a.date} ${a.shift}</div>
         <div class="meta">${escapeHtml(a.reason)}</div>
       </div>
-      <div class="val">${a.delta_base_qty>0?'+':''}${a.delta_base_qty}</div>
+      <div class="val">${escapeHtml(a.quantity_label)}</div>
     </div>`).join('');
   const voids = (data.recent_voids || []).map(d => `
     <a class="row-link" href="/dispatch.html?open=${d.id}">
@@ -338,24 +341,47 @@ async function loadRecipientTotals(date){
   const params = `date_from=${from}&date_to=${date}`;
 
   const {data: byCategory} = await api(`/api/reports/recipient-totals?${params}&group_by=category`);
-  document.getElementById('byCategory').innerHTML = (Array.isArray(byCategory) && byCategory.length) ? byCategory.map(r => `
-    <a class="row-link" href="/dispatch.html?sales_category_id=${r.group_id||''}">
-      <div>
-        <div>${escapeHtml(r.group_name)}</div>
-        <div class="meta">${r.dispatch_count} dispatch${r.dispatch_count===1?'':'es'}</div>
-      </div>
-      <div class="val">${r.total_issued_base_qty} pieces</div>
-    </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
+  document.getElementById('byCategory').innerHTML = renderGroupedIssued(byCategory,
+    r => `/dispatch.html?sales_category_id=${r.group_id||''}`);
 
   const {data: byRecipient} = await api(`/api/reports/recipient-totals?${params}&group_by=recipient`);
-  document.getElementById('byRecipient').innerHTML = (Array.isArray(byRecipient) && byRecipient.length) ? byRecipient.slice(0,10).map(r => `
-    <a class="row-link" href="/dispatch.html?customer_id=${r.group_id||''}&customer_name=${encodeURIComponent(r.group_name)}">
-      <div>
-        <div>${escapeHtml(r.group_name)}</div>
-        <div class="meta">${r.dispatch_count} dispatch${r.dispatch_count===1?'':'es'}</div>
-      </div>
-      <div class="val">${r.total_issued_base_qty} pieces</div>
-    </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
+  document.getElementById('byRecipient').innerHTML = renderGroupedIssued(
+    Array.isArray(byRecipient) ? byRecipient.slice(0,10) : byRecipient,
+    r => `/dispatch.html?customer_id=${r.group_id||''}&customer_name=${encodeURIComponent(r.group_name)}`);
+}
+
+// Dashboard safety correction — a group (Sales Category / Recipient) can
+// contain several different products, each with its own carton capacity,
+// so there is no single meaningful "cartons" figure for the group as a
+// whole (a raw pieces total is misleading, and summing carton COUNTS
+// across products with different capacities is equally misleading). A
+// single-product group shows that product's quantity directly on the
+// header row; a multi-product group shows only the dispatch count on the
+// header row and a packaging-aware per-product breakdown underneath —
+// never one combined number. `products` (and each line's quantity_label)
+// comes straight from the backend (stock_service.recipient_totals()),
+// never recomputed here.
+function renderGroupedIssued(rows, hrefFor){
+  if(!Array.isArray(rows) || !rows.length) return '<div class="empty">No finalized dispatches in this window.</div>';
+  return rows.map(r => {
+    const products = r.products || [];
+    const single = products.length === 1;
+    return `
+    <div class="group-block">
+      <a class="row-link" href="${hrefFor(r)}">
+        <div>
+          <div>${escapeHtml(r.group_name)}</div>
+          <div class="meta">${r.dispatch_count} dispatch${r.dispatch_count===1?'':'es'}</div>
+        </div>
+        ${single ? `<div class="val">${escapeHtml(products[0].quantity_label)}</div>` : ''}
+      </a>
+      ${!single ? `<div class="group-products">${products.map(p => `
+        <div class="group-product-row">
+          <span>${escapeHtml(p.product_name)}</span>
+          <span class="val">${escapeHtml(p.quantity_label)}</span>
+        </div>`).join('')}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 
 // ---------- quick actions (read-only links only — never a correction/edit
