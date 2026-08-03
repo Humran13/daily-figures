@@ -21,25 +21,26 @@
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  body.modal-open{ overflow:hidden; }
   .shell{ max-width:640px; margin:0 auto; min-height:100vh; background:var(--paper); }
   header{ background:var(--ink); color:var(--paper); padding:14px 20px; }
   header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
   header h1{ margin:0; font-size:19px; font-weight:700; }
-  main{ padding:16px; padding-bottom:60px; }
-  .date-bar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  main{ padding:14px; padding-bottom:60px; }
+  .date-bar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
   .date-bar input[type="date"]{ flex:1; min-width:140px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; background:white; }
   .date-bar button{ font-family:inherit; cursor:pointer; border:none; border-radius:8px; padding:9px 12px; font-size:12px; font-weight:700; background:var(--paper-dim); color:var(--ink); }
   .date-bar button.active{ background:var(--teal); color:white; }
   .date-bar .date-nav{ display:flex; gap:4px; }
-  .last-updated{ font-size:11px; color:var(--ink-soft); margin:-6px 0 14px; }
-  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
-  .card h2{ margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); }
-  .stat-grid{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
-  .stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
-  .stat .n{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--teal-dark); }
-  .stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-top:2px; }
-  .stat .sub{ font-size:10px; color:var(--ink-soft); margin-top:2px; }
-  .row-link{ display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; text-decoration:none; color:var(--ink); }
+  .last-updated{ font-size:11px; color:var(--ink-soft); margin:-4px 0 12px; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .card h2{ margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); }
+  .stat-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:10px 6px; text-align:center; }
+  .stat .n{ font-family:var(--mono); font-size:17px; font-weight:800; color:var(--teal-dark); }
+  .stat .l{ font-size:9px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); margin-top:2px; }
+  .stat .sub{ font-size:9px; color:var(--ink-soft); margin-top:2px; }
+  .row-link{ display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; text-decoration:none; color:var(--ink); }
   .row-link:last-child{ border-bottom:none; }
   .row-link .meta{ font-size:11px; color:var(--ink-soft); }
   .row-link .val{ font-family:var(--mono); font-weight:700; }
@@ -49,24 +50,76 @@
   .group-products{ padding:0 0 8px 10px; }
   .group-product-row{ display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:12px; color:var(--ink-soft); }
   .group-product-row .val{ font-family:var(--mono); font-weight:600; color:var(--ink); }
+  .group-more{ padding:3px 0; font-size:11px; color:var(--ink-soft); font-style:italic; }
   .pill{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; }
   .pill-draft{ background:#FCEfd7; color:#8a5a12; }
   .pill-finalized{ background:#E4F3EC; color:var(--teal-dark); }
   .pill-void{ background:#F3E4E4; color:var(--red); }
+  .status-pill{ display:inline-block; padding:2px 8px; border-radius:20px; font-size:9px; font-weight:700; text-transform:uppercase; white-space:nowrap; }
+  .status-reviewed, .status-completed, .status-no_activity{ background:#E4F3EC; color:var(--teal-dark); }
+  .status-edited{ background:#FCEfd7; color:#8a5a12; }
+  .status-activity{ background:var(--paper-dim); color:var(--ink-soft); }
   .warn-row{ background:#FCEfe7; border-radius:10px; padding:10px 12px; margin-bottom:8px; display:flex; justify-content:space-between; font-size:13px; }
   .warn-row .name{ font-weight:700; }
   .notice-row{ background:var(--paper-dim); border-radius:10px; padding:10px 12px; margin-bottom:8px; font-size:13px; }
   .notice-row.negative{ background:#FCEfe7; }
-  .empty{ color:var(--ink-soft); font-size:13px; padding:8px 0; }
+  .empty{ color:var(--ink-soft); font-size:13px; padding:6px 0; }
   .hidden{ display:none !important; }
   .gate{ padding:60px 20px; text-align:center; color:white; }
-  .quick-actions{ display:flex; gap:8px; flex-wrap:wrap; }
-  .quick-actions a{ flex:1; min-width:130px; text-align:center; text-decoration:none; background:var(--ink); color:var(--paper); border-radius:10px; padding:12px 10px; font-size:12px; font-weight:700; }
+
+  /* ---------- Quick Actions: slim shortcut bar, not oversized cards ---------- */
+  .quick-actions{ display:flex; gap:6px; flex-wrap:wrap; }
+  .quick-actions a{ flex:0 0 auto; text-decoration:none; background:var(--ink); color:var(--paper); border-radius:8px; padding:8px 12px; font-size:12px; font-weight:700; white-space:nowrap; }
+
+  /* ---------- View all / preview ---------- */
+  .view-all-btn{ display:block; width:100%; margin-top:8px; padding:9px; border:1.5px dashed var(--line); border-radius:10px; background:none; color:var(--teal-dark); font-family:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+  .view-all-btn:hover{ background:var(--paper-dim); }
+
+  /* ---------- Per-Product Daily Figures compact rows ---------- */
+  .figure-row{ padding:9px 0; border-bottom:1px solid var(--paper-dim); }
+  .figure-row:last-child{ border-bottom:none; }
+  .figure-row-head{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
+  .figure-name{ font-size:13px; font-weight:700; text-decoration:none; color:var(--ink); }
+  .figure-vals{ display:grid; grid-template-columns:repeat(auto-fit,minmax(64px,1fr)); gap:6px; }
+  .figure-vals div{ font-size:10px; }
+  .figure-vals .lbl{ display:block; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.03em; font-size:9px; }
+  .figure-vals .val{ display:block; font-family:var(--mono); font-weight:700; font-size:12px; margin-top:1px; }
+
+  /* ---------- Attention: collapsible ---------- */
+  .section-toggle{ width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:none; padding:0; margin:0 0 4px; font-family:inherit; cursor:pointer; text-align:left; }
+  .section-toggle-title{ font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); display:flex; align-items:center; gap:6px; }
+  .count-badge{ display:inline-block; min-width:18px; text-align:center; padding:1px 6px; border-radius:20px; font-size:10px; font-weight:700; background:var(--paper-dim); color:var(--ink); }
+  .count-badge.warn{ background:#FCEfe7; color:var(--red); }
+  .chevron{ font-size:12px; color:var(--ink-soft); transition:transform .15s ease; }
+  .chevron.open{ transform:rotate(90deg); }
+  .collapsible.hidden{ display:none; }
+
+  /* ---------- Two-column desktop layout ---------- */
+  .dash-grid{ display:grid; grid-template-columns:1fr; gap:0; }
+
+  /* ---------- Reusable modal / drawer ---------- */
+  .modal-overlay{ position:fixed; inset:0; background:rgba(27,36,48,.6); display:flex; align-items:flex-end; justify-content:center; z-index:1000; }
+  .modal-panel{ background:var(--paper); width:100%; max-width:640px; max-height:88vh; border-radius:16px 16px 0 0; display:flex; flex-direction:column; overflow:hidden; }
+  .modal-header{ display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1.5px solid var(--line); flex:0 0 auto; }
+  .modal-header h3{ margin:0; font-size:15px; }
+  .modal-close{ background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:var(--ink-soft); padding:2px 6px; }
+  .modal-body{ padding:10px 16px 16px; overflow-y:auto; flex:1 1 auto; }
+
   .product-table{ width:100%; border-collapse:collapse; font-size:12px; }
   .product-table th{ text-align:left; padding:6px 4px; color:var(--ink-soft); font-size:10px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1.5px solid var(--line); }
   .product-table td{ padding:8px 4px; border-bottom:1px solid var(--paper-dim); font-family:var(--mono); white-space:nowrap; }
   .product-table td:first-child{ font-family:var(--sans); font-weight:700; white-space:normal; }
   .product-table-wrap{ overflow-x:auto; }
+
+  @media (min-width:700px){
+    .modal-overlay{ align-items:center; }
+    .modal-panel{ border-radius:16px; max-height:80vh; }
+  }
+  @media (min-width:900px){
+    .shell{ max-width:1040px; }
+    .dash-grid{ grid-template-columns:1fr 1fr; gap:12px; }
+    .dash-grid .card{ margin-bottom:0; }
+  }
 </style>
 </head>
 <body>
@@ -96,86 +149,100 @@
     </div>
     <p class="last-updated" id="lastUpdated"></p>
 
-    <!-- A. Daily activity -->
-    <div class="card">
-      <h2 id="activityTitle">Daily activity</h2>
-      <div class="stat-grid">
-        <div class="stat"><div class="n" id="dispatchFinalizedStat">—</div><div class="l">Finalized Dispatches</div><div class="sub" id="dispatchDraftStat"></div></div>
-        <div class="stat"><div class="n" id="returnsFinalizedStat">—</div><div class="l">Finalized Returns</div><div class="sub" id="returnsDraftStat"></div></div>
-        <div class="stat"><div class="n" id="productionFinalizedStat">—</div><div class="l">Finalized Production</div><div class="sub" id="productionDraftStat"></div></div>
-      </div>
-      <p class="last-updated" id="lastActivityAt" style="margin-top:12px;"></p>
-    </div>
-
-    <!-- D. Attention -->
-    <div class="card" id="attentionCard">
-      <h2>Attention</h2>
-      <div id="attentionList"></div>
-    </div>
-
-    <!-- E. Quick actions -->
+    <!-- 1. Quick Actions -->
     <div class="card">
       <h2>Quick actions</h2>
       <div class="quick-actions" id="quickActions"></div>
     </div>
 
-    <!-- B. Per-product daily figures summary -->
+    <!-- 2. Daily Activity -->
+    <div class="card">
+      <h2 id="activityTitle">Daily activity</h2>
+      <div class="stat-grid">
+        <div class="stat"><div class="n" id="dispatchFinalizedStat">—</div><div class="l">Dispatches</div><div class="sub" id="dispatchDraftStat"></div></div>
+        <div class="stat"><div class="n" id="returnsFinalizedStat">—</div><div class="l">Returns</div><div class="sub" id="returnsDraftStat"></div></div>
+        <div class="stat"><div class="n" id="productionFinalizedStat">—</div><div class="l">Production</div><div class="sub" id="productionDraftStat"></div></div>
+        <div class="stat"><div class="n" id="activeCustomersStat">—</div><div class="l">Customers</div></div>
+      </div>
+      <p class="last-updated" id="lastActivityAt" style="margin-top:10px;"></p>
+    </div>
+
+    <!-- 3. Per-Product Daily Figures -->
     <div class="card">
       <h2 id="stockSummaryTitle">Per-product Daily Figures</h2>
-      <div class="product-table-wrap">
-        <table class="product-table">
-          <thead><tr><th>Product</th><th>Opening Stock</th><th>Production</th><th>Returns</th><th>Issued</th><th>Closing Stock</th></tr></thead>
-          <tbody id="stockSummaryBody"></tbody>
-        </table>
+      <div id="dailyFiguresPreview"></div>
+    </div>
+
+    <div class="dash-grid">
+      <!-- 4. Top Issued Products -->
+      <div class="card">
+        <h2>Top issued products (last 7 days)</h2>
+        <div id="topProducts"></div>
       </div>
-      <div class="empty hidden" id="stockSummaryEmpty">No product activity for this date.</div>
-    </div>
 
-    <div class="card hidden" id="lowStockCard">
-      <h2>Low stock warnings</h2>
-      <div id="lowStockList"></div>
-    </div>
+      <!-- 5. Issued by Sales Category -->
+      <div class="card">
+        <h2>Issued by sales category (last 30 days)</h2>
+        <div id="byCategory"></div>
+      </div>
 
-    <div class="card">
-      <h2>Recent dispatches</h2>
-      <div id="recentDispatches"></div>
-    </div>
+      <!-- 6. Issued by Recipient -->
+      <div class="card">
+        <h2>Issued by recipient (last 30 days)</h2>
+        <div id="byRecipient"></div>
+      </div>
 
-    <div class="card">
-      <h2>Top issued products (last 7 days)</h2>
-      <div id="topProducts"></div>
-    </div>
+      <!-- 7. Attention (collapsed by default) -->
+      <div class="card" id="attentionCard">
+        <button type="button" class="section-toggle" id="attentionToggle" aria-expanded="false" aria-controls="attentionList">
+          <span class="section-toggle-title">Attention <span class="count-badge" id="attentionCount">0</span></span>
+          <span class="chevron" id="attentionChevron">&#9656;</span>
+        </button>
+        <div id="attentionList" class="collapsible hidden"></div>
+      </div>
 
-    <div class="card">
-      <h2>Issued by sales category (last 30 days)</h2>
-      <div id="byCategory"></div>
-    </div>
+      <div class="card hidden" id="lowStockCard">
+        <h2>Low stock warnings</h2>
+        <div id="lowStockList"></div>
+      </div>
 
-    <div class="card">
-      <h2>Issued by recipient (last 30 days)</h2>
-      <div id="byRecipient"></div>
-    </div>
+      <!-- 8. Recent Dispatches -->
+      <div class="card">
+        <h2>Recent dispatches</h2>
+        <div id="recentDispatches"></div>
+      </div>
 
-    <div class="stat-grid" style="margin-bottom:14px;">
-      <div class="stat"><div class="n" id="activeCustomersStat">—</div><div class="l">Active Customers</div></div>
-      <div class="stat"><div class="n" id="draftCountStat">—</div><div class="l">Unfinalized Drafts</div></div>
-      <div class="stat"><div class="n" id="lowStockCountStat">—</div><div class="l">Low Stock</div></div>
-    </div>
+      <!-- 9. Unfinalized Drafts -->
+      <div class="card">
+        <h2>Unfinalized drafts</h2>
+        <div id="draftList"></div>
+      </div>
 
-    <div class="card">
-      <h2>Unfinalized drafts</h2>
-      <div id="draftList"></div>
-    </div>
-
-    <div class="card">
-      <h2>Recent corrections</h2>
-      <div id="correctionsList"></div>
+      <!-- 10. Recent Corrections -->
+      <div class="card">
+        <h2>Recent corrections</h2>
+        <div id="correctionsList"></div>
+      </div>
     </div>
   </main>
 </div>
 
+<!-- Reusable View All modal/drawer — one implementation, every section reuses it -->
+<div class="modal-overlay hidden" id="viewAllModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h3 id="modalTitle"></h3>
+      <button type="button" class="modal-close" id="modalCloseBtn" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
 <script>
 let currentUser = null;
+let dashboardData = null;
+let modalPreviouslyFocused = null;
+const PREVIEW_LIMIT = 3;
 
 async function api(path){
   const res = await fetch(path);
@@ -200,14 +267,11 @@ async function applyBranding(){
 applyBranding();
 
 function statusPill(status){ return `<span class="pill pill-${status}">${status}</span>`; }
-// Dashboard safety correction — this page used to carry its own local,
-// stale reimplementation of the book-notation formatter (it never got
-// the point-notation fix for carton+piece-only products like KingMax/
-// JumboMax, so it showed "5c 3pc" instead of "5.03 Ctns"). It now loads
-// the same shared /quantity_format.js index.html/history.html already
-// use (hasPackTier/qtyLabel), so there is exactly one formatter, never a
-// second copy that can drift out of sync again. Every quantity on this
-// page comes straight from the backend (stock_service.py via
+// Dashboard safety correction — this page loads the same shared
+// /quantity_format.js index.html/history.html already use (hasPackTier/
+// qtyLabel), so there is exactly one book-notation formatter, never a
+// local copy that can drift out of sync. Every quantity on this page
+// comes straight from the backend (stock_service.py via
 // dashboard_service.py) — nothing here recomputes Opening/Production/
 // Returns/Issued/Closing Stock, only formats numbers already computed.
 
@@ -231,14 +295,74 @@ function setActiveQuick(name){
   document.getElementById('quickYesterday').classList.toggle('active', name==='yesterday');
 }
 
+// =====================================================================
+// Reusable "View all" modal — final Dashboard UX correction, section 15.
+// One implementation, reused by every section instead of seven separate
+// modal/drawer builds. Escape-key close, click-outside close, background
+// scroll lock, and focus is moved to the close button on open / restored
+// to whatever triggered it on close.
+// =====================================================================
+
+function openModal(title, bodyHtml){
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  const overlay = document.getElementById('viewAllModal');
+  overlay.classList.remove('hidden');
+  document.body.classList.add('modal-open');
+  modalPreviouslyFocused = document.activeElement;
+  document.getElementById('modalCloseBtn').focus();
+}
+function closeModal(){
+  const overlay = document.getElementById('viewAllModal');
+  if(overlay.classList.contains('hidden')) return;
+  overlay.classList.add('hidden');
+  document.body.classList.remove('modal-open');
+  document.getElementById('modalBody').innerHTML = '';
+  if(modalPreviouslyFocused && typeof modalPreviouslyFocused.focus === 'function') modalPreviouslyFocused.focus();
+}
+document.getElementById('modalCloseBtn').addEventListener('click', closeModal);
+document.getElementById('viewAllModal').addEventListener('click', (e)=>{
+  if(e.target.id === 'viewAllModal') closeModal();
+});
+document.addEventListener('keydown', (e)=>{
+  if(e.key === 'Escape') closeModal();
+});
+
+// =====================================================================
+// Three-item preview rule (section 16) — a single reusable renderer every
+// simple list section (Top Products, Recent Dispatches, Drafts,
+// Corrections) shares. 0 items -> compact empty state. 1-3 -> all shown,
+// no "View all". >3 -> first three, plus "View all N" opening the same
+// already-fetched full list in the shared modal — never a second fetch.
+// =====================================================================
+
+function renderPreviewSection(containerEl, items, rowFn, opts){
+  if(!items || items.length === 0){
+    containerEl.innerHTML = `<div class="empty">${opts.emptyMessage}</div>`;
+    return;
+  }
+  const preview = items.slice(0, PREVIEW_LIMIT);
+  let html = preview.map(rowFn).join('');
+  if(items.length > PREVIEW_LIMIT){
+    html += `<button type="button" class="view-all-btn">${opts.viewAllPrefix} ${items.length}</button>`;
+    containerEl.innerHTML = html;
+    containerEl.querySelector('.view-all-btn').addEventListener('click', ()=>{
+      openModal(opts.modalTitle, items.map(rowFn).join(''));
+    });
+  } else {
+    containerEl.innerHTML = html;
+  }
+}
+
 async function loadDashboard(){
   const date = document.getElementById('dateInput').value || todayStr();
   const {data} = await api('/api/dashboard?date='+date);
+  dashboardData = data;
 
   document.getElementById('lastUpdated').textContent = data.generated_at
     ? `Generated ${new Date(data.generated_at + 'Z').toLocaleString()} — a snapshot, not a live feed.` : '';
 
-  // ---- A. daily activity ----
+  // ---- 2. Daily activity ----
   const activity = data.activity || {};
   document.getElementById('activityTitle').textContent = `Daily activity — ${data.date || date}`;
   document.getElementById('dispatchFinalizedStat').textContent = activity.dispatch ? activity.dispatch.finalized : 0;
@@ -251,31 +375,26 @@ async function loadDashboard(){
   document.getElementById('lastActivityAt').textContent = activity.last_activity_at
     ? `Last recorded activity for this date: ${new Date(activity.last_activity_at + 'Z').toLocaleString()}`
     : 'No recorded activity for this date yet.';
+  document.getElementById('activeCustomersStat').textContent = data.active_customers ?? 0;
 
-  // ---- D. attention ----
-  const attention = data.attention || [];
-  document.getElementById('attentionList').innerHTML = attention.length ? attention.map(n => `
-    <div class="notice-row ${n.type==='negative_closing_stock' ? 'negative' : ''}">${escapeHtml(n.message)}</div>
-  `).join('') : '<div class="empty">Nothing needs attention for this date.</div>';
-
-  // ---- B. per-product summary ----
-  const summary = data.stock_summary || [];
-  const byShift = data.production_by_shift || {};
+  // ---- 3. Per-Product Daily Figures — only products worked on today ----
   document.getElementById('stockSummaryTitle').textContent = `Per-product Daily Figures — ${data.date || date}`;
-  document.getElementById('stockSummaryBody').innerHTML = summary.map(r => {
-    const shift = byShift[r.product_id] || {};
-    return `
-    <tr>
-      <td><a href="/?tab=history&product=${encodeURIComponent(r.product_name)}" style="color:var(--ink);text-decoration:underline;">${escapeHtml(r.product_name)}</a></td>
-      <td>${qtyLabel(r.opening, r.packaging_rule)}</td>
-      <td>${qtyLabel(r.production, r.packaging_rule)}<div style="font-family:var(--sans);font-size:10px;color:var(--ink-soft);">Day ${shift.day||0} · Night ${shift.night||0} pc</div></td>
-      <td>${qtyLabel(r.return_, r.packaging_rule)}</td>
-      <td>${qtyLabel(r.issued, r.packaging_rule)}</td>
-      <td>${qtyLabel(r.closing, r.packaging_rule)}</td>
-    </tr>`;
-  }).join('');
-  document.getElementById('stockSummaryEmpty').classList.toggle('hidden', summary.length > 0);
+  renderDailyFiguresToday(data.daily_figures_today || []);
 
+  // ---- 4. Top issued products ----
+  const top = data.top_products || [];
+  renderPreviewSection(document.getElementById('topProducts'), top, topProductRow, {
+    emptyMessage: 'No finalized dispatches in this window.',
+    viewAllPrefix: 'View all', modalTitle: 'Top issued products (last 7 days)',
+  });
+
+  // ---- 5 & 6. Issued by Sales Category / Recipient ----
+  await loadRecipientTotals(date);
+
+  // ---- 7. Attention (collapsed by default) ----
+  renderAttention(data.attention || []);
+
+  // ---- Low stock (preserved, always fully visible when non-empty) ----
   const lowStock = data.low_stock || [];
   document.getElementById('lowStockCard').classList.toggle('hidden', lowStock.length===0);
   document.getElementById('lowStockList').innerHTML = lowStock.map(r => `
@@ -283,90 +402,108 @@ async function loadDashboard(){
       <span class="name">${escapeHtml(r.product_name)}</span>
       <span>${qtyLabel(r.closing, r.packaging_rule)}</span>
     </div>`).join('');
-  document.getElementById('lowStockCountStat').textContent = lowStock.length;
 
+  // ---- 8. Recent dispatches ----
   const recent = data.recent_dispatches || [];
-  document.getElementById('recentDispatches').innerHTML = recent.length ? recent.map(d => `
-    <a class="row-link" href="/dispatch.html?open=${d.id}">
-      <div>
-        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
-        <div class="meta">${d.date} · ${d.shift}</div>
-      </div>
-      ${statusPill(d.status)}
-    </a>`).join('') : '<div class="empty">No dispatches for this date.</div>';
+  renderPreviewSection(document.getElementById('recentDispatches'), recent, dispatchRow, {
+    emptyMessage: 'No dispatches for this date.',
+    viewAllPrefix: 'View all', modalTitle: 'Recent dispatches',
+  });
 
-  const top = data.top_products || [];
-  document.getElementById('topProducts').innerHTML = top.length ? top.map(p => `
+  // ---- 9. Unfinalized drafts ----
+  const drafts = (data.draft_dispatches && data.draft_dispatches.items) || [];
+  renderPreviewSection(document.getElementById('draftList'), drafts, draftRow, {
+    emptyMessage: 'Nothing waiting to be finalized.',
+    viewAllPrefix: 'View all', modalTitle: `Unfinalized drafts (${(data.draft_dispatches && data.draft_dispatches.count) || 0} total)`,
+  });
+
+  // ---- 10. Recent corrections (adjustments + voids, merged and sorted) ----
+  const corrections = [
+    ...(data.recent_adjustments || []).map(a => ({kind: 'adjustment', item: a, when: a.created_at || ''})),
+    ...(data.recent_voids || []).map(d => ({kind: 'void', item: d, when: d.voided_at || ''})),
+  ].sort((a, b) => b.when.localeCompare(a.when));
+  renderPreviewSection(document.getElementById('correctionsList'), corrections, correctionRow, {
+    emptyMessage: 'No recent corrections.',
+    viewAllPrefix: 'View all', modalTitle: 'Recent corrections',
+  });
+}
+
+// ---------- 3. Per-Product Daily Figures row + preview/modal ----------
+
+function figureRow(r){
+  const status = r.today_status || 'activity';
+  const label = r.today_status_label || 'Activity recorded';
+  return `
+    <div class="figure-row">
+      <div class="figure-row-head">
+        <a class="figure-name" href="/?tab=history&product=${encodeURIComponent(r.product_name)}">${escapeHtml(r.product_name)}</a>
+        <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(label)}</span>
+      </div>
+      <div class="figure-vals">
+        <div><span class="lbl">Opening</span><span class="val">${qtyLabel(r.opening, r.packaging_rule)}</span></div>
+        <div><span class="lbl">Production</span><span class="val">${qtyLabel(r.production, r.packaging_rule)}</span></div>
+        <div><span class="lbl">Returns</span><span class="val">${qtyLabel(r.return_, r.packaging_rule)}</span></div>
+        <div><span class="lbl">Issued</span><span class="val">${qtyLabel(r.issued, r.packaging_rule)}</span></div>
+        <div><span class="lbl">Closing</span><span class="val">${qtyLabel(r.closing, r.packaging_rule)}</span></div>
+      </div>
+    </div>`;
+}
+
+function renderDailyFiguresToday(items){
+  renderPreviewSection(document.getElementById('dailyFiguresPreview'), items, figureRow, {
+    emptyMessage: 'No products worked on for this date yet.',
+    viewAllPrefix: 'View all', modalTitle: 'Per-product Daily Figures',
+  });
+}
+
+// ---------- 4. Top products row ----------
+
+function topProductRow(p){
+  return `
     <a class="row-link" href="/?tab=history&product=${encodeURIComponent(p.product_name)}">
       <div>${escapeHtml(p.product_name)}</div>
       <div class="val">${qtyLabel(p, p.packaging_rule)}</div>
-    </a>`).join('') : '<div class="empty">No finalized dispatches in this window.</div>';
-
-  await loadRecipientTotals(date);
-
-  document.getElementById('activeCustomersStat').textContent = data.active_customers ?? 0;
-
-  const drafts = (data.draft_dispatches && data.draft_dispatches.items) || [];
-  document.getElementById('draftCountStat').textContent = (data.draft_dispatches && data.draft_dispatches.count) || 0;
-  document.getElementById('draftList').innerHTML = drafts.length ? drafts.map(d => `
-    <a class="row-link" href="/dispatch.html?open=${d.id}">
-      <div>
-        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
-        <div class="meta">${d.date} · ${d.shift}</div>
-      </div>
-      ${statusPill(d.status)}
-    </a>`).join('') : '<div class="empty">Nothing waiting to be finalized.</div>';
-
-  const adjustments = (data.recent_adjustments || []).map(a => `
-    <div class="row-link">
-      <div>
-        <div>Adjustment · ${escapeHtml(a.product_name || '—')} · ${a.date} ${a.shift}</div>
-        <div class="meta">${escapeHtml(a.reason)}</div>
-      </div>
-      <div class="val">${escapeHtml(a.quantity_label)}</div>
-    </div>`).join('');
-  const voids = (data.recent_voids || []).map(d => `
-    <a class="row-link" href="/dispatch.html?open=${d.id}">
-      <div>
-        <div>Voided · #${escapeHtml(d.dispatch_number)}</div>
-        <div class="meta">${escapeHtml(d.void_reason||'')}</div>
-      </div>
-      ${statusPill(d.status)}
-    </a>`).join('');
-  document.getElementById('correctionsList').innerHTML = (adjustments + voids) || '<div class="empty">No recent corrections.</div>';
+    </a>`;
 }
+
+// ---------- 5 & 6. Issued by Sales Category / Recipient ----------
 
 async function loadRecipientTotals(date){
   const from = addDays(date, -29);
   const params = `date_from=${from}&date_to=${date}`;
 
   const {data: byCategory} = await api(`/api/reports/recipient-totals?${params}&group_by=category`);
-  document.getElementById('byCategory').innerHTML = renderGroupedIssued(byCategory,
-    r => `/dispatch.html?sales_category_id=${r.group_id||''}`);
+  renderGroupedIssued(document.getElementById('byCategory'), Array.isArray(byCategory) ? byCategory : [],
+    r => `/dispatch.html?sales_category_id=${r.group_id||''}`,
+    {emptyMessage: 'No finalized dispatches in this window.', viewAllPrefix: 'View all categories', modalTitle: 'Issued by sales category (last 30 days)'});
 
-  const {data: byRecipient} = await api(`/api/reports/recipient-totals?${params}&group_by=recipient`);
-  document.getElementById('byRecipient').innerHTML = renderGroupedIssued(
-    Array.isArray(byRecipient) ? byRecipient.slice(0,10) : byRecipient,
-    r => `/dispatch.html?customer_id=${r.group_id||''}&customer_name=${encodeURIComponent(r.group_name)}`);
+  const {data: byRecipientRaw} = await api(`/api/reports/recipient-totals?${params}&group_by=recipient`);
+  const byRecipient = Array.isArray(byRecipientRaw) ? byRecipientRaw.slice(0, 10) : [];
+  renderGroupedIssued(document.getElementById('byRecipient'), byRecipient,
+    r => `/dispatch.html?customer_id=${r.group_id||''}&customer_name=${encodeURIComponent(r.group_name)}`,
+    {emptyMessage: 'No finalized dispatches in this window.', viewAllPrefix: 'View all recipients', modalTitle: 'Issued by recipient (last 30 days)'});
 }
 
-// Dashboard safety correction — a group (Sales Category / Recipient) can
-// contain several different products, each with its own carton capacity,
-// so there is no single meaningful "cartons" figure for the group as a
-// whole (a raw pieces total is misleading, and summing carton COUNTS
-// across products with different capacities is equally misleading). A
+// Dashboard safety correction (preserved) — a group can contain several
+// different products, each with its own carton capacity, so there is no
+// single meaningful "cartons" figure for the group as a whole. A
 // single-product group shows that product's quantity directly on the
 // header row; a multi-product group shows only the dispatch count on the
-// header row and a packaging-aware per-product breakdown underneath —
+// header row plus a packaging-aware per-product breakdown underneath —
 // never one combined number. `products` (and each line's quantity_label)
-// comes straight from the backend (stock_service.recipient_totals()),
-// never recomputed here.
-function renderGroupedIssued(rows, hrefFor){
-  if(!Array.isArray(rows) || !rows.length) return '<div class="empty">No finalized dispatches in this window.</div>';
-  return rows.map(r => {
-    const products = r.products || [];
-    const single = products.length === 1;
-    return `
+// comes straight from the backend, never recomputed here.
+//
+// Final Dashboard UX correction, section 9/10 — the compact preview also
+// caps each group's own product breakdown at three lines (with a "+N
+// more products" hint), and the whole group list itself at three groups;
+// the modal's full view removes both caps, from this same already-
+// fetched data — never a second fetch.
+function groupBlockHtml(r, hrefFor, capProducts){
+  const products = r.products || [];
+  const single = products.length === 1;
+  const shown = capProducts ? products.slice(0, PREVIEW_LIMIT) : products;
+  const remaining = products.length - shown.length;
+  return `
     <div class="group-block">
       <a class="row-link" href="${hrefFor(r)}">
         <div>
@@ -375,13 +512,111 @@ function renderGroupedIssued(rows, hrefFor){
         </div>
         ${single ? `<div class="val">${escapeHtml(products[0].quantity_label)}</div>` : ''}
       </a>
-      ${!single ? `<div class="group-products">${products.map(p => `
+      ${!single ? `<div class="group-products">${shown.map(p => `
         <div class="group-product-row">
           <span>${escapeHtml(p.product_name)}</span>
           <span class="val">${escapeHtml(p.quantity_label)}</span>
-        </div>`).join('')}</div>` : ''}
+        </div>`).join('')}${remaining > 0 ? `<div class="group-more">+${remaining} more product${remaining===1?'':'s'}</div>` : ''}</div>` : ''}
     </div>`;
-  }).join('');
+}
+
+function renderGroupedIssued(containerEl, rows, hrefFor, opts){
+  if(!rows.length){
+    containerEl.innerHTML = `<div class="empty">${opts.emptyMessage}</div>`;
+    return;
+  }
+  const preview = rows.slice(0, PREVIEW_LIMIT);
+  let html = preview.map(r => groupBlockHtml(r, hrefFor, true)).join('');
+  if(rows.length > PREVIEW_LIMIT){
+    html += `<button type="button" class="view-all-btn">${opts.viewAllPrefix} (${rows.length})</button>`;
+    containerEl.innerHTML = html;
+    containerEl.querySelector('.view-all-btn').addEventListener('click', ()=>{
+      openModal(opts.modalTitle, rows.map(r => groupBlockHtml(r, hrefFor, false)).join(''));
+    });
+  } else {
+    containerEl.innerHTML = html;
+  }
+}
+
+// ---------- 7. Attention — collapsed by default, auto-expands only for a
+// genuinely critical (negative Closing Stock) condition ----------
+
+function renderAttention(attention){
+  const countEl = document.getElementById('attentionCount');
+  const listEl = document.getElementById('attentionList');
+  const chevronEl = document.getElementById('attentionChevron');
+  const toggleEl = document.getElementById('attentionToggle');
+
+  countEl.textContent = attention.length;
+  countEl.classList.toggle('warn', attention.length > 0);
+  listEl.innerHTML = attention.length ? attention.map(n => `
+    <div class="notice-row ${n.type==='negative_closing_stock' ? 'negative' : ''}">${escapeHtml(n.message)}</div>
+  `).join('') : '<div class="empty">Nothing needs attention for this date.</div>';
+
+  const hasCritical = attention.some(n => n.type === 'negative_closing_stock');
+  setAttentionExpanded(hasCritical);
+}
+
+function setAttentionExpanded(expanded){
+  document.getElementById('attentionList').classList.toggle('hidden', !expanded);
+  document.getElementById('attentionChevron').classList.toggle('open', expanded);
+  document.getElementById('attentionToggle').setAttribute('aria-expanded', String(expanded));
+}
+
+document.getElementById('attentionToggle').addEventListener('click', ()=>{
+  const expanded = document.getElementById('attentionToggle').getAttribute('aria-expanded') === 'true';
+  setAttentionExpanded(!expanded);
+});
+
+// ---------- 8. Recent dispatches row ----------
+
+function dispatchRow(d){
+  return `
+    <a class="row-link" href="/dispatch.html?open=${d.id}">
+      <div>
+        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
+        <div class="meta">${d.date} · ${d.shift}</div>
+      </div>
+      ${statusPill(d.status)}
+    </a>`;
+}
+
+// ---------- 9. Unfinalized drafts row ----------
+
+function draftRow(d){
+  return `
+    <a class="row-link" href="/dispatch.html?open=${d.id}">
+      <div>
+        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
+        <div class="meta">Dispatch · ${d.date} · Created by ${escapeHtml(d.created_by_username||'—')}</div>
+      </div>
+      ${statusPill(d.status)}
+    </a>`;
+}
+
+// ---------- 10. Recent corrections row (adjustment or void) ----------
+
+function correctionRow(entry){
+  if(entry.kind === 'adjustment'){
+    const a = entry.item;
+    return `
+      <div class="row-link">
+        <div>
+          <div>Adjustment · ${escapeHtml(a.product_name || '—')}</div>
+          <div class="meta">${escapeHtml(a.reason)} · by ${escapeHtml(a.created_by_username||'—')} · ${a.date} ${a.shift}</div>
+        </div>
+        <div class="val">${escapeHtml(a.quantity_label)}</div>
+      </div>`;
+  }
+  const d = entry.item;
+  return `
+    <a class="row-link" href="/dispatch.html?open=${d.id}">
+      <div>
+        <div>Voided · #${escapeHtml(d.dispatch_number)}</div>
+        <div class="meta">${escapeHtml(d.void_reason||'')} · by ${escapeHtml(d.voided_by_username||'—')}</div>
+      </div>
+      ${statusPill(d.status)}
+    </a>`;
 }
 
 // ---------- quick actions (read-only links only — never a correction/edit
@@ -393,6 +628,9 @@ function renderQuickActions(role){
   }
   actions.push({href:'/', label:'View Daily Figures'});
   actions.push({href:'/history.html', label:'Open History & Exports'});
+  if(role === 'manager' || role === 'super_admin'){
+    actions.push({href:'/reset-daily-values.html', label:'Reset Daily Values'});
+  }
   if(role === 'super_admin'){
     actions.push({href:'/admin.html', label:'Open Admin'});
   }
