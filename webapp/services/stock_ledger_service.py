@@ -11,25 +11,43 @@ each period's Closing Stock. It is the tool a Manager/Super Administrator
 uses to trace WHERE a surprising balance (including a negative one)
 actually originated, rather than guessing.
 
-Investigation finding (see the "final stock-integrity investigation"
-completion report): seven adversarial reproductions — a historical
-correction after a later manual-correction anchor, a voided dispatch, a
-reopened-but-never-refinalized production record, cross-product
-isolation, genuine over-issuance, a Reset Daily Values Mode A demotion of
-an anchor, and Night-before-Day chronology — all reconciled EXACTLY
-against hand-computed expected values. No duplicate-counting, status-
-filtering, boundary, provenance, adjustment, unit-conversion, or cross-
-product defect was found in stock_service.py. A negative Closing Stock
-this app can currently produce is always a genuine, exactly-reconciling
-consequence of real source records (typically Issued exceeding Produced+
-Returned+anchor, i.e. real over-issuance or a real data-entry mistake in
-a source record) — never a software double-count. The actual gap this
-module fills: Reset Daily Values' preview is correctly scoped to only the
-exact target Date+Shift, so it can look like "nothing here" for a period
-whose negative balance was genuinely CARRIED FORWARD from an earlier
-period's real movement — this ledger makes that distinction explicit
-(see PERIOD_KIND_* below) instead of leaving a Manager to guess.
+Investigation finding, round 1 (see the "final stock-integrity
+investigation" completion report): seven adversarial reproductions — a
+historical correction after a later manual-correction anchor, a voided
+dispatch, a reopened-but-never-refinalized production record, cross-
+product isolation, genuine over-issuance, a Reset Daily Values Mode A
+demotion of an anchor, and Night-before-Day chronology — all reconciled
+EXACTLY against hand-computed expected values. No duplicate-counting,
+status-filtering, boundary, provenance, adjustment, or cross-product
+defect was found. The specific StockAdjustment arithmetic disagreement
+reported afterward (Closing Stock disagreeing with the next period's
+Opening Stock) did NOT reproduce when the exact reported record IDs,
+deltas, and dates were recreated — every reconciliation check passed.
+
+Investigation finding, round 2 (legacy-adjustment follow-up): while
+proving round 1's non-reproduction, a genuinely different, real defect
+was found and fixed in stock_service.py's _movement_between_periods() —
+a pre-Stage-5 migrated DailyFigure row's own legacy-stored
+production_base_qty/return_base_qty columns were correctly reflected
+when that exact row's own Closing Stock was viewed directly, but were
+NEVER carried into any LATER period's Opening Stock (silently lost the
+moment a newer period was computed), because the range-based carry-
+forward sum only ever looked at the Production/Returns Book tables, never
+at this older, pre-Book column on an intermediate row. Fixed via
+_legacy_stored_movement_in_window() in stock_service.py. This module's
+own reconciliation check below (added the same round) would have caught
+this immediately had it existed sooner — every period this diagnostic
+now produces is verified, not merely displayed, and now also surfaces
+legacy-stored Production/Returns explicitly as their own line items so
+they are traceable, not hidden inside an aggregate total.
+
+Reset Daily Values' preview is correctly scoped to only the exact target
+Date+Shift, so it can look like "nothing here" for a period whose
+negative balance was genuinely CARRIED FORWARD from an earlier period's
+real movement — this ledger makes that distinction explicit (see
+PERIOD_KIND_* below) instead of leaving a Manager to guess.
 """
+import re
 from datetime import datetime, timedelta
 
 from webapp.extensions import db
@@ -45,6 +63,17 @@ from webapp.services.quantity_format import qty_label
 class LedgerError(ValueError):
     """User-facing validation problem — never raised for a data problem,
     only for a bad request (unknown product, bad date range, bad shift)."""
+
+
+class LedgerReconciliationError(ValueError):
+    """Raised instead of returning misleading output (final stock-
+    integrity investigation, section 7) — if this ledger's own
+    independently-queried component totals (production/returns/dispatch/
+    adjustments, including legacy-stored columns) ever fail to reconcile
+    exactly against stock_service.compute_closing()'s result for the same
+    inputs, something about this diagnostic itself (never
+    stock_service.py's own live calculation, which this never touches) is
+    missing a contributing source — surfaced loudly, never silently."""
 
 
 # What KIND of period this is, from the ledger's own point of view — the
@@ -188,10 +217,20 @@ def _period_entry(product, date, shift, rule):
     else:
         anchor_row, anchor_trusted, anchor_reason = None, False, "no anchor-eligible row exists before this period"
 
-    production_total, production_lines = _production_lines(product.id, date, shift)
-    returns_total, returns_lines, returns_note = _returns_lines(product.id, date, shift)
+    production_lines_total, production_lines = _production_lines(product.id, date, shift)
+    returns_lines_total, returns_lines, returns_note = _returns_lines(product.id, date, shift)
     dispatch_total, dispatch_lines, dispatch_note = _dispatch_lines(product.id, date, shift)
     adjustment_total, adjustments = _adjustment_entries(product.id, date, shift)
+    # Round 2 finding — a pre-Stage-5 migrated row can carry its own
+    # legacy-stored Production/Returns value directly on the DailyFigure
+    # row (see stock_service.closing_base_qty()'s `legacy_stored`
+    # parameter) — surfaced as its own explicit, traceable component,
+    # never silently folded into "production_lines"/"returns_lines" (which
+    # only ever reflect Book table rows) and never lost.
+    legacy_production = figure.production_base_qty if figure is not None else 0
+    legacy_returns = figure.return_base_qty if figure is not None else 0
+    production_total = production_lines_total + legacy_production
+    returns_total = returns_lines_total + legacy_returns
     # Matches stock_service.issued_base_qty() exactly: adjustments are
     # signed and folded directly into Issued (a positive adjustment adds
     # to Issued, same direction as a Dispatch; a negative adjustment
@@ -200,6 +239,22 @@ def _period_entry(product, date, shift, rule):
 
     opening_base = view["opening"]["base_qty"] if view["opening"] else None
     closing_base = view["closing"]["base_qty"] if view["closing"] else None
+
+    # Final stock-integrity investigation, section 7 — never print
+    # components that fail to reconcile with the displayed Closing Stock;
+    # raise loudly instead of producing misleading output. Uses the exact
+    # same compute_closing() every other screen uses, never a third,
+    # independently-reinvented formula.
+    if opening_base is not None and closing_base is not None:
+        expected_closing = svc.compute_closing(opening_base, production_total, returns_total, issued_total)
+        if expected_closing != closing_base:
+            raise LedgerReconciliationError(
+                f"{product.name} {date} {shift}: components do not reconcile — "
+                f"opening({opening_base}) + production({production_total}) + returns({returns_total}) "
+                f"- issued({issued_total}) = {expected_closing}, but daily_figure_view() reports "
+                f"closing={closing_base}. This diagnostic is missing a contributing source; it never "
+                f"guesses or silently displays a mismatched total."
+            )
 
     movement_here = bool(production_total or returns_total or dispatch_total or adjustment_total)
     if not movement_here:
@@ -224,6 +279,11 @@ def _period_entry(product, date, shift, rule):
         warnings.append("No packaging rule configured for this product - quantities cannot be labeled.")
     if kind == PERIOD_KIND_NEGATIVE_CARRIED:
         warnings.append("Negative balance carried forward from an earlier period - no movement occurred in this exact period.")
+    if legacy_production or legacy_returns:
+        warnings.append(
+            f"This row carries legacy-stored Production/Returns (production={legacy_production}, returns={legacy_returns}) "
+            "from before the Production/Returns Book existed, not a Book line."
+        )
 
     return {
         "date": date, "shift": shift,
@@ -236,7 +296,9 @@ def _period_entry(product, date, shift, rule):
         "anchor_trusted": anchor_trusted,
         "anchor_trust_reason": anchor_reason,
         "production_total": production_total, "production_lines": production_lines,
+        "legacy_production": legacy_production,
         "returns_total": returns_total, "returns_lines": returns_lines, "returns_note": returns_note,
+        "legacy_returns": legacy_returns,
         "dispatch_total": dispatch_total, "dispatch_lines": dispatch_lines, "dispatch_note": dispatch_note,
         "adjustment_total": adjustment_total, "adjustments": adjustments,
         "issued_total": issued_total,
@@ -306,3 +368,128 @@ def first_negative_period(entries):
         if entry["closing_base_qty"] is not None and entry["closing_base_qty"] < 0:
             return entry
     return None
+
+
+# Legacy-adjustment follow-up investigation — the reason string written by
+# the migration that back-filled historical Issued figures as
+# StockAdjustment rows (there being no "legacy issued" column on
+# DailyFigure the way there is for Production/Returns — see
+# stock_service._legacy_stored_movement_in_window()'s docstring for why
+# THAT gap existed instead). Matched here for audit purposes only — never
+# used to decide whether a row affects stock (every StockAdjustment
+# always does, regardless of its reason text).
+LEGACY_ADJUSTMENT_REASON_PATTERN = re.compile(r"Migrated legacy issued figure \(entries\.id=(\d+)\)")
+
+
+def _legacy_entries_table_rows():
+    """Best-effort read of the legacy `entries` table (webapp/legacy_entries.py
+    — untouched raw-sqlite3, still queryable) so the audit can show the
+    ORIGINAL pre-migration value next to what was migrated. Never raises —
+    a missing/inaccessible legacy table just means this cross-reference is
+    unavailable, not a reason to fail the whole audit."""
+    try:
+        from webapp.legacy_entries import get_db
+        conn = get_db()
+        rows = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM entries").fetchall()}
+        conn.close()
+        return rows
+    except Exception:
+        return {}
+
+
+def _possible_duplicate_lines(product_id, date, shift, base_unit_qty):
+    """Heuristic only (final stock-integrity investigation, section 5) —
+    any Dispatch/Production/Returns line for this exact product/date/shift
+    whose own base_unit_qty magnitude matches this adjustment's, regardless
+    of that line's status. A match is a candidate worth a human's review,
+    never proof by itself that the adjustment is redundant — a migrated
+    legacy Issued correction and a genuinely separate, coincidentally
+    equal-sized Dispatch line are indistinguishable from quantity alone."""
+    target = abs(base_unit_qty)
+    candidates = []
+    for line, record in (
+        db.session.query(ProductionLine, ProductionRecord)
+        .join(ProductionRecord, ProductionRecord.id == ProductionLine.production_id)
+        .filter(ProductionRecord.date == date, ProductionRecord.shift == shift, ProductionLine.product_id == product_id)
+        .all()
+    ):
+        if line.base_unit_qty == target:
+            candidates.append({"source_type": "production", "record_id": record.id, "line_id": line.id, "status": record.status})
+    if shift == SHIFT_DAY:
+        for line, record in (
+            db.session.query(DispatchLine, Dispatch)
+            .join(Dispatch, Dispatch.id == DispatchLine.dispatch_id)
+            .filter(Dispatch.date == date, Dispatch.shift == SHIFT_DAY, DispatchLine.product_id == product_id)
+            .all()
+        ):
+            if line.base_unit_qty == target:
+                candidates.append({"source_type": "dispatch", "record_id": record.id, "line_id": line.id, "status": record.status})
+        for line, record in (
+            db.session.query(ReturnLine, ReturnRecord)
+            .join(ReturnRecord, ReturnRecord.id == ReturnLine.return_id)
+            .filter(ReturnRecord.date == date, ReturnLine.product_id == product_id)
+            .all()
+        ):
+            if line.base_unit_qty == target:
+                candidates.append({"source_type": "returns", "record_id": record.id, "line_id": line.id, "status": record.status})
+    return candidates
+
+
+def audit_legacy_adjustments():
+    """
+    Final stock-integrity investigation, section 5/9 — a READ-ONLY,
+    complete inventory of every StockAdjustment whose reason matches the
+    legacy-migration pattern, across EVERY product (never a hard-coded
+    handful of IDs). For each row: the original legacy entries.id and its
+    stored value (cross-referenced from the untouched legacy `entries`
+    table where still available), whether a Dispatch/Production/Returns
+    line already exists that might represent the same movement (a
+    candidate for human review, never an automatic conclusion), the
+    current Closing Stock for that exact product/date/shift, and whether
+    the balance would stay non-negative if this one adjustment were
+    hypothetically removed. Never modifies anything — see
+    `flask audit-legacy-adjustments` in webapp/cli.py for the CLI form,
+    and the completion report for why no repair/apply command accompanies
+    this: no evidence was found that any specific row is invalid,
+    duplicated, or wrongly signed.
+    """
+    adjustments = StockAdjustment.query.order_by(StockAdjustment.date, StockAdjustment.shift, StockAdjustment.id).all()
+    legacy_rows = [a for a in adjustments if a.reason and LEGACY_ADJUSTMENT_REASON_PATTERN.search(a.reason)]
+    if not legacy_rows:
+        return []
+
+    product_ids = {a.product_id for a in legacy_rows}
+    products_by_id = {p.id: p for p in Product.query.filter(Product.id.in_(product_ids)).all()}
+    legacy_entries = _legacy_entries_table_rows()
+
+    report = []
+    for a in legacy_rows:
+        product = products_by_id.get(a.product_id)
+        rule = product.current_packaging_rule() if product else None
+        match = LEGACY_ADJUSTMENT_REASON_PATTERN.search(a.reason)
+        legacy_entry_id = int(match.group(1)) if match else None
+        legacy_entry_row = legacy_entries.get(legacy_entry_id) if legacy_entry_id is not None else None
+
+        duplicates = _possible_duplicate_lines(a.product_id, a.date, a.shift, a.delta_base_qty)
+
+        closing = None
+        would_be_non_negative_without_this_row = None
+        if product is not None and rule is not None:
+            view = svc.daily_figure_view(product, a.date, a.shift)
+            closing = view["closing"]["base_qty"] if view["closing"] else None
+            if closing is not None:
+                would_be_non_negative_without_this_row = (closing + a.delta_base_qty) >= 0
+
+        report.append({
+            "adjustment_id": a.id,
+            "product_id": a.product_id, "product_name": product.name if product else None,
+            "date": a.date, "shift": a.shift, "delta_base_qty": a.delta_base_qty, "reason": a.reason,
+            "legacy_entries_id": legacy_entry_id,
+            "legacy_entry_original_value": legacy_entry_row,
+            "packaging_rule_id": rule.id if rule else None,
+            "possible_duplicate_lines": duplicates,
+            "current_closing_base_qty": closing,
+            "creates_or_worsens_negative_balance": bool(closing is not None and closing < 0),
+            "would_be_non_negative_without_this_row": would_be_non_negative_without_this_row,
+        })
+    return report

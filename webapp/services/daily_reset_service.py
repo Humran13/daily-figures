@@ -32,18 +32,34 @@ other product — a reset never touches a product outside its selected
 scope, and Mode B's source-record surgery never touches another product's
 lines within a shared multi-product record.
 """
+from datetime import datetime, timedelta
+
 from webapp.extensions import db
-from webapp.models.daily_figure import OPENING_STOCK_SOURCE_DERIVED, DailyFigure
-from webapp.models.dispatch import SHIFT_DAY, SHIFTS, STATUS_VOID as DISPATCH_VOID, Dispatch, DispatchLine
+from webapp.models.daily_figure import OPENING_STOCK_SOURCE_DERIVED, DailyFigure, StockAdjustment
+from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, SHIFTS, STATUS_VOID as DISPATCH_VOID, Dispatch, DispatchLine
 from webapp.models.product import Product
 from webapp.models.production_record import (
     STATUS_VOID as PRODUCTION_VOID, ProductionLine, ProductionRecord,
 )
 from webapp.models.return_record import STATUS_VOID as RETURNS_VOID, ReturnLine, ReturnRecord
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
-from webapp.services import daily_entry_status_service, daily_review_service, dispatch_service, production_service, returns_service
+from webapp.services import daily_entry_status_service, daily_review_service, dispatch_service, production_service, returns_service, stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.quantity_format import qty_label
+
+# How this reason string is written by the legacy Issued-figure migration
+# (see the legacy-adjustment investigation's completion report) — used
+# only to LABEL a row in the preview as "migrated legacy", never to
+# change whether it affects stock (every StockAdjustment always does).
+_LEGACY_MIGRATED_ADJUSTMENT_PREFIX = "Migrated legacy issued figure"
+
+# Bounds how far back preview() will walk to name the exact period a
+# carried-forward negative balance originated from (final stock-integrity
+# investigation, section 8) — a preview must stay cheap even for "all
+# products", so this is a safety cap, not a claim that no earlier
+# movement could possibly exist beyond it; flask stock-ledger has no such
+# cap for a deliberate, unbounded trace.
+_CARRIED_NEGATIVE_LOOKBACK_DAYS = 60
 
 MODE_FIGURES_ONLY = "figures_only"
 MODE_FULL = "full"
@@ -149,6 +165,66 @@ def _production_rows_by_product(date, shift):
     return rows
 
 
+def _adjustment_rows_by_product(date, shift):
+    """Final stock-integrity investigation, section 8 — the preview
+    previously never looked at StockAdjustment at all, so a period whose
+    entire stock effect came from an adjustment (a legacy-migrated Issued
+    correction, or an ordinary manual one) misleadingly reported
+    "no matching Production/Returns/Dispatch records" even though it
+    genuinely affects stock. One query (not one per product), grouped by
+    product_id — StockAdjustment has both a date and shift column, so
+    unlike Dispatch/Returns this is never Day-only by construction."""
+    rows = {}
+    adjustments = StockAdjustment.query.filter_by(date=date, shift=shift).all()
+    for a in adjustments:
+        rows.setdefault(a.product_id, []).append({
+            "id": a.id, "delta_base_qty": a.delta_base_qty, "reason": a.reason,
+            "created_by": a.created_by, "created_at": a.created_at.isoformat() if a.created_at else None,
+            "is_legacy_migrated": bool(a.reason) and a.reason.startswith(_LEGACY_MIGRATED_ADJUSTMENT_PREFIX),
+        })
+    return rows
+
+
+def _carried_negative_info(product, date, shift, has_current_period_movement):
+    """Final stock-integrity investigation, section 8 — never describe a
+    carried-forward negative as though it were current-period activity.
+    If this exact period has no movement of its own (no Production/
+    Returns/Dispatch/Adjustment) but its Closing Stock is negative, name
+    the exact period the negative first appeared in, bounded by
+    _CARRIED_NEGATIVE_LOOKBACK_DAYS so an "all products" preview always
+    stays cheap — flask stock-ledger has no such bound for a deliberate,
+    unbounded trace. Returns None when there is nothing carried (either
+    genuine current-period movement, or a non-negative balance)."""
+    if has_current_period_movement:
+        return None
+    view = svc.daily_figure_view(product, date, shift)
+    closing = view["closing"]["base_qty"] if view["closing"] else None
+    if closing is None or closing >= 0:
+        return None
+
+    from webapp.services import stock_ledger_service
+    lookback_start = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=_CARRIED_NEGATIVE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    anchor = svc._find_anchor_figure(product.id, date, shift)
+    scan_start = max(anchor.date, lookback_start) if anchor is not None else lookback_start
+    try:
+        entries = stock_ledger_service.build_ledger(product.id, scan_start, date)
+    except stock_ledger_service.LedgerError:
+        entries = []
+    origin = stock_ledger_service.first_negative_period(entries)
+    if origin is None:
+        return {
+            "message": (
+                f"No movement on this period. Negative balance carried forward from before "
+                f"{scan_start} — reload with a wider range or use `flask stock-ledger` for the exact origin."
+            ),
+            "originating_date": None, "originating_shift": None,
+        }
+    return {
+        "message": f"No movement on this period. Negative balance carried from {origin['date']} {origin['shift']}.",
+        "originating_date": origin["date"], "originating_shift": origin["shift"],
+    }
+
+
 def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
     """
     What a reset would affect, without changing anything — shown to the
@@ -167,6 +243,7 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
     dispatch_by_product = _dispatch_rows_by_product(date, shift)
     returns_by_product = _returns_rows_by_product(date, shift)
     production_by_product = _production_rows_by_product(date, shift)
+    adjustment_by_product = _adjustment_rows_by_product(date, shift)
     # Safety correction, item 2 — the preview must also show whether the
     # selected scope touches a submitted/in-progress review session or any
     # already-reviewed/edited/skipped product, so a Manager/Super
@@ -183,8 +260,13 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
         dispatch_rows = dispatch_by_product.get(product.id, [])
         returns_rows = returns_by_product.get(product.id, [])
         production_rows = production_by_product.get(product.id, [])
+        adjustment_rows = adjustment_by_product.get(product.id, [])
         has_source_activity = bool(dispatch_rows or returns_rows or production_rows)
+        has_adjustment_activity = bool(adjustment_rows)
         review_state = review_info["product_states"].get(product.id, "not_reviewed")
+        carried_negative = _carried_negative_info(
+            product, date, shift, has_current_period_movement=has_source_activity or has_adjustment_activity
+        )
 
         rows.append({
             "product_id": product.id,
@@ -201,10 +283,27 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
             "finalized_returns": returns_rows,
             "finalized_production": production_rows,
             "has_source_activity": has_source_activity,
+            # Final stock-integrity investigation, section 8 — a
+            # StockAdjustment (including a legacy-migrated Issued
+            # correction) genuinely affects stock but is a DIFFERENT
+            # category from has_source_activity above: neither reset mode
+            # currently touches StockAdjustment at all (see execute()),
+            # so this is shown for visibility only, never folded into
+            # preserved_in_mode_a/neutralized_in_mode_b below, which must
+            # keep accurately describing only what a reset actually does.
+            "stock_adjustments": adjustment_rows,
+            "has_adjustment_activity": has_adjustment_activity,
             # Mode A never touches source books — always preserved there.
-            # Mode B neutralizes exactly what's listed above, nothing else.
+            # Mode B neutralizes exactly what's listed above, nothing else
+            # — StockAdjustment rows are never neutralized by either mode.
             "preserved_in_mode_a": has_source_activity,
             "neutralized_in_mode_b": has_source_activity,
+            # Never None unless there is genuinely nothing carried — see
+            # _carried_negative_info()'s docstring. Distinguishes "this
+            # period's own movement caused the negative" (has_source_activity
+            # or has_adjustment_activity is True) from "nothing happened
+            # here, the negative is inherited."
+            "carried_negative": carried_negative,
             # Daily Figures review workflow state this reset would clear —
             # "not_reviewed" means the reset has nothing to clear for this
             # product, regardless of what the review session's own status is.
@@ -213,7 +312,7 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
 
     any_affected = any(
         r["has_manual_opening_entry"] or r["has_notes"] or r["review_status"] != "not_started"
-        or r["has_source_activity"] or r["review_state"] != "not_reviewed"
+        or r["has_source_activity"] or r["has_adjustment_activity"] or r["review_state"] != "not_reviewed"
         for r in rows
     )
     return {

@@ -9,7 +9,9 @@ at all.
 """
 import click
 
-from webapp.services.stock_ledger_service import LedgerError, build_ledger, first_negative_period
+from webapp.services.stock_ledger_service import (
+    LedgerError, LedgerReconciliationError, audit_legacy_adjustments, build_ledger, first_negative_period,
+)
 
 
 def register_cli(app):
@@ -32,6 +34,9 @@ def register_cli(app):
         except LedgerError as e:
             click.echo(f"Error: {e}", err=True)
             raise SystemExit(1)
+        except LedgerReconciliationError as e:
+            click.echo(f"RECONCILIATION FAILURE - this diagnostic refuses to print misleading output: {e}", err=True)
+            raise SystemExit(2)
 
         for e in entries:
             click.echo(f"\n{e['date']} {e['shift']} - {e['product_name']} (product_id={e['product_id']})")
@@ -41,7 +46,8 @@ def register_cli(app):
                 f"trusted={e['anchor_trusted']} ({e['anchor_trust_reason']})"
             )
 
-            click.echo(f"  Production: {e['production_total']:>6} base units from {len(e['production_lines'])} line(s)")
+            legacy_p = f" (+{e['legacy_production']} legacy-stored)" if e["legacy_production"] else ""
+            click.echo(f"  Production: {e['production_total']:>6} base units from {len(e['production_lines'])} line(s){legacy_p}")
             for pl in e["production_lines"]:
                 click.echo(
                     f"    record={pl['record_id']} line={pl['line_id']} qty={pl['base_unit_qty']} "
@@ -49,7 +55,8 @@ def register_cli(app):
                 )
 
             note = f" ({e['returns_note']})" if e["returns_note"] else ""
-            click.echo(f"  Returns:    {e['returns_total']:>6} base units from {len(e['returns_lines'])} line(s){note}")
+            legacy_r = f" (+{e['legacy_returns']} legacy-stored)" if e["legacy_returns"] else ""
+            click.echo(f"  Returns:    {e['returns_total']:>6} base units from {len(e['returns_lines'])} line(s){note}{legacy_r}")
             for rl in e["returns_lines"]:
                 click.echo(
                     f"    record={rl['record_id']} line={rl['line_id']} qty={rl['base_unit_qty']} "
@@ -90,3 +97,42 @@ def register_cli(app):
             )
         else:
             click.echo("No negative Closing Stock found in this range.")
+
+    @app.cli.command("audit-legacy-adjustments")
+    def audit_legacy_adjustments_command():
+        """Read-only inventory of every StockAdjustment created by the
+        legacy Issued-figure migration, across every product — never
+        modifies anything. No --apply/repair mode exists for this
+        command; none is warranted until specific rows are proven
+        invalid, duplicated, or wrongly signed (see the completion
+        report). Example:
+
+        \b
+        flask audit-legacy-adjustments
+        """
+        rows = audit_legacy_adjustments()
+        if not rows:
+            click.echo("No legacy-migrated adjustments found.")
+            return
+
+        click.echo(f"Found {len(rows)} legacy-migrated adjustment(s):\n")
+        flagged = []
+        for r in rows:
+            click.echo(
+                f"adjustment_id={r['adjustment_id']} product_id={r['product_id']} "
+                f"({r['product_name']}) date={r['date']} shift={r['shift']}"
+            )
+            click.echo(f"  delta_base_qty={r['delta_base_qty']}  reason={r['reason']}")
+            click.echo(f"  legacy entries.id={r['legacy_entries_id']}  original row={r['legacy_entry_original_value']}")
+            click.echo(f"  current closing for this product/date/shift={r['current_closing_base_qty']}")
+            click.echo(f"  creates_or_worsens_negative_balance={r['creates_or_worsens_negative_balance']}")
+            click.echo(f"  would_be_non_negative_without_this_row={r['would_be_non_negative_without_this_row']}")
+            if r["possible_duplicate_lines"]:
+                click.echo(f"  POSSIBLE DUPLICATE — matching-quantity source line(s) also exist: {r['possible_duplicate_lines']}")
+                flagged.append(r)
+            click.echo("")
+
+        click.echo("=" * 72)
+        click.echo(f"Proposed action: NONE. {len(flagged)} row(s) have a matching-quantity source line worth a human "
+                    f"cross-check; every other row shows no evidence of duplication or a wrong sign. No row is "
+                    f"recommended for automatic neutralization — see the completion report for the full policy.")

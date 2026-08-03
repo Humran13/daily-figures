@@ -141,6 +141,46 @@ def _find_anchor_figure(product_id, date, shift, exclude_id=None):
     return None
 
 
+def _legacy_stored_movement_in_window(product_id, start_date, start_shift, end_date, end_shift):
+    """
+    Final stock-integrity investigation — a pre-Stage-5 migrated
+    DailyFigure row can carry a Return/Production value directly on its
+    own return_base_qty/production_base_qty columns (see
+    closing_base_qty()'s `legacy_stored` parameter) instead of via the
+    Returns/Production Book. Every row written by upsert_daily_figure()
+    (Stage 5 onward) leaves these columns at their default of 0, so this
+    can never double-count a Book-sourced entry — it only ever picks up
+    genuinely legacy-only movement on an INTERMEDIATE row (never the
+    anchor's own row, whose legacy_stored is already folded into
+    anchor_closing by the caller; never the target's own row, which
+    daily_figure_view() already handles directly — both are structurally
+    outside the strictly-between window this function and its caller
+    both use).
+
+    Without this, a legacy row's stored value was visible only for as
+    long as that exact row was being viewed directly — the moment any
+    LATER period was computed, it silently vanished, because
+    production_finalized_base_qty_range()/returns_finalized_base_qty_range()
+    only ever look at the Production/Returns Book tables, never at this
+    older, pre-Book column. This is the fix for that silent loss.
+    """
+    if _sort_key(start_date, start_shift) > _sort_key(end_date, end_shift):
+        return 0, 0
+    start_key = _sort_key(start_date, start_shift)
+    end_key = _sort_key(end_date, end_shift)
+    rows = DailyFigure.query.filter(
+        DailyFigure.product_id == product_id,
+        DailyFigure.date >= start_date, DailyFigure.date <= end_date,
+    ).all()
+    production = 0
+    returns = 0
+    for row in rows:
+        if start_key <= _sort_key(row.date, row.shift) <= end_key:
+            production += row.production_base_qty or 0
+            returns += row.return_base_qty or 0
+    return production, returns
+
+
 def _movement_between_periods(product_id, start_date, start_shift, end_date, end_shift):
     """
     Sum of (Production, Returns, Issued) across every period from
@@ -154,7 +194,11 @@ def _movement_between_periods(product_id, start_date, start_shift, end_date, end
     nothing. Uses the same finalized-only, range-query building blocks
     already used by date_range_summary() below — never a per-day Python
     loop, so this stays cheap regardless of how many days have elapsed
-    since the anchor.
+    since the anchor. Also includes any intermediate row's own legacy-
+    stored Production/Returns column (see _legacy_stored_movement_in_window()
+    above) — a second, independent query, never folded into the book-based
+    piecewise logic below to keep that logic's existing, carefully-tuned
+    boundary handling untouched.
     """
     if _sort_key(start_date, start_shift) > _sort_key(end_date, end_shift):
         return 0, 0, 0
@@ -170,7 +214,8 @@ def _movement_between_periods(product_id, start_date, start_shift, end_date, end
             issued += dispatch_issued_base_qty(product_id, start_date, s) + adjustment_total_base_qty(product_id, start_date, s)
             if s == SHIFT_DAY:
                 returns += returns_finalized_base_qty(product_id, start_date)
-        return production, returns, issued
+        legacy_production, legacy_returns = _legacy_stored_movement_in_window(product_id, start_date, start_shift, end_date, end_shift)
+        return production + legacy_production, returns + legacy_returns, issued
 
     if start_shift == SHIFT_NIGHT:
         production += production_finalized_base_qty(product_id, start_date, SHIFT_NIGHT)
@@ -192,7 +237,8 @@ def _movement_between_periods(product_id, start_date, start_shift, end_date, end
         issued += dispatch_issued_base_qty_range(product_id, mid_from, mid_to) + adjustment_total_base_qty_range(product_id, mid_from, mid_to)
         returns += returns_finalized_base_qty_range(product_id, mid_from, mid_to)
 
-    return production, returns, issued
+    legacy_production, legacy_returns = _legacy_stored_movement_in_window(product_id, start_date, start_shift, end_date, end_shift)
+    return production + legacy_production, returns + legacy_returns, issued
 
 
 def _any_finalized_activity_at_or_before(product_id, date, shift):
@@ -356,6 +402,18 @@ def adjustment_total_base_qty(product_id, date, shift):
 
 
 def issued_base_qty(product_id, date, shift):
+    """
+    Final stock-integrity investigation, section 3 — the one documented
+    StockAdjustment sign convention, used everywhere in this codebase and
+    nowhere overridden: a StockAdjustment is an ISSUED CORRECTION (option
+    B), not a separate direct stock delta. It is folded directly into
+    Issued alongside Dispatch, both subtracted together in
+    compute_closing() below — never added back separately, never
+    subtracted a second time, never given the opposite sign anywhere. A
+    positive delta_base_qty means "more actually left the warehouse than
+    Dispatch alone accounts for" (reduces Closing Stock); a negative
+    delta_base_qty reduces Issued (increases Closing Stock).
+    """
     return dispatch_issued_base_qty(product_id, date, shift) + adjustment_total_base_qty(product_id, date, shift)
 
 
@@ -412,11 +470,40 @@ def production_base_qty(product_id, date, shift, legacy_stored=0):
     return legacy_stored + production_finalized_base_qty(product_id, date, shift)
 
 
+def compute_closing(opening_base_qty, production_total, returns_total, issued_total):
+    """
+    THE one authoritative Closing Stock formula (final stock-integrity
+    investigation, section 6) — every caller that needs a Closing Stock
+    number (closing_base_qty() below for one DailyFigure row,
+    daily_figure_view() for one product/date/shift, date_range_summary()
+    for a Dashboard/Reports whole-date-range row, and
+    stock_ledger_service.py's own reconciliation check) goes through this
+    exact function, so "closing = opening + production + returns -
+    issued" is expressed in exactly one place in the codebase and can
+    never independently drift between screens.
+
+    `issued_total` is expected to already be the COMBINED Dispatch +
+    StockAdjustment figure (see issued_base_qty() below) — the one
+    documented sign convention (final stock-integrity investigation,
+    section 3): a StockAdjustment is an ISSUED CORRECTION, not a separate
+    direct stock delta. A positive delta_base_qty means "more was issued
+    than Dispatch alone shows" (reduces Closing Stock, same direction as
+    a Dispatch); a negative delta_base_qty reduces Issued (increases
+    Closing Stock). There is no second, opposite-signed convention
+    anywhere in this codebase — verified by
+    tests/test_final_legacy_adjustment_investigation.py's cross-surface
+    reconciliation tests.
+
+    Exact integer base units — Python ints throughout, never float.
+    """
+    return opening_base_qty + production_total + returns_total - issued_total
+
+
 def closing_base_qty(figure):
     issued = issued_base_qty(figure.product_id, figure.date, figure.shift)
     return_total = return_base_qty(figure.product_id, figure.date, figure.shift, figure.return_base_qty)
     production_total = production_base_qty(figure.product_id, figure.date, figure.shift, figure.production_base_qty)
-    return figure.opening_base_qty + return_total + production_total - issued
+    return compute_closing(figure.opening_base_qty, production_total, return_total, issued)
 
 
 def opening_base_qty_at(product_id, date, shift=SHIFT_DAY):
@@ -489,7 +576,7 @@ def daily_figure_view(product, date, shift):
         opening_editable = prior is None
         notes = figure.notes if figure is not None else None
 
-    closing_base = opening_base + return_base + production_base - issued
+    closing_base = compute_closing(opening_base, production_base, return_base, issued)
 
     return {
         "product_id": product.id,
@@ -787,7 +874,7 @@ def date_range_summary(date_from, date_to):
             continue
 
         rule = product.current_packaging_rule()
-        closing_base = opening_base + total_return + total_production - total_issued
+        closing_base = compute_closing(opening_base, total_production, total_return, total_issued)
 
         results.append({
             "product_id": product.id,
