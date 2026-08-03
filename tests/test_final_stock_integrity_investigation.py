@@ -479,12 +479,18 @@ def test_no_float_or_rounding_logic_anywhere_in_the_ledger(client, setup, app):
 
 
 def test_raw_base_units_never_labelled_as_cartons_for_a_negative_balance(client, setup, app):
+    """Final legacy-migration investigation, section 9 — a negative
+    balance IS expressible in book notation (magnitude split correctly,
+    one leading minus sign) — the defect this proves against is the raw
+    BASE-UNIT number (-500) being suffixed with "Ctns" directly, which
+    would be a completely different, wrong magnitude from the correct
+    -5.00 Ctns (5 cartons)."""
     p = _make_product(client, "Packaging Negative Label")
     _dispatch(client, p["id"], setup["customer"]["id"], setup["category"]["id"], "2026-07-19", "NL-1", 5)
     entries = _ledger(app, p["id"], "2026-07-19", "2026-07-19", shift="Day")
     label = entries[0]["closing_label"]
-    assert "Ctns" not in label  # never formatted as carton notation
-    assert "-500" in label
+    assert label == "-5.00 Ctns"
+    assert "-500" not in label  # never the raw base-unit number relabeled as cartons
 
 
 # =====================================================================

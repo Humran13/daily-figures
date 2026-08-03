@@ -214,13 +214,13 @@ def _carried_negative_info(product, date, shift, has_current_period_movement):
     if origin is None:
         return {
             "message": (
-                f"No movement on this period. Negative balance carried forward from before "
+                f"No activity in this period. This balance was carried from before "
                 f"{scan_start} — reload with a wider range or use `flask stock-ledger` for the exact origin."
             ),
             "originating_date": None, "originating_shift": None,
         }
     return {
-        "message": f"No movement on this period. Negative balance carried from {origin['date']} {origin['shift']}.",
+        "message": f"No activity in this period. This balance was carried from {origin['date']} {origin['shift']}.",
         "originating_date": origin["date"], "originating_shift": origin["shift"],
     }
 
@@ -277,6 +277,17 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
             } if figure is not None else None,
             "is_opening_override": bool(figure and figure.opening_stock_is_override),
             "opening_stock_source": figure.opening_stock_source if figure is not None else None,
+            # Legacy-opening-migration investigation, section 10 — an
+            # authoritative legacy ledger anchor (never a Manager-typed
+            # value) shown as its own explicit category, plus the row's
+            # own legacy-stored Production/Returns columns (pre-Stage-5
+            # data — see stock_service.closing_base_qty()'s
+            # `legacy_stored` parameter) broken out separately so the
+            # preview never lumps a genuine historical ledger figure in
+            # with an ordinary Manager entry.
+            "is_legacy_migrated_opening": bool(figure and figure.opening_stock_source == "legacy_migrated_opening"),
+            "legacy_production_component": figure.production_base_qty if figure is not None else 0,
+            "legacy_returns_component": figure.return_base_qty if figure is not None else 0,
             "has_notes": bool(figure and figure.notes),
             "review_status": status["status"],
             "finalized_dispatch": dispatch_rows,

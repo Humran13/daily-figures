@@ -12,6 +12,7 @@ import click
 from webapp.services.stock_ledger_service import (
     LedgerError, LedgerReconciliationError, audit_legacy_adjustments, build_ledger, first_negative_period,
 )
+from webapp.services import legacy_migration as legacy_migration_service
 
 
 def register_cli(app):
@@ -136,3 +137,133 @@ def register_cli(app):
         click.echo(f"Proposed action: NONE. {len(flagged)} row(s) have a matching-quantity source line worth a human "
                     f"cross-check; every other row shows no evidence of duplication or a wrong sign. No row is "
                     f"recommended for automatic neutralization — see the completion report for the full policy.")
+
+    @app.cli.command("audit-legacy-opening-migration")
+    def audit_legacy_opening_migration_command():
+        """Read-only audit of every legacy `entries` row's Opening Stock
+        migration — decodes and reconciles the full spreadsheet equation
+        (Opening + Production + Returns - Issued = Closing) for each row,
+        cross-references the current DailyFigure/StockAdjustment state,
+        and classifies every row. Never modifies anything. Example:
+
+        \b
+        flask audit-legacy-opening-migration
+        """
+        report = legacy_migration_service.audit_opening_migration()
+        if not report:
+            click.echo("No legacy entries rows found.")
+            return
+
+        counts = {}
+        for entry in report:
+            counts[entry.get("classification", "unknown")] = counts.get(entry.get("classification", "unknown"), 0) + 1
+
+        for entry in report:
+            click.echo(
+                f"\nentries.id={entry['entries_id']} product={entry.get('product_name')} "
+                f"(id={entry.get('product_id')}) date={entry['date']} shift={entry['shift']}"
+            )
+            if "legacy_opening_label" in entry:
+                click.echo(
+                    f"  legacy: opening={entry['legacy_opening_label']} closing={entry['legacy_closing_label']} "
+                    f"equation_reconciles={entry.get('legacy_equation_reconciles')}"
+                )
+            if "existing_daily_figure_id" in entry:
+                click.echo(
+                    f"  current: daily_figure_id={entry['existing_daily_figure_id']} "
+                    f"source={entry.get('existing_opening_stock_source')} "
+                    f"trusted_anchor={entry.get('existing_trusted_anchor')} "
+                    f"opening_base_qty={entry.get('existing_opening_base_qty')} "
+                    f"current_closing={entry.get('current_closing_base_qty')}"
+                )
+            click.echo(f"  CLASSIFICATION: {entry.get('classification')}")
+            click.echo(f"  reason: {entry.get('reason')}")
+            if entry.get("classification") == legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR:
+                click.echo(
+                    f"  projected_closing_after_repair={entry.get('projected_closing_after_repair')} "
+                    f"({entry.get('projected_closing_after_repair_label')})  "
+                    f"delta_from_current={entry.get('current_vs_projected_delta')}"
+                )
+
+        click.echo("\n" + "=" * 72)
+        click.echo(f"Total legacy rows audited: {len(report)}")
+        for classification, count in sorted(counts.items()):
+            click.echo(f"  {classification}: {count}")
+        click.echo(
+            f"\nRun `flask repair-legacy-opening-migration` (dry run by default) to see the exact repair "
+            f"candidates among the {counts.get(legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR, 0)} "
+            f"'{legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR}' row(s) above."
+        )
+
+    @app.cli.command("repair-legacy-opening-migration")
+    @click.option("--product-id", "product_id", type=int, default=None, help="Limit to one product (recommended for the first run).")
+    @click.option("--apply", "apply_", is_flag=True, default=False, help="Actually apply the repair (default is a dry run).")
+    @click.option("--preview-token", "preview_token", default=None, help="The token printed by the dry run — required with --apply.")
+    @click.option("--actor-username", "actor_username", default=None, help="An existing user to attribute the repair to — required with --apply.")
+    def repair_legacy_opening_migration_command(product_id, apply_, preview_token, actor_username):
+        """Repairs ONLY proven-missing legacy Opening Stock anchors — a
+        pure provenance reclassification (opening_stock_source ->
+        legacy_migrated_opening), never a quantity change, never touching
+        a genuine later manual correction, a reconciliation mismatch, or
+        a genuine negative legacy balance. Dry run by default.
+
+        \b
+        flask repair-legacy-opening-migration --product-id 2
+        flask repair-legacy-opening-migration --product-id 2 --preview-token <token> --actor-username root --apply
+        """
+        if not apply_:
+            result = legacy_migration_service.preview_opening_repair(product_id)
+            if result["count"] == 0:
+                click.echo("Nothing to repair — no CLASS_MISSING_OPENING_ANCHOR rows for this scope.")
+                return
+            click.echo(f"DRY RUN — {result['count']} row(s) would be repaired:\n")
+            for c in result["candidates"]:
+                click.echo(
+                    f"  entries.id={c['entries_id']} daily_figure_id={c['existing_daily_figure_id']} "
+                    f"product={c['product_name']} date={c['date']} shift={c['shift']}"
+                )
+                click.echo(f"    {c['reason']}")
+                click.echo(
+                    f"    before: source={c['existing_opening_stock_source']} opening_base_qty={c['existing_opening_base_qty']} "
+                    f"current_closing={c['current_closing_base_qty']}"
+                )
+                click.echo(
+                    f"    after:  source=legacy_migrated_opening opening_base_qty={c['existing_opening_base_qty']} "
+                    f"projected_closing={c['projected_closing_after_repair']} ({c['projected_closing_after_repair_label']})"
+                )
+            click.echo(f"\nPreview token: {result['preview_token']}")
+            click.echo(
+                "No data was changed. To apply, re-run with the exact flags below within the same database state:\n"
+                f"  flask repair-legacy-opening-migration"
+                f"{f' --product-id {product_id}' if product_id else ''} "
+                f"--preview-token {result['preview_token']} --actor-username <you> --apply"
+            )
+            return
+
+        if not preview_token or not actor_username:
+            click.echo("Error: --apply requires both --preview-token (from a prior dry run) and --actor-username.", err=True)
+            raise SystemExit(1)
+
+        from webapp.extensions import db as _db
+        from webapp.models.user import User
+        actor = User.query.filter_by(username=actor_username).first()
+        if actor is None:
+            click.echo(f"Error: no user named '{actor_username}' exists.", err=True)
+            raise SystemExit(1)
+
+        try:
+            result = legacy_migration_service.apply_opening_repair(actor, product_id, preview_token)
+        except legacy_migration_service.LegacyMigrationRepairConflict as e:
+            _db.session.rollback()
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(2)
+
+        _db.session.commit()
+        click.echo(f"Repaired {result['count']} row(s):\n")
+        for r in result["repaired"]:
+            click.echo(
+                f"  entries.id={r['entries_id']} daily_figure_id={r['daily_figure_id']} "
+                f"product={r['product_name']} date={r['date']} shift={r['shift']} "
+                f"-> projected_closing={r['projected_closing_after_repair']}"
+            )
+        click.echo("\nRe-run `flask stock-ledger` for these products to confirm the repaired ledger.")

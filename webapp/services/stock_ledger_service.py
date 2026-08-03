@@ -46,6 +46,28 @@ Date+Shift, so it can look like "nothing here" for a period whose
 negative balance was genuinely CARRIED FORWARD from an earlier period's
 real movement — this ledger makes that distinction explicit (see
 PERIOD_KIND_* below) instead of leaving a Manager to guess.
+
+Investigation finding, round 3 (legacy Opening-Stock migration repair):
+a real, previously-undiscovered defect in webapp/services/legacy_migration.py
+— the original run_legacy_migration() wrote opening_stock_source=
+initial_manual, which is *live-revalidated* on every read
+(_is_trusted_anchor()) rather than trusted unconditionally. For any
+product with more than one migrated legacy row, every row after the
+chronologically-first one gets silently demoted the moment an earlier
+legacy row's own migrated Issued StockAdjustment counts as "finalized
+activity before it" — discarding that row's own authoritative,
+already-reconciled historical Opening Stock with no warning. Fixed via a
+new provenance, legacy_migrated_opening (webapp/models/daily_figure.py),
+trusted unconditionally forever exactly like manual_correction. See
+legacy_migration.py's audit_opening_migration()/preview_opening_repair()/
+apply_opening_repair() (read-only audit, and a token-gated, idempotent,
+provenance-only repair — never a quantity change) and the `flask
+audit-legacy-opening-migration` / `repair-legacy-opening-migration` CLI
+commands. This round also fixed a separate, unrelated defect: a negative
+Closing Stock was being displayed as literal warning text ("negative —
+check entries") instead of proper signed book notation (e.g. "-6.00
+Ctns") in three places (stock_service.py, quantity_format.js, index.html)
+— see qty_label_signed() below.
 """
 import re
 from datetime import datetime, timedelta
@@ -57,7 +79,6 @@ from webapp.models.product import Product
 from webapp.models.production_record import STATUS_FINALIZED as PRODUCTION_FINALIZED, ProductionLine, ProductionRecord
 from webapp.models.return_record import STATUS_FINALIZED as RETURNS_FINALIZED, ReturnLine, ReturnRecord
 from webapp.services import daily_entry_status_service, daily_review_service, stock_service as svc
-from webapp.services.quantity_format import qty_label
 
 
 class LedgerError(ValueError):
@@ -290,7 +311,7 @@ def _period_entry(product, date, shift, rule):
         "product_id": product.id, "product_name": product.name,
         "packaging_rule_id": rule.id if rule else None,
         "opening_base_qty": opening_base,
-        "opening_label": _label(opening_base, rule),
+        "opening_label": svc.qty_label_signed(opening_base, rule),
         "opening_source": figure.opening_stock_source if figure is not None else None,
         "anchor_row_id": anchor_row.id if anchor_row is not None else None,
         "anchor_trusted": anchor_trusted,
@@ -303,7 +324,7 @@ def _period_entry(product, date, shift, rule):
         "adjustment_total": adjustment_total, "adjustments": adjustments,
         "issued_total": issued_total,
         "closing_base_qty": closing_base,
-        "closing_label": _label(closing_base, rule),
+        "closing_label": svc.qty_label_signed(closing_base, rule),
         "formula": "closing = opening + production + returns - issued_total, where issued_total = dispatch_total + adjustment_total "
                    "(adjustments are signed and folded directly into Issued - matches stock_service.issued_base_qty() exactly)",
         "entry_status": entry_status,
@@ -311,25 +332,6 @@ def _period_entry(product, date, shift, rule):
         "period_kind": kind,
         "warnings": warnings,
     }
-
-
-def _label(base_qty, rule):
-    """Packaging-aware book-notation label for a non-negative quantity —
-    for a genuinely negative balance, this deliberately does NOT run the
-    raw base_qty through the cartons formatter (qty_label() has no
-    negative-cartons notion, and doing so would silently mislabel a raw
-    negative PIECE count as though it were a cartons figure — exactly the
-    "raw piece value displayed as cartons" defect class this
-    investigation was asked to check for). A negative balance is reported
-    as an explicit, honest base-unit count instead."""
-    if base_qty is None:
-        return None
-    if base_qty < 0:
-        return f"{base_qty} base units (negative - not expressible in carton notation)"
-    if rule is None:
-        return f"{base_qty} base units (no packaging rule configured)"
-    cartons, packs, pieces = svc.from_base_units(base_qty, rule)
-    return qty_label(cartons, packs, pieces, rule)
 
 
 def build_ledger(product_id, date_from, date_to, shift=None):

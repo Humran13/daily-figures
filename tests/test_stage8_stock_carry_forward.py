@@ -504,6 +504,10 @@ def test_napkin_carry_forward_uses_exact_mixed_radix_notation(client, login_as):
 # =====================================================================
 
 def test_negative_carried_balance_is_not_clamped_to_zero(client, setup):
+    """Final legacy-migration investigation, section 9 — a negative
+    balance is never clamped to zero AND is no longer replaced by a text
+    warning; it is fully expressible in book notation, e.g.
+    -400 base units on a 10x10 rule is "-4.00 Ctns"."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-01", "shift": "Day",
@@ -512,7 +516,11 @@ def test_negative_carried_balance_is_not_clamped_to_zero(client, setup):
     _finalize_dispatch(client, pid, setup["customer"]["id"], "2026-07-05", "Day", 5, "CF-8")
     view = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
     assert view["opening"]["base_qty"] == -400  # 100 - 500, never clamped to 0
-    assert view["closing"].get("warning") == "negative — check entries"
+    assert "warning" not in view["closing"]
+    assert view["closing"]["cartons"] == -4
+    assert view["closing"]["packs"] == 0 and view["closing"]["pieces"] == 0
+    from webapp.services.quantity_format import qty_label
+    assert qty_label(view["closing"]["cartons"], view["closing"]["packs"], view["closing"]["pieces"], view["packaging_rule"]) == "-4.00 Ctns"
 
 
 # =====================================================================

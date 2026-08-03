@@ -499,6 +499,25 @@ def compute_closing(opening_base_qty, production_total, returns_total, issued_to
     return opening_base_qty + production_total + returns_total - issued_total
 
 
+def qty_label_signed(base_qty, rule):
+    """
+    Packaging-aware book-notation label for ANY quantity, including a
+    genuinely negative balance — the one shared function every surface
+    (Daily Figures, Dashboard, History, exports, the stock-ledger CLI, the
+    legacy-migration audit) uses whenever a raw base_qty might be
+    negative, so they can never disagree. Delegates the actual sign/split
+    handling to _split_or_none() + quantity_format.qty_label() (which
+    detects a negative `cartons` and formats accordingly) — never a
+    second, competing negative-number formatter.
+    """
+    if base_qty is None:
+        return None
+    if rule is None:
+        return f"{base_qty} pc"
+    split = _split_or_none(base_qty, rule)
+    return qty_label(split["cartons"], split["packs"], split["pieces"], rule)
+
+
 def closing_base_qty(figure):
     issued = issued_base_qty(figure.product_id, figure.date, figure.shift)
     return_total = return_base_qty(figure.product_id, figure.date, figure.shift, figure.return_base_qty)
@@ -528,9 +547,36 @@ def opening_base_qty_at(product_id, date, shift=SHIFT_DAY):
 
 
 def _split_or_none(base_qty, rule):
-    if base_qty is None or base_qty < 0:
+    """
+    Final legacy-migration investigation, section 9 — a negative base_qty
+    is expressible in book notation: split the ABSOLUTE quantity normally
+    (packs/pieces are always non-negative positional digits — a sign has
+    no meaning at that level) and carry the sign on the most-significant
+    nonzero component, e.g. -600 base units on a 10x10 rule becomes
+    cartons=-6, packs=0, pieces=0. A magnitude smaller than one whole
+    carton (e.g. -50 base units on a 100-per-carton rule) would split to
+    cartons=0 — and `-0 == 0` for an int, silently losing the sign if it
+    were forced onto `cartons` regardless — so the sign instead falls onto
+    `packs` (or `pieces`, if packs is also 0). At most one of the three is
+    ever negative. quantity_format.qty_label()/quantity_format.js's
+    qtyLabel() both detect any negative component and render the whole
+    label with one leading minus sign ("-6.00 Ctns" or "-0.50 Ctns"), never
+    a raw negative base-unit number relabeled as cartons, and never a text
+    warning replacing the number outright. Returns None only when base_qty
+    itself is None (no figure exists), never merely because the value is
+    negative — a genuine negative balance is still a real, displayable
+    quantity.
+    """
+    if base_qty is None:
         return None
-    cartons, packs, pieces = from_base_units(base_qty, rule)
+    cartons, packs, pieces = from_base_units(abs(base_qty), rule)
+    if base_qty < 0:
+        if cartons != 0:
+            cartons = -cartons
+        elif packs != 0:
+            packs = -packs
+        else:
+            pieces = -pieces
     return {"cartons": cartons, "packs": packs, "pieces": pieces}
 
 
@@ -605,7 +651,7 @@ def daily_figure_view(product, date, shift):
             "from_dispatches": dispatch_issued_base_qty(product.id, date, shift),
             "from_adjustments": adjustment_total_base_qty(product.id, date, shift),
         } if rule else None,
-        "closing": {"base_qty": closing_base, **(_split_or_none(closing_base, rule) or {"warning": "negative — check entries"})} if rule else None,
+        "closing": {"base_qty": closing_base, **(_split_or_none(closing_base, rule) or {})} if rule else None,
         "notes": notes,
         # Final pre-deployment correction (Manager/Super Administrator
         # review workflow, section 11): who originally entered this row
@@ -727,15 +773,17 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
         try:
             split = from_base_units(opening_base, rule)
         except PackagingError:
-            # Negative-stock policy (see daily_figure_view()'s "warning":
-            # "negative — check entries") applies here too: a derived
-            # opening can legitimately be negative, and from_base_units()
-            # can't split a negative count into cartons/packs/pieces. These
-            # display columns aren't consulted for a non-override row
-            # anyway (daily_figure_view() always recomputes it live from
-            # opening_base_qty's derivation, never from these three
-            # columns) — 0/0/0 is a harmless placeholder; opening_base_qty
-            # below still carries the true (negative) value.
+            # Negative-stock policy (see _split_or_none() — a negative
+            # value is fully displayable, split by absolute value with a
+            # signed cartons component) applies to LIVE views, not these
+            # stored display columns: a derived opening can legitimately
+            # be negative, and from_base_units() itself still can't split
+            # a negative count directly. These columns aren't consulted
+            # for a non-override row anyway (daily_figure_view() always
+            # recomputes it live from opening_base_qty's derivation,
+            # never from these three columns, using _split_or_none()) —
+            # 0/0/0 is a harmless placeholder; opening_base_qty below
+            # still carries the true (negative) value.
             split = (0, 0, 0)
         figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
         figure.opening_base_qty = opening_base
@@ -884,7 +932,7 @@ def date_range_summary(date_from, date_to):
             "return_": _split_or_none(total_return, rule) if rule else None,
             "production": _split_or_none(total_production, rule) if rule else None,
             "issued": _split_or_none(total_issued, rule) if rule else None,
-            "closing": _split_or_none(closing_base, rule) if rule and closing_base >= 0 else {"warning": "negative"},
+            "closing": _split_or_none(closing_base, rule) if rule else None,
             "opening_base_qty": opening_base, "return_base_qty": total_return,
             "production_base_qty": total_production, "issued_base_qty": total_issued,
             "closing_base_qty": closing_base,

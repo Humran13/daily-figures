@@ -203,6 +203,12 @@ def test_viewer_cannot_upsert_daily_figure(client, setup, login_as):
 
 
 def test_negative_closing_flagged_not_crashed(client, setup):
+    """Final legacy-migration investigation, section 9/13 — a negative
+    Closing is never clamped, never replaced by a warning dict, and is
+    fully expressible in signed book notation even for a sub-carton
+    magnitude (-50 base units is less than one whole carton on this
+    product's 10x10 rule, so the sign falls onto `packs`, not `cartons` —
+    see stock_service._split_or_none())."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-28", "shift": "Day",
@@ -216,8 +222,12 @@ def test_negative_closing_flagged_not_crashed(client, setup):
     })
     view = client.get(f"/api/daily-figures/{pid}?date=2026-07-28&shift=Day").get_json()
     assert view["closing"]["base_qty"] == -50
-    assert "cartons" not in view["closing"]
-    assert view["closing"]["warning"]
+    assert "warning" not in view["closing"]
+    assert view["closing"]["cartons"] == 0
+    assert view["closing"]["packs"] == -5
+    assert view["closing"]["pieces"] == 0
+    from webapp.services.quantity_format import qty_label
+    assert qty_label(view["closing"]["cartons"], view["closing"]["packs"], view["closing"]["pieces"], view["packaging_rule"]) == "-0.50 Ctns"
 
 
 def test_history_lists_recent_figures(client, setup):

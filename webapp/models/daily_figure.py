@@ -20,11 +20,31 @@ OPENING_STOCK_SOURCE_DERIVED = "derived"
 OPENING_STOCK_SOURCE_INITIAL_MANUAL = "initial_manual"
 OPENING_STOCK_SOURCE_MANUAL_CORRECTION = "manual_correction"
 OPENING_STOCK_SOURCE_LEGACY_INFERRED = "legacy_inferred"
+# Legacy-opening-migration investigation — a row created by
+# webapp/services/legacy_migration.py's run_legacy_migration() from a
+# genuine, independently-reconciled row of the old `entries` spreadsheet
+# ledger (Opening + Production + Returns - Issued = Closing, all already
+# balanced by the business before migration). Deliberately DISTINCT from
+# initial_manual/legacy_inferred: those are *live-revalidated* on every
+# read (see OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR below) — which
+# turned out to silently demote and discard a legacy row's own
+# authoritative historical Opening the moment ANY earlier finalized
+# activity existed, including another legacy row's OWN migrated Issued
+# StockAdjustment. A legacy ledger row does not need "live revalidation"
+# the way an ordinary incidental first-touch save does: the business
+# already reconciled it, so it is trusted unconditionally, exactly like a
+# manual_correction — never typed by a current Manager, but just as
+# authoritative, and still fully auditable/distinguishable via this its
+# own source value. No schema migration was required to add this value —
+# opening_stock_source is a plain String(20) column with no CHECK
+# constraint (see migrations/versions/06658bb730c0).
+OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING = "legacy_migrated_opening"
 OPENING_STOCK_SOURCES = [
     OPENING_STOCK_SOURCE_DERIVED,
     OPENING_STOCK_SOURCE_INITIAL_MANUAL,
     OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
     OPENING_STOCK_SOURCE_LEGACY_INFERRED,
+    OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
 ]
 # Sources a row must have to even be a *candidate* anchor at all — every
 # other source is invisible to anchor lookup, exactly like "no row exists
@@ -33,17 +53,22 @@ OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE = (
     OPENING_STOCK_SOURCE_INITIAL_MANUAL,
     OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
     OPENING_STOCK_SOURCE_LEGACY_INFERRED,
+    OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
 )
 # Only a deliberate, evidenced correction (the submitted value differed
 # from live derivation at the moment an elevated user saved it — see
-# upsert_daily_figure()) is trusted UNCONDITIONALLY, regardless of
-# whether finalized movement is later discovered before it. Every other
-# anchor-eligible source is *live-revalidated* on every read: if
+# upsert_daily_figure()) — or a legacy ledger row already reconciled by
+# the business before migration — is trusted UNCONDITIONALLY, regardless
+# of whether finalized movement is later discovered before it. Every
+# other anchor-eligible source is *live-revalidated* on every read: if
 # finalized movement now exists before it, it is no longer trusted (see
 # _find_anchor_figure()) — this is what lets a later period entered
 # before its own history recalculate automatically once that history is
 # entered, without needing a fresh migration or a manual reset every time.
-OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR = (OPENING_STOCK_SOURCE_MANUAL_CORRECTION,)
+OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR = (
+    OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
+    OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
+)
 
 
 class DailyFigure(db.Model):

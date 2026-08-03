@@ -207,7 +207,14 @@ def test_straws_configured_structure_unchanged():
 def test_no_pack_tier_products_never_get_a_fake_pack_slot():
     # Confirms the point notation for carton+piece products is a single
     # positional slot (the remainder), never a synthesized "packs" digit.
-    assert "packs" not in inspect.getsource(qty_label).split("if not _has_pack_tier")[1].split("if packs == 0")[0]
+    # Anchored to the POSITIVE no-pack-tier branch specifically (its own
+    # unique "carton_to_pieces" line right after the guard) — final
+    # legacy-migration investigation, section 9 added an EARLIER negative-
+    # quantity branch that also mentions "if not _has_pack_tier", which a
+    # looser split would incorrectly capture too.
+    source = inspect.getsource(qty_label)
+    positive_no_pack_tier_branch = source.split("if not _has_pack_tier(rule):\n        carton_to_pieces")[1].split("if packs == 0")[0]
+    assert "packs" not in positive_no_pack_tier_branch
 
 
 # =====================================================================

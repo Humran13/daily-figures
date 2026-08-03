@@ -467,7 +467,10 @@ async function renderEntryCard(){
     const o = showOpeningInputs ? toBaseUnits(...Object.values(readQtyInputs('opening', rule)), rule) : view.opening.base_qty;
     const closingBase = o + view.return_.base_qty + view.production.base_qty - view.issued.base_qty;
     const el = document.getElementById('closingPreview');
-    if(closingBase < 0){ el.textContent = 'negative — check entries'; return; }
+    // Final legacy-migration investigation, section 9 — a negative
+    // preview is fully expressible in book notation (one leading minus
+    // sign on the correctly-split magnitude), never a text warning
+    // replacing the number — matches every other surface exactly.
     el.textContent = qtyLabel(fromBaseUnitsPreview(closingBase, rule), rule);
   }
   card.querySelectorAll('input').forEach(el=>{

@@ -73,7 +73,32 @@ def qty_label(cartons, packs, pieces, rule):
     call sites have whichever is already at hand (an ORM object when
     reading a *Line row directly, a plain dict when reading a
     stock_service.daily_figure_view() result).
+
+    Final legacy-migration investigation, section 9 — a negative quantity
+    (a genuine negative Closing/Opening Stock balance) is fully
+    expressible in book notation: the sign lives on whichever component
+    stock_service._split_or_none() put it on — normally `cartons`, but for
+    a sub-carton magnitude (e.g. -50 base units on a 100-per-carton rule,
+    which splits to 0 cartons) `cartons` would be `-0 == 0` and silently
+    lose the sign entirely, so the split instead negates `packs` (or
+    `pieces`, if both cartons and packs are 0) in that case — never more
+    than one component is negative at once. Formatted here as one leading
+    minus sign on the complete label — "-6.00 Ctns" or "-0.50 Ctns", never
+    "-600 Ctns" (a raw base-unit number mislabeled as cartons) and never a
+    text warning replacing the number. Unlike the positive pack-tier case
+    below (which drops a zero ".00" remainder — "5 Ctns", not "5.00
+    Ctns"), a negative pack-tier quantity always shows both digits, e.g.
+    "-7.00 Ctns" rather than "-7 Ctns" — a deliberate, slightly more
+    explicit shape that marks a negative balance as worth a second look,
+    per the reported examples this fixes.
     """
+    if cartons < 0 or packs < 0 or pieces < 0:
+        abs_cartons, abs_packs, abs_pieces = abs(cartons), abs(packs), abs(pieces)
+        if not _has_pack_tier(rule):
+            return f"-{qty_label(abs_cartons, abs_packs, abs_pieces, rule)}"
+        if 0 <= abs_packs <= 9 and 0 <= abs_pieces <= 9:
+            return f"-{abs_cartons}.{abs_packs}{abs_pieces} Ctns"
+        return f"-{abs_cartons}c {abs_packs}p {abs_pieces}pc"
     if not _has_pack_tier(rule):
         carton_to_pieces = _carton_to_pieces(rule)
         if not carton_to_pieces:
