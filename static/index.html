@@ -396,11 +396,27 @@ async function renderOperatorTable(){
   const container = document.getElementById('operatorTable');
   container.innerHTML = '<p class="op-note">Loading…</p>';
 
+  // Deliberately NOT the shared apiGet() helper here — apiGet() only
+  // special-cases 401 and otherwise always resolves (even for a 4xx/5xx
+  // response), so a genuine server error previously only surfaced as an
+  // uncaught JSON-parse exception (an HTML error page isn't valid JSON).
+  // This local fetch checks the real HTTP status explicitly, so a clean
+  // JSON error response from the server (see operator_summary()'s own
+  // try/except) is shown correctly, and an empty, healthy 200 response
+  // (no activity yet) is never mistaken for a failure.
   let data;
   try{
-    data = await apiGet(`/api/daily-figures/operator-summary?date=${date}&shift=${shift}`);
+    const res = await fetch(`/api/daily-figures/operator-summary?date=${date}&shift=${shift}`);
+    const body = await res.json().catch(() => null);
+    if(!res.ok || !body || !Array.isArray(body.products)){
+      container.innerHTML = `<p class="op-note">${escapeHtml((body && body.error) || 'Could not load Daily Figures for this period. Please try again.')}</p>`;
+      return;
+    }
+    data = body;
   } catch(e){
-    container.innerHTML = '<p class="op-note">Could not load Daily Figures for this period.</p>';
+    // A genuine network failure (fetch itself rejected) — the only case
+    // this outer catch is still needed for.
+    container.innerHTML = '<p class="op-note">Could not load Daily Figures for this period. Please try again.</p>';
     return;
   }
 
@@ -413,7 +429,29 @@ async function renderOperatorTable(){
     </div>
     <p class="op-note">These figures are calculated from finalized Production, Returns, and Dispatch records.</p>`;
 
+  // Load-error correction, section 2/4 — a period-wide mode, not a
+  // per-row decision. "preview": no product anywhere has finalized
+  // activity yet, so every active product is still listed (never an
+  // empty/error panel) with placeholder "—" cells — qtyLabel() already
+  // renders "—" for a null part, so a null opening/production/returns/
+  // issued/closing needs no special-casing here beyond not crashing on
+  // a null closing (see closingNegative below). "activity": only
+  // qualifying (non-zero Production/Returns/Issued) products, with their
+  // real authoritative values.
+  const isPreview = data.mode === 'preview';
+
+  if(isPreview){
+    container.innerHTML = summary + `
+      <p class="op-note">No finalized activity has been recorded for this period. Products will be filtered automatically when activity is recorded.</p>
+      ${_operatorTableHtml(data.products)}`;
+    return;
+  }
+
   if(!data.products.length){
+    // Reachable only if mode is "activity" with zero rows — which
+    // operator_summary() never actually returns (an empty activity set
+    // is "preview" by construction) — kept as a defensive fallback, never
+    // a real code path today.
     container.innerHTML = summary + `
       <div class="op-empty">
         <p>No Production, Returns, or Issued activity has been recorded for this period.</p>
@@ -421,8 +459,12 @@ async function renderOperatorTable(){
     return;
   }
 
-  const rows = data.products.map(r => {
-    const closingNegative = r.closing.base_qty < 0;
+  container.innerHTML = summary + _operatorTableHtml(data.products);
+}
+
+function _operatorTableHtml(products){
+  const rows = products.map(r => {
+    const closingNegative = !!(r.closing && r.closing.base_qty < 0);
     return `
       <tr>
         <td>${escapeHtml(r.product_name)}</td>
@@ -433,8 +475,7 @@ async function renderOperatorTable(){
         <td class="op-closing${closingNegative ? ' op-negative' : ''}">${qtyLabel(r.closing, r.packaging_rule)}</td>
       </tr>`;
   }).join('');
-
-  container.innerHTML = summary + `
+  return `
     <div class="op-table-wrap">
       <table class="op-table">
         <thead><tr><th>Product</th><th>Opening Stock</th><th>Production</th><th>Returns</th><th>Issued</th><th>Closing Stock</th></tr></thead>
