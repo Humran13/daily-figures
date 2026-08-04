@@ -57,59 +57,54 @@ def operator_summary():
     path remains POST /api/daily-figures, still fully role/permission-
     gated there).
 
-    Load-error correction — a period-WIDE, not per-row, decision between
-    two modes:
-      - "activity": at least one active product has genuine finalized
-        Production, Returns, or Issued for this exact Date + Shift — the
-        table shows ONLY those qualifying products, with their real
-        authoritative values (opening/production/returns/issued/closing
-        straight from daily_figure_view(), never recomputed).
-      - "preview": no product anywhere has any such activity yet. EVERY
-        active product is still listed (so the Operator always sees the
-        full table scaffold, never an empty/error panel), but
-        Production/Returns/Issued are always null placeholders (there is,
-        by definition, no real movement to show), and Opening/Closing are
-        only ever real numbers when they come from an "active clean
-        ledger value" — on or after an ACTIVATED ledger cutover (see
-        ledger_cutover_service.get_active_cutover() and
-        daily_figure_view()'s own is_pre_cutover field) — never an
-        invented zero, and never a pre-cutover/legacy-derived figure
-        (which could be a messy or genuinely broken historical number)
-        shown merely to fill the scaffold.
+    Display correction — every active product is always listed (never
+    filtered out for having no activity), sorted so products with real
+    finalized activity for this exact Date + Shift come first (in their
+    existing product_usage_service ranking order), followed by untouched
+    products (in that same underlying order). "Activity" means non-zero
+    Production, Returns, or Issued — Opening Stock/Closing Stock alone
+    never qualifies a product as worked-on, and never excludes one
+    either. Every field is the real, unmodified daily_figure_view() value
+    for every row — no placeholder nulling, no frontend recalculation.
+    `mode` ("activity" if at least one product qualifies, else "preview")
+    is still reported for observability but no longer changes which rows
+    are included.
 
-    The root cause of the previous generic "Unable to load" failure: a
-    product that has never had a packaging rule configured (a perfectly
-    normal, real intermediate state — see admin_products.create_product(),
-    which creates a product active with no rule at all) makes
+    The root cause of an earlier "Unable to load" failure: a product that
+    has never had a packaging rule configured (a normal, real
+    intermediate state — see admin_products.create_product(), which
+    creates a product active with no rule at all) makes
     daily_figure_view() return None for production/return_/issued/opening/
-    closing, and the old code unconditionally subscripted those dicts —
-    an unhandled TypeError, a Flask HTML 500 page, and a JSON-parse
+    closing, and unconditionally subscripting those dicts raised an
+    unhandled TypeError — a Flask HTML 500 page, then a JSON-parse
     failure in the browser. Such a product can never have valid computed
-    figures (there is no ratio to convert against) — it is now guarded
-    explicitly, still listed by name in preview mode, but excluded from
-    ever qualifying as "activity" and shown with placeholders throughout.
-    Any OTHER unexpected failure is caught, logged server-side with the
-    full traceback (see current_app.logger.exception below — never sent
-    to the browser), and reported as a clean, generic JSON error instead
-    of leaking implementation detail.
+    figures (there is no ratio to convert against) — it is still listed
+    by name (per "show every product"), with its already-None fields
+    passed through as-is, and can never qualify as "activity". Any OTHER
+    unexpected failure is caught, logged server-side with the full
+    traceback (see current_app.logger.exception below — never sent to
+    the browser), and reported as a clean, generic JSON error instead of
+    leaking implementation detail.
     """
     date, shift, err = _require_date_shift()
     if err:
         return err
 
     try:
-        from webapp.services import ledger_cutover_service as cutover_svc
         from webapp.services import product_usage_service
         ranked_products = product_usage_service.ranked_active_products()
 
-        all_rows = []
-        activity_rows = []
+        worked_on = []
+        untouched = []
         for product in ranked_products:
             view = svc.daily_figure_view(product, date, shift)
             has_rule = view["packaging_rule"] is not None
-            all_rows.append((product, view, has_rule))
-            if has_rule and (view["production"]["base_qty"] != 0 or view["return_"]["base_qty"] != 0 or view["issued"]["base_qty"] != 0):
-                activity_rows.append(view)
+            has_activity = has_rule and (
+                view["production"]["base_qty"] != 0
+                or view["return_"]["base_qty"] != 0
+                or view["issued"]["base_qty"] != 0
+            )
+            (worked_on if has_activity else untouched).append(view)
 
         from webapp.models.dispatch import STATUS_FINALIZED as DISPATCH_FINALIZED, Dispatch
         from webapp.models.production_record import STATUS_FINALIZED as PRODUCTION_FINALIZED, ProductionRecord
@@ -121,28 +116,11 @@ def operator_summary():
         dispatch_count = Dispatch.query.filter_by(date=date, shift=shift, status=DISPATCH_FINALIZED).count() if shift == "Day" else 0
         returns_count = ReturnRecord.query.filter_by(date=date, status=RETURNS_FINALIZED).count() if shift == "Day" else 0
 
-        if activity_rows:
-            mode = "activity"
-            rows = activity_rows
-        else:
-            mode = "preview"
-            active_cutover = cutover_svc.get_active_cutover(date, shift)
-            rows = []
-            for product, view, has_rule in all_rows:
-                clean_ledger_value = has_rule and active_cutover is not None and not view["is_pre_cutover"]
-                rows.append({
-                    "product_id": product.id, "product_name": product.name,
-                    "packaging_rule": view["packaging_rule"],
-                    "opening": view["opening"] if clean_ledger_value else None,
-                    "production": None, "return_": None, "issued": None,
-                    "closing": view["closing"] if clean_ledger_value else None,
-                })
-
         return jsonify({
             "date": date, "shift": shift,
-            "mode": mode,
-            "products": rows,
-            "products_worked_on": len(activity_rows),
+            "mode": "activity" if worked_on else "preview",
+            "products": worked_on + untouched,
+            "products_worked_on": len(worked_on),
             "production_records": production_count,
             "return_records": returns_count,
             "dispatch_records": dispatch_count,

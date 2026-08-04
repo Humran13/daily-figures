@@ -90,20 +90,27 @@
      elsewhere) per the exact required column layout; the table container
      scrolls horizontally on its own (mobile) while the rest of the page
      stays fixed-width — never full-page horizontal overflow. */
-  .op-summary{ display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
-  .op-summary .stat{ flex:1; min-width:90px; background:white; border:1.5px solid var(--line); border-radius:10px; padding:10px; text-align:center; }
-  .op-summary .stat .n{ font-family:var(--mono); font-size:18px; font-weight:800; }
-  .op-summary .stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); }
   .op-note{ font-size:11px; color:var(--ink-soft); margin:0 0 14px; }
+  /* Layout correction — the previous min-width:520px + white-space:nowrap
+     on every header forced the table to be at least as wide as this
+     app's entire content column (.shell's max-width, minus main's
+     padding), guaranteeing horizontal scroll on every normal viewport
+     this app ever renders at (it is deliberately narrow/single-column
+     throughout, not a wide desktop layout). table-layout:fixed with
+     explicit proportional column widths (Product wider than the five
+     numeric columns) lets the table always fit the available width
+     instead; overflow-x:auto stays on the wrapper only as a last-resort
+     safety net for an unusually narrow viewport, never the normal case. */
   .op-table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
-  table.op-table{ border-collapse:collapse; width:100%; min-width:520px; font-size:13px; }
+  table.op-table{ border-collapse:collapse; width:100%; table-layout:fixed; font-size:11px; }
   table.op-table thead{ position:sticky; top:0; background:var(--paper-dim); z-index:1; }
-  table.op-table th{ text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); padding:10px 12px; white-space:nowrap; }
-  table.op-table th:first-child{ text-align:left; }
-  table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:10px 12px; border-top:1px solid var(--line); white-space:nowrap; }
-  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); }
+  table.op-table th{ text-align:right; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--ink-soft); padding:7px 5px; white-space:normal; line-height:1.25; word-break:break-word; }
+  table.op-table th:first-child{ text-align:left; width:24%; }
+  table.op-table th:not(:first-child){ width:15.2%; }
+  table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:7px 5px; border-top:1px solid var(--line); white-space:nowrap; }
+  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); white-space:normal; word-break:break-word; }
   table.op-table tbody tr:nth-child(even){ background:var(--paper-dim); }
-  table.op-table td.op-closing{ font-weight:800; font-size:14px; }
+  table.op-table td.op-closing{ font-weight:800; font-size:12px; }
   table.op-table td.op-closing.op-negative{ color:var(--red); background:#F3E4E4; }
   .op-empty{ text-align:center; padding:36px 20px; color:var(--ink-soft); }
   .op-empty p{ margin:0 0 16px; font-size:14px; }
@@ -420,46 +427,16 @@ async function renderOperatorTable(){
     return;
   }
 
-  const summary = `
-    <div class="op-summary">
-      <div class="stat"><div class="n">${data.products_worked_on}</div><div class="l">Products worked on</div></div>
-      <div class="stat"><div class="n">${data.production_records}</div><div class="l">Production records</div></div>
-      <div class="stat"><div class="n">${data.return_records}</div><div class="l">Return records</div></div>
-      <div class="stat"><div class="n">${data.dispatch_records}</div><div class="l">Dispatch records</div></div>
-    </div>
-    <p class="op-note">These figures are calculated from finalized Production, Returns, and Dispatch records.</p>`;
-
-  // Load-error correction, section 2/4 — a period-wide mode, not a
-  // per-row decision. "preview": no product anywhere has finalized
-  // activity yet, so every active product is still listed (never an
-  // empty/error panel) with placeholder "—" cells — qtyLabel() already
-  // renders "—" for a null part, so a null opening/production/returns/
-  // issued/closing needs no special-casing here beyond not crashing on
-  // a null closing (see closingNegative below). "activity": only
-  // qualifying (non-zero Production/Returns/Issued) products, with their
-  // real authoritative values.
-  const isPreview = data.mode === 'preview';
-
-  if(isPreview){
-    container.innerHTML = summary + `
-      <p class="op-note">No finalized activity has been recorded for this period. Products will be filtered automatically when activity is recorded.</p>
-      ${_operatorTableHtml(data.products)}`;
-    return;
-  }
-
   if(!data.products.length){
-    // Reachable only if mode is "activity" with zero rows — which
-    // operator_summary() never actually returns (an empty activity set
-    // is "preview" by construction) — kept as a defensive fallback, never
-    // a real code path today.
-    container.innerHTML = summary + `
+    // Only reachable when the product catalogue itself is empty.
+    container.innerHTML = `
       <div class="op-empty">
-        <p>No Production, Returns, or Issued activity has been recorded for this period.</p>
+        <p>No products are configured yet.</p>
       </div>`;
     return;
   }
 
-  container.innerHTML = summary + _operatorTableHtml(data.products);
+  container.innerHTML = _operatorTableHtml(data.products);
 }
 
 function _operatorTableHtml(products){

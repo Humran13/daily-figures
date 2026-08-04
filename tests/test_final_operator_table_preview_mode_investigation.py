@@ -13,17 +13,19 @@ try/catch only ever caught a genuine network failure or JSON-parse
 error — an HTML error page triggers the latter). Reproduced directly via
 a scratch test before writing this fix; verified fixed here permanently.
 
-The endpoint now returns one of two period-wide (never per-row) modes:
-  - "preview": no product anywhere has finalized activity yet. EVERY
-    active product is still listed (the Operator always sees the full
-    table scaffold), but Production/Returns/Issued are always null
-    placeholders, and Opening/Closing are real numbers ONLY when they
-    come from an "active clean ledger value" (on/after an ACTIVATED
-    ledger cutover) — never an invented zero, never a legacy-derived
-    figure shown merely to fill the scaffold.
-  - "activity": at least one product has genuine finalized activity —
-    the table switches to showing ONLY qualifying products with their
-    real authoritative values.
+UPDATE — table-layout/ordering correction: the endpoint no longer filters
+by mode. Every active product is always listed, in every response;
+`mode` ("preview" if no product anywhere has activity, else "activity")
+is still reported for observability but no longer changes which rows
+are included. Every field is the real, unmodified daily_figure_view()
+value for every row — no placeholder nulling of Production/Returns/
+Issued, and no "clean ledger value" gating of Opening/Closing. Rows are
+sorted so products with real activity for this exact Date + Shift come
+first, followed by untouched ones — see
+test_final_operator_daily_figures_table_investigation.py for the
+dedicated ordering tests. This module keeps its original crash-fix and
+mode-transition tests (still fully valid) and updates the handful that
+asserted the removed null-placeholder behavior.
 """
 import pytest
 
@@ -99,14 +101,18 @@ def test_product_without_packaging_rule_appears_as_placeholder_in_preview(client
 def test_product_without_packaging_rule_can_never_qualify_as_activity(client, super_admin):
     """It structurally cannot have valid computed figures (no conversion
     ratio exists) — it must never spuriously flip the table into
-    activity mode or appear as a qualifying row."""
+    activity mode. It is still listed (display correction — every
+    product is always shown), but always ordered after any genuinely
+    worked-on product."""
     client.post("/api/admin/products", json={"name": "No Rule Never Qualifies"})
     trigger = _make_product(client, "Rule Trigger Product", rule={"cartons_to_packs": 10, "packs_to_pieces": 10})
     _finalize_production(client, trigger["id"], "2026-08-01", "Day", 1)
     status, data = _summary(client, "2026-08-01")
     assert status == 200
     assert data["mode"] == "activity"
-    assert "No Rule Never Qualifies" not in [r["product_name"] for r in data["products"]]
+    names = [r["product_name"] for r in data["products"]]
+    assert "No Rule Never Qualifies" in names
+    assert names.index("Rule Trigger Product") < names.index("No Rule Never Qualifies")
 
 
 def test_genuine_endpoint_failure_still_returns_a_clean_error_not_a_crash(client, super_admin, monkeypatch):
@@ -155,19 +161,22 @@ def test_preview_mode_lists_every_active_product(client, super_admin):
         assert n in listed
 
 
-def test_preview_mode_placeholders_never_invent_zero_stock(client, super_admin):
-    """Without an active cutover, there is no 'clean ledger value' to
-    trust yet — Opening/Closing must be null placeholders, never an
-    invented 0, even for a product that has literally never been
-    touched."""
+def test_preview_mode_shows_the_real_derived_opening_never_invents_a_number(client, super_admin):
+    """Display correction — every field is the real, unmodified
+    daily_figure_view() value, for every row, in both modes. For a
+    product that has literally never been touched, that real value is
+    the correctly-derived 0 (nothing precedes it) — not a frontend
+    invention, and not suppressed into a placeholder either."""
     p = _make_product(client, "Never Touched Product", rule={"cartons_to_packs": 10, "packs_to_pieces": 10})
     status, data = _summary(client, "2026-08-01")
     row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["opening"] is None
-    assert row["closing"] is None
+    assert row["opening"] == {"base_qty": 0, "cartons": 0, "packs": 0, "pieces": 0}
+    assert row["closing"] == {"base_qty": 0, "cartons": 0, "packs": 0, "pieces": 0}
 
 
-def test_preview_mode_does_not_display_broken_legacy_negatives(client, super_admin):
+def test_preview_mode_shows_the_real_legacy_derived_value_unmodified(client, super_admin):
+    """Display correction — "render backend-provided values exactly as
+    received": a real historical negative is shown as-is, not hidden."""
     p = _make_product(client, "Legacy Negative Preview Product", rule={"cartons_to_packs": 10, "packs_to_pieces": 10})
     client.post("/api/daily-figures", json={
         "product_id": p["id"], "date": "2026-01-01", "shift": "Day",
@@ -180,7 +189,7 @@ def test_preview_mode_does_not_display_broken_legacy_negatives(client, super_adm
 
     status, data = _summary(client, "2026-08-01")  # a later, still-untouched period
     row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["opening"] is None  # never shows the broken legacy-derived negative
+    assert row["opening"]["base_qty"] == -99500  # the exact, real, unmodified carried-forward value
 
 
 def test_preview_mode_shows_clean_ledger_value_after_activated_cutover(client, super_admin, app):
