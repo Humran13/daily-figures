@@ -670,7 +670,8 @@ def daily_figure_view(product, date, shift):
     }
 
 
-def upsert_daily_figure(*, product, date, shift, opening, notes, user):
+def upsert_daily_figure(*, product, date, shift, opening, notes, user,
+                         opening_stock_explicitly_edited=False, opening_correction_reason=None):
     """
     opening is a {cartons, packs, pieces} dict (or None to leave opening
     as-is when it's locked to the prior period's running balance) — the
@@ -681,39 +682,49 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
     Figures is a calculated summary for both, the same way Issued already
     was. Raises StockError for anything the user needs to fix.
 
-    Stage 8 section 3 — Opening Stock anchors, corrected: an Operator
-    submitting `opening` for a period whose Opening is derived (not this
-    product's first-ever period) has it silently ignored in favor of the
-    derived running balance, exactly as before — Operators never create a
-    new anchor. A Manager/Super Administrator submitting an explicit
-    `opening` only becomes a new anchor when it actually DIFFERS from what
-    pure carry-forward would otherwise produce — a routine save that
-    happens to leave the pre-filled (already-correct) value unchanged is
-    never treated as a correction. This is the fix for a real regression:
-    treating every elevated submission as an override meant an elevated
-    user simply viewing-and-saving an already-derived-correct period (e.g.
-    while paging through, or completing "No Activity Today" on a page that
-    also showed an editable Opening field) could silently freeze that
-    date's Opening Stock forever at whatever was on screen at that moment
-    — later Production/Returns/Dispatch corrections upstream would then
-    never ripple past it.
+    Final reset-safety correction — Opening Stock provenance is no longer
+    inferred from "does the submitted value differ from live derivation".
+    That heuristic was the root of a real, recurring corruption: ANY
+    routine resave of an already-anchored row (a repaired legacy anchor,
+    an existing correction, or — the specific bug this fixes — a row a
+    Reset Daily Values action just cleared to a non-authoritative marker)
+    could silently promote a stale or merely-different submission into a
+    permanent, unconditionally-trusted manual_correction, even from a
+    user who never intended to correct anything (an old browser tab
+    resubmitting a reset-left zero; a Manager just paging through and
+    saving). Opening Stock now becomes manual_correction ONLY when the
+    caller explicitly says so (`opening_stock_explicitly_edited=True`)
+    AND is actually authorized for it — validated HERE, server-side,
+    never trusted from the client alone (see `can_explicitly_edit` below).
 
-    Production hotfix, section 3/7 — WHICH kind of anchor a row becomes is
-    now recorded via opening_stock_source, not just a bare True/False:
-      - opening_locked is None (nothing before this period at all, not
-        even finalized movement) -> initial_manual. Any role may set
-        this; it's the genuine starting point. Only trusted live for as
-        long as it truly has nothing before it -- see _is_trusted_anchor()
-        -- so a later out-of-order historical entry doesn't leave it
-        stuck.
-      - An elevated user's submission genuinely differs from live
-        derivation -> manual_correction. Trusted unconditionally, forever
-        -- a deliberate correction is never second-guessed by history.
-      - Everything else -> derived. Never an anchor.
+    Effective behavior for a period that is NOT this product's first-ever
+    entry (see `opening_locked is None` below for that case, unchanged):
+      - explicit_edit True (authorized + flagged + a value was actually
+        submitted) -> OPENING_STOCK_SOURCE_MANUAL_CORRECTION, using the
+        submitted value. Requires `opening_correction_reason`. Records a
+        dedicated "correct_opening_stock" audit entry (before/after
+        values, actor, reason) in addition to the caller's own generic
+        upsert audit entry.
+      - explicit_edit False, and the row is ALREADY unconditionally
+        trusted (manual_correction or legacy_migrated_opening) ->
+        preserved BYTE-FOR-BYTE — opening_cartons/packs/pieces/
+        opening_base_qty/opening_stock_source/opening_stock_is_override
+        are none of them touched, and whatever was submitted (a stale
+        zero, an outdated positive or negative number, anything) is
+        completely ignored. This is what makes a repaired legacy anchor,
+        or a genuine correction, immune to a later routine save.
+      - explicit_edit False, row is non-authoritative (derived,
+        reset_created, legacy_inferred, or an initial_manual/
+        legacy_migrated_opening that's since been live-disqualified by
+        earlier history — see _is_trusted_anchor()) -> always refreshes
+        to the current live-derived truth (self-healing, exactly as
+        before this correction) — again, never the raw submission.
+
     See daily_figure_view()'s _is_trusted_anchor() call, which is the one
     place that actually decides whether a row's stored Opening is used.
     """
-    from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+    from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN
+    from webapp.services import operator_permissions_service as permissions_svc
 
     rule = product.current_packaging_rule()
     if rule is None:
@@ -723,6 +734,14 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
         )
 
     is_elevated = user.role in (ROLE_MANAGER, ROLE_SUPER_ADMIN)
+    # Backend-validated, never trusted from the client alone: an Operator
+    # may only ever explicitly edit Opening Stock if already granted
+    # can_edit_opening (the same permission that already gates their
+    # first-ever-period write at the route layer) — a Viewer never can.
+    can_explicitly_edit = is_elevated or (
+        user.role == ROLE_OPERATOR and permissions_svc.get_permissions().can_edit_opening
+    )
+
     figure = DailyFigure.query.filter_by(product_id=product.id, date=date, shift=shift).first()
     opening_locked = get_prior_closing_base_qty(
         product.id, date, shift, exclude_id=figure.id if figure else None
@@ -736,40 +755,52 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
         except PackagingError as e:
             raise StockError(str(e)) from e
 
+    explicit_edit = bool(opening_stock_explicitly_edited) and can_explicitly_edit and submitted_base_qty is not None
+    existing_trusted = figure is not None and figure.opening_stock_source in OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR
+
     if opening_locked is None:
         # Genuinely the first-ever period — an explicit value is required,
-        # from any role, and always becomes the anchor.
+        # from any role, and always becomes the anchor. Unaffected by the
+        # explicit-edit flag: this is the genuine starting point, not a
+        # correction of anything.
         if submitted_base_qty is None:
             raise StockError("Opening stock is required for this product's first-ever entry")
-        new_source = OPENING_STOCK_SOURCE_INITIAL_MANUAL
-        opening_base = submitted_base_qty
-    elif is_elevated and submitted_base_qty is not None and submitted_base_qty != opening_locked:
-        new_source = OPENING_STOCK_SOURCE_MANUAL_CORRECTION
-        opening_base = submitted_base_qty
+        new_source, opening_base = OPENING_STOCK_SOURCE_INITIAL_MANUAL, submitted_base_qty
+    elif explicit_edit:
+        if not opening_correction_reason:
+            raise StockError("A reason is required to explicitly correct Opening Stock")
+        new_source, opening_base = OPENING_STOCK_SOURCE_MANUAL_CORRECTION, submitted_base_qty
+    elif existing_trusted:
+        new_source, opening_base = figure.opening_stock_source, figure.opening_base_qty
     else:
-        new_source = OPENING_STOCK_SOURCE_DERIVED
-        opening_base = opening_locked
+        new_source, opening_base = OPENING_STOCK_SOURCE_DERIVED, opening_locked
+
+    before_correction = None
+    if explicit_edit:
+        # Captured before any mutation below — whatever this period's
+        # Opening genuinely was a moment ago, whether that's an existing
+        # row's own stored value or (for a period that had no DailyFigure
+        # row at all yet) the value pure derivation would have produced.
+        before_correction = (
+            {"opening_base_qty": figure.opening_base_qty, "opening_stock_source": figure.opening_stock_source}
+            if figure is not None
+            else {"opening_base_qty": opening_locked, "opening_stock_source": OPENING_STOCK_SOURCE_DERIVED}
+        )
 
     if figure is None:
         figure = DailyFigure(product_id=product.id, date=date, shift=shift, created_by=user.id)
         db.session.add(figure)
 
-    if new_source != OPENING_STOCK_SOURCE_DERIVED:
-        figure.opening_cartons, figure.opening_packs, figure.opening_pieces = oc, op, opc
-        figure.opening_base_qty = opening_base
-        figure.opening_stock_source = new_source
-        figure.opening_stock_is_override = True
-    else:
-        # Not a correction — always refresh the display split to the
-        # current live-derived truth (self-healing: any write to a
-        # non-manual_correction row, even an unrelated notes edit,
-        # corrects a previously-stale value AND its stored provenance --
-        # an initial_manual/legacy_inferred row that's since been
-        # live-disqualified by earlier history (see _is_trusted_anchor())
-        # gets its stored label corrected to "derived" too, the moment
-        # anyone next saves it. Only manual_correction is protected from
-        # this -- only a fresh override write (above) or Reset Daily
-        # Values may retire a real correction.
+    if existing_trusted and not explicit_edit and opening_locked is not None:
+        # Routine save over an already-authoritative anchor — preserve
+        # exactly, touch nothing about Opening at all.
+        pass
+    elif new_source == OPENING_STOCK_SOURCE_DERIVED:
+        # Self-healing: always refresh the display split to the current
+        # live-derived truth, never the raw submission. See
+        # OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR's docstring — only
+        # manual_correction/legacy_migrated_opening are ever exempt from
+        # this, handled by the `existing_trusted` branch above.
         try:
             split = from_base_units(opening_base, rule)
         except PackagingError:
@@ -787,15 +818,34 @@ def upsert_daily_figure(*, product, date, shift, opening, notes, user):
             split = (0, 0, 0)
         figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
         figure.opening_base_qty = opening_base
-        if figure.opening_stock_source != OPENING_STOCK_SOURCE_MANUAL_CORRECTION:
-            figure.opening_stock_source = OPENING_STOCK_SOURCE_DERIVED
-            figure.opening_stock_is_override = False
+        figure.opening_stock_source = OPENING_STOCK_SOURCE_DERIVED
+        figure.opening_stock_is_override = False
+    else:
+        # new_source is INITIAL_MANUAL or (explicit_edit) MANUAL_CORRECTION
+        # — the submitted value is authoritative.
+        figure.opening_cartons, figure.opening_packs, figure.opening_pieces = oc, op, opc
+        figure.opening_base_qty = opening_base
+        figure.opening_stock_source = new_source
+        figure.opening_stock_is_override = True
 
     figure.packaging_rule_id = rule.id
     figure.notes = notes
     figure.updated_by = user.id
 
     db.session.flush()
+
+    if explicit_edit and before_correction is not None:
+        from webapp.services.audit_service import record_audit
+        record_audit(
+            user, "correct_opening_stock", "daily_figure", entity_id=figure.id,
+            before=before_correction,
+            after={
+                "opening_base_qty": figure.opening_base_qty,
+                "opening_stock_source": figure.opening_stock_source,
+                "reason": opening_correction_reason,
+            },
+        )
+
     return figure
 
 

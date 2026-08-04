@@ -320,10 +320,13 @@ def test_real_later_manual_correction_is_preserved(client, super_admin, app):
     client.post("/api/admin/legacy/migrate")
     _force_initial_manual(app, p["id"], "2026-07-20", "Day")
 
-    # A real Manager correction supersedes the migrated row entirely.
+    # A real, explicit Manager correction supersedes the migrated row
+    # entirely — final reset-safety correction, section 4: an explicit
+    # edit-intent flag and reason are now required.
     client.post("/api/daily-figures", json={
         "product_id": p["id"], "date": "2026-07-20", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
 
     with app.app_context():

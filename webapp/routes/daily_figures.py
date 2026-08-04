@@ -122,6 +122,17 @@ def upsert():
         figure = svc.upsert_daily_figure(
             product=product, date=d["date"], shift=d["shift"],
             opening=d.get("opening"), notes=d.get("notes"), user=user,
+            # Final reset-safety correction — an ordinary Daily Figures
+            # save (navigation, review, notes, status changes, No
+            # Activity, routine paging) omits/sends false here, exactly
+            # as every one of those flows already does today, since none
+            # of them was ever updated to send anything else. Only a
+            # dedicated Opening Stock correction interaction sends true —
+            # see static/index.html's correctOpeningStock() flow. Role
+            # authorization is re-validated inside upsert_daily_figure()
+            # itself, never trusted from this flag alone.
+            opening_stock_explicitly_edited=bool(d.get("opening_stock_explicitly_edited")),
+            opening_correction_reason=d.get("opening_correction_reason"),
         )
     except StockError as e:
         db.session.rollback()

@@ -39,12 +39,38 @@ OPENING_STOCK_SOURCE_LEGACY_INFERRED = "legacy_inferred"
 # opening_stock_source is a plain String(20) column with no CHECK
 # constraint (see migrations/versions/06658bb730c0).
 OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING = "legacy_migrated_opening"
+# Urgent correction, "reset-created zero" investigation — Reset Daily
+# Values (see daily_reset_service.execute(), both modes) zeroes a row's
+# Opening Stock and un-anchors it. It previously wrote plain `derived`,
+# which is indistinguishable from an ordinary, organically-derived row —
+# giving no durable signal that THIS particular zero came from a reset
+# rather than real history. That mattered because a reset-cleared row's
+# input field is pre-filled from the correctly LIVE-RE-DERIVED value (see
+# stock_service.daily_figure_view()), not the stored zero, so it usually
+# self-heals on the next view — but if an elevated user's next save
+# nonetheless resubmits an explicit value that differs from that live
+# derivation (most often exactly 0, matching what the reset left, typed
+# because they believed "0" was what Reset was supposed to mean), the
+# existing manual-correction rule (upsert_daily_figure() — "an elevated
+# submission that genuinely differs from derivation becomes an
+# unconditionally-trusted correction") faithfully — but wrongly, given the
+# real intent — locks that reset artifact in forever, permanently blocking
+# any later legacy-anchor restoration. `reset_created` is a *non-
+# authoritative reset marker* (never anchor-eligible, always live-
+# revalidated exactly like `derived`) that survives at least until the
+# next save, so legacy_migration.py's audit can cross-reference it (and,
+# once superseded by manual_correction, the AuditLog's own
+# `reset_daily_values` record) to recognize a reset-created zero even
+# after it has been mislabeled — see audit_opening_migration()'s
+# CLASS_RESET_CREATED_ZERO / CLASS_MISSING_ANCHOR_AFTER_RESET.
+OPENING_STOCK_SOURCE_RESET_CREATED = "reset_created"
 OPENING_STOCK_SOURCES = [
     OPENING_STOCK_SOURCE_DERIVED,
     OPENING_STOCK_SOURCE_INITIAL_MANUAL,
     OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
     OPENING_STOCK_SOURCE_LEGACY_INFERRED,
     OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
+    OPENING_STOCK_SOURCE_RESET_CREATED,
 ]
 # Sources a row must have to even be a *candidate* anchor at all — every
 # other source is invisible to anchor lookup, exactly like "no row exists

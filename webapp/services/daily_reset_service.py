@@ -31,11 +31,35 @@ Either mode's product-scoped effect is completely independent of every
 other product — a reset never touches a product outside its selected
 scope, and Mode B's source-record surgery never touches another product's
 lines within a shared multi-product record.
+
+Urgent correction, "reset-created zero" investigation — both modes clear
+Opening Stock the same way: to exactly 0, and to
+OPENING_STOCK_SOURCE_RESET_CREATED, a *non-authoritative reset marker*
+(never anchor-eligible — see webapp/models/daily_figure.py), NOT
+`derived` as before. This is deliberate, not a quantity/authority change:
+a reset-cleared row still self-heals on the very next view (see
+stock_service.daily_figure_view() — a non-anchor-eligible source is
+always live-re-derived from whatever real history precedes it, so the
+Opening shown is immediately correct again, not 0). What changed is
+durability of the SIGNAL: `reset_created` survives at least until the
+next save, giving webapp/services/legacy_migration.py's audit tool a
+reliable way to recognize a reset-created zero even if a later elevated
+save mistakenly resubmits that same 0 as an explicit override — which
+upsert_daily_figure() (correctly, given only what IT can see) would
+otherwise lock in forever as an unconditionally-trusted manual_correction,
+permanently blocking any legacy-anchor restoration. Reset itself has
+never directly written manual_correction — that mislabeling can only
+happen via a SEPARATE, later save — but the reset marker is what makes
+that later mistake detectable and safely reversible instead of invisible.
+Full Reset's own additional effect (source-record neutralization) is
+unchanged and orthogonal to this: it removes this exact period's own
+movement records; it does not, and never did, touch an earlier period's
+Opening Stock anchor.
 """
 from datetime import datetime, timedelta
 
 from webapp.extensions import db
-from webapp.models.daily_figure import OPENING_STOCK_SOURCE_DERIVED, DailyFigure, StockAdjustment
+from webapp.models.daily_figure import OPENING_STOCK_SOURCE_RESET_CREATED, DailyFigure, StockAdjustment
 from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, SHIFTS, STATUS_VOID as DISPATCH_VOID, Dispatch, DispatchLine
 from webapp.models.product import Product
 from webapp.models.production_record import (
@@ -286,6 +310,13 @@ def preview(date, shift, product_id, actor, mode=MODE_FIGURES_ONLY):
             # preview never lumps a genuine historical ledger figure in
             # with an ordinary Manager entry.
             "is_legacy_migrated_opening": bool(figure and figure.opening_stock_source == "legacy_migrated_opening"),
+            # Urgent correction, "reset-created zero" investigation — a row
+            # still literally carrying the non-authoritative reset marker
+            # (see OPENING_STOCK_SOURCE_RESET_CREATED), shown here so a
+            # Manager previewing ANOTHER reset over an already-reset period
+            # can see that plainly, rather than it looking like an ordinary
+            # derived row.
+            "is_reset_created": bool(figure and figure.opening_stock_source == "reset_created"),
             "legacy_production_component": figure.production_base_qty if figure is not None else 0,
             "legacy_returns_component": figure.return_base_qty if figure is not None else 0,
             "has_notes": bool(figure and figure.notes),
@@ -455,22 +486,54 @@ def execute(date, shift, product_id, reason, actor, mode=MODE_FIGURES_ONLY, conf
                 "opening_stock_source": figure.opening_stock_source,
                 "notes": figure.notes,
             }
-            figure.opening_cartons = 0
-            figure.opening_packs = 0
-            figure.opening_pieces = 0
-            figure.opening_base_qty = 0
-            # The repair mechanism for a stuck/stale row (Stage 8
-            # correction): clearing the anchor classification, not just
-            # the quantity, means carry-forward stops trusting this row at
-            # all and goes back to deriving this period live from whatever
-            # real anchor precedes it. This is the one place besides an
-            # explicit correction write that may retire a manual_correction
-            # too — a Manager/Super Administrator reset is itself a
-            # deliberate, audited override of whatever was there before.
-            figure.opening_stock_source = OPENING_STOCK_SOURCE_DERIVED
-            figure.opening_stock_is_override = False
-            figure.notes = None
-            figure.updated_by = actor.id
+            # Final reset-safety correction, section 2/3 — MODE_FIGURES_ONLY
+            # ("Daily Figures Status Only") no longer touches a single
+            # Opening Stock column, Production/Returns/Issued, or any
+            # source-book record: ONLY the workflow layer below (entry
+            # status, review state) is cleared. This is the fix for the
+            # actual root cause of recurring corruption — even the
+            # non-authoritative `reset_created` marker from the prior
+            # round could still be resubmitted and misread as a deliberate
+            # edit by a later save; the real fix is to never zero Opening
+            # Stock at all for a status-only reset in the first place. See
+            # stock_service.upsert_daily_figure()'s explicit-edit-intent
+            # gating for the complementary, second half of this fix (a
+            # stale/routine resave can no longer promote ANY row —
+            # including one MODE_FULL below still legitimately clears —
+            # into manual_correction).
+            #
+            # MODE_FULL ("Full Reset") still clears Opening Stock — that
+            # is its whole point, starting the period over — but never to
+            # an authoritative zero: it is RECALCULATED from the real
+            # previous chronological Closing Stock (0 only if genuinely
+            # nothing precedes it), stored as the non-authoritative
+            # `reset_created` marker (never anchor-eligible, always
+            # live-revalidated, exactly like `derived` — see
+            # OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR). The live API
+            # response already reflects this correctly-derived value
+            # immediately, and a later routine save can never promote it
+            # into an authoritative correction (see upsert_daily_figure()).
+            if mode == MODE_FULL:
+                from webapp.services import stock_service as svc
+                prior_closing = svc.get_prior_closing_base_qty(product.id, date, shift, exclude_id=figure.id)
+                recalculated_opening = prior_closing if prior_closing is not None else 0
+                rule = product.current_packaging_rule()
+                try:
+                    split = svc.from_base_units(recalculated_opening, rule) if rule else (0, 0, 0)
+                except svc.PackagingError:
+                    # Same negative-stock policy as upsert_daily_figure()'s
+                    # own DERIVED branch — the stored display columns
+                    # can't split a negative count directly; opening_base_qty
+                    # below still carries the true (possibly negative) value.
+                    split = (0, 0, 0)
+                figure.opening_cartons, figure.opening_packs, figure.opening_pieces = split
+                figure.opening_base_qty = recalculated_opening
+                figure.opening_stock_source = OPENING_STOCK_SOURCE_RESET_CREATED
+                figure.opening_stock_is_override = False
+                figure.notes = None
+                figure.updated_by = actor.id
+            # MODE_FIGURES_ONLY: no DailyFigure column is written at all —
+            # not Opening Stock, not notes, nothing.
 
         daily_entry_status_service.clear_for_reset(date, shift, product.id, actor, reason)
 

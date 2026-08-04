@@ -306,6 +306,10 @@ def test_voiding_a_historical_dispatch_updates_later_balances(client, setup):
 # =====================================================================
 
 def test_elevated_opening_correction_becomes_a_new_anchor(client, setup):
+    """Final reset-safety correction, section 4 — an elevated submission
+    only becomes a new anchor with an explicit edit-intent flag and
+    reason; merely differing from live derivation is no longer enough by
+    itself."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-01", "shift": "Day",
@@ -315,6 +319,7 @@ def test_elevated_opening_correction_becomes_a_new_anchor(client, setup):
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-15", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     assert res.status_code == 200
     assert res.get_json()["opening"]["cartons"] == 500  # honored, not silently forced
@@ -329,6 +334,7 @@ def test_later_anchor_supersedes_prior_carry_forward_for_subsequent_periods(clie
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-15", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     # A period after the new anchor derives from IT, not the original.
     assert _opening_cartons(client, pid, "2026-08-01") == 500

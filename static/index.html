@@ -606,8 +606,28 @@ function hasUnsavedChanges(rule, view, showOpeningInputs){
 async function saveCurrentAndAdvance(product, date, shift, rule, view, showOpeningInputs){
   const opening = showOpeningInputs ? readQtyInputs('opening', rule) : null;
 
+  // Final reset-safety correction, section 4 — Opening Stock only becomes
+  // an authoritative manual_correction when the user actually TYPED a
+  // different value into an already-derived period (never for the
+  // genuine first-ever-period entry, which view.opening_editable already
+  // distinguishes — see the "Correcting this becomes a new stock-balance
+  // anchor" hint just above this field). A routine save/navigation with
+  // nothing changed sends no explicit-edit intent at all, exactly like
+  // every other action on this page (notes, status, No Activity, review).
+  const isCorrection = showOpeningInputs && !view.opening_editable && hasUnsavedChanges(rule, view, showOpeningInputs);
+  let openingCorrectionReason = null;
+  if(isCorrection){
+    openingCorrectionReason = prompt('Reason for this Opening Stock correction (required):');
+    if(!openingCorrectionReason){
+      toast('A reason is required to correct Opening Stock — change was not saved');
+      return;
+    }
+  }
+
   const {status, data} = await apiPost('/api/daily-figures', {
     product_id: product.id, date, shift, opening,
+    opening_stock_explicitly_edited: isCorrection,
+    opening_correction_reason: openingCorrectionReason,
   });
   if(status !== 200){
     toast(data.error || 'Could not save — check the values');
@@ -630,20 +650,27 @@ async function saveAndAdvanceReview(product, date, shift, rule, view, showOpenin
   const edited = showOpeningInputs && hasUnsavedChanges(rule, view, showOpeningInputs);
   let reason = null;
   if(edited){
+    // Final reset-safety correction, section 4/6 — the backend now
+    // requires a reason WITH the Opening Stock correction itself (an
+    // explicit-edit-intent save), not deferred until review submission
+    // as before. Declining is still fine — the edit is simply not saved,
+    // and the reviewer can return to this product later.
+    reason = prompt('Reason for this correction (required):');
+    if(!reason){
+      toast('A reason is required to correct Opening Stock — change was not saved');
+      return;
+    }
     const opening = readQtyInputs('opening', rule);
     const {status, data} = await apiPost('/api/daily-figures', {
       product_id: product.id, date, shift, opening, review_mode: true,
+      opening_stock_explicitly_edited: true,
+      opening_correction_reason: reason,
     });
     if(status !== 200){
       toast(data.error || 'Could not save — check the values');
       if(status === 409) renderEntryCard();
       return;
     }
-    // Section 12: a correction reason is required before the review can
-    // be SUBMITTED, not before moving on — declining here is fine, the
-    // final review screen will block submission and let the reviewer
-    // return to this product to supply one later.
-    reason = prompt('Reason for this correction (required before submitting the review):');
   }
   const {status: rStatus, data: rData} = await apiPost('/api/daily-review/mark-reviewed', {
     date, shift, product_id: product.id, edited, reason,

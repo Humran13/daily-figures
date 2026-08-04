@@ -32,6 +32,7 @@ from webapp.models.daily_figure import (
     OPENING_STOCK_SOURCE_INITIAL_MANUAL,
     OPENING_STOCK_SOURCE_LEGACY_INFERRED,
     OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
+    OPENING_STOCK_SOURCE_RESET_CREATED,
     DailyFigure,
 )
 
@@ -299,12 +300,17 @@ def test_ordinary_manager_save_does_not_create_an_override(client, login_as, set
 
 
 def test_explicit_manager_correction_does_create_an_override(client, login_as, setup):
+    """Final reset-safety correction, section 4 — Opening Stock becomes
+    manual_correction only when the caller explicitly says so
+    (opening_stock_explicitly_edited=True) and supplies a reason; merely
+    differing from live derivation is no longer sufficient by itself."""
     pid = setup["product"]["id"]
     _finalize_production(client, pid, "2026-07-30", "Day", 12)
     login_as("mgr_corp_2", "password123", "manager")
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-01", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0}, "notes": "physical stock count correction",
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical stock count correction",
     })
     assert res.status_code == 200
     assert res.get_json()["opening"]["cartons"] == 500
@@ -317,9 +323,24 @@ def test_explicit_super_admin_correction_does_create_an_override(client, setup):
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-01", "shift": "Day",
         "opening": {"cartons": 777, "packs": 0, "pieces": 0}, "notes": "physical stock count correction",
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical stock count correction",
     })
     assert res.status_code == 200
     assert _figure(pid, "2026-08-01").opening_stock_source == OPENING_STOCK_SOURCE_MANUAL_CORRECTION
+
+
+def test_explicit_edit_flag_without_a_role_still_requires_reason(client, setup):
+    """A missing opening_correction_reason is rejected even for an
+    otherwise-authorized elevated user — final reset-safety correction,
+    section 4/6."""
+    pid = setup["product"]["id"]
+    _finalize_production(client, pid, "2026-07-30", "Day", 12)
+    res = client.post("/api/daily-figures", json={
+        "product_id": pid, "date": "2026-08-01", "shift": "Day",
+        "opening": {"cartons": 777, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True,
+    })
+    assert res.status_code == 400
 
 
 def test_manual_correction_survives_movement_entered_before_it(client, setup):
@@ -335,11 +356,13 @@ def test_manual_correction_survives_movement_entered_before_it(client, setup):
         "product_id": pid, "date": "2026-07-01", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
     })
-    # A deliberate correction on 1 August: derives to 10 (no movement yet
-    # between 07-01 and 08-01), submitted as 500 — genuinely differs.
+    # A deliberate, explicit correction on 1 August: derives to 10 (no
+    # movement yet between 07-01 and 08-01), submitted as 500 — genuinely
+    # differs, and explicitly flagged as a correction with a reason.
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-01", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     assert _figure(pid, "2026-08-01").opening_stock_source == OPENING_STOCK_SOURCE_MANUAL_CORRECTION
     _finalize_production(client, pid, "2026-07-30", "Day", 999)  # entered AFTER the correction
@@ -347,6 +370,34 @@ def test_manual_correction_survives_movement_entered_before_it(client, setup):
 
 
 def test_reset_does_not_create_an_override(client, setup):
+    """Final reset-safety correction, section 2/3 — the default mode
+    (figures_only / Status Only) never touches Opening Stock at all
+    anymore, so a routine (non-explicit) submission that would previously
+    have been silently ignored into `derived` stays exactly that, and
+    reset leaves it fully untouched too — no override is ever created by
+    either the routine save or the reset."""
+    pid = setup["product"]["id"]
+    client.post("/api/daily-figures", json={
+        "product_id": pid, "date": "2026-07-01", "shift": "Day",
+        "opening": {"cartons": 10, "packs": 0, "pieces": 0},
+    })
+    client.post("/api/daily-figures", json={
+        "product_id": pid, "date": "2026-07-15", "shift": "Day",
+        "opening": {"cartons": 500, "packs": 0, "pieces": 0},  # no explicit-edit flag — ignored
+    })
+    assert _figure(pid, "2026-07-15").opening_stock_source == OPENING_STOCK_SOURCE_DERIVED
+    client.post("/api/daily-reset", json={
+        "date": "2026-07-15", "shift": "Day", "product_id": pid, "reason": "test",
+    })
+    assert _figure(pid, "2026-07-15").opening_stock_source == OPENING_STOCK_SOURCE_DERIVED
+
+
+def test_full_reset_recalculates_a_prior_override_to_a_non_authoritative_marker(client, setup):
+    """Full Reset (unlike Status Only) still legitimately clears Opening
+    Stock for its OWN target period — even a genuine prior correction —
+    but never to an authoritative zero: it is recalculated from the real
+    previous chronological Closing Stock and stored non-authoritatively
+    (reset_created), never manual_correction."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-01", "shift": "Day",
@@ -355,11 +406,17 @@ def test_reset_does_not_create_an_override(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-15", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
+    assert _figure(pid, "2026-07-15").opening_stock_source == OPENING_STOCK_SOURCE_MANUAL_CORRECTION
+
     client.post("/api/daily-reset", json={
-        "date": "2026-07-15", "shift": "Day", "product_id": pid, "reason": "test",
+        "date": "2026-07-15", "shift": "Day", "product_id": pid, "mode": "full", "reason": "test",
+        "confirmation_text": "FULL RESET 2026-07-15 DAY",
     })
-    assert _figure(pid, "2026-07-15").opening_stock_source == OPENING_STOCK_SOURCE_DERIVED
+    figure = _figure(pid, "2026-07-15")
+    assert figure.opening_stock_source == OPENING_STOCK_SOURCE_RESET_CREATED
+    assert figure.opening_base_qty == 1000  # recalculated from 07-01's real Closing (10 cartons), never 0
 
 
 def test_no_activity_does_not_create_an_override(client, login_as, setup):
@@ -399,6 +456,7 @@ def test_genuine_historical_corrections_remain_preserved(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-15", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     assert _view(client, pid, "2026-08-01")["opening"]["cartons"] == 500
 

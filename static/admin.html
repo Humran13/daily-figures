@@ -348,12 +348,12 @@
         <p class="small">Two reset modes are available for one Date + Shift, and either one product or every product:</p>
         <div class="row">
           <label><input type="radio" name="resetMode" id="resetModeFiguresOnly" value="figures_only" checked>
-            <strong>Reset Daily Figures Status Only</strong> — clears completion/No Activity status, in-progress locks, notes, and non-authoritative Opening Stock. Existing Dispatch, Returns, and Production records remain and continue affecting stock balances.
+            <strong>Reset Daily Figures Status Only</strong> — this resets workflow/review status only (completion/No Activity status, in-progress locks, review session state). Stock quantities and source records are unchanged: Opening Stock, Production, Returns, Issued, and Dispatch/Returns/Production records are all left exactly as they are.
           </label>
         </div>
         <div class="row">
           <label><input type="radio" name="resetMode" id="resetModeFull" value="full">
-            <strong>Full Reset — Start This Period Again</strong> — does everything above, AND neutralizes (voids, or removes the affected product's lines from) matching finalized Dispatch, Returns, and Production records for this exact Date + Shift, so the period can be entered again from scratch. Neutralized records remain traceable in History — never hard-deleted.
+            <strong>Full Reset — Start This Period Again</strong> — this resets applicable current-period activity: does everything above, AND neutralizes (voids, or removes the affected product's lines from) matching finalized Dispatch, Returns, and Production records for this exact Date + Shift, so the period can be entered again from scratch. Neutralized records remain traceable in History — never hard-deleted. Opening Stock will be recalculated from the previous Closing Stock and will not be replaced with an authoritative zero.
           </label>
         </div>
         <div class="row">

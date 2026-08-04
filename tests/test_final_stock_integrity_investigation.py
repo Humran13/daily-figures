@@ -306,6 +306,7 @@ def test_genuine_manual_correction_remains_authoritative(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": p["id"], "date": "2026-07-21", "shift": "Day",
         "opening": {"cartons": 60, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     # Earlier history changes after the correction — the correction must
     # stay authoritative (never second-guessed by history).
@@ -335,13 +336,19 @@ def test_legacy_inferred_row_is_not_automatically_trusted_forever(client, setup,
 
 
 def test_reset_created_row_is_not_trusted(client, setup):
+    """Final reset-safety correction, section 2/3 — the default Status
+    Only mode no longer touches Opening Stock at all (so it can no longer
+    un-anchor an existing row); Full Reset is now the mode that
+    legitimately clears/recalculates a period's Opening Stock, and the
+    resulting reset_created marker is still never trusted as an anchor."""
     p = _make_product(client, "Provenance Reset Not Trusted")
     client.post("/api/daily-figures", json={
         "product_id": p["id"], "date": "2026-07-10", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
     })
     client.post("/api/daily-reset", json={
-        "date": "2026-07-10", "shift": "Day", "product_id": p["id"], "reason": "restart", "mode": "figures_only",
+        "date": "2026-07-10", "shift": "Day", "product_id": p["id"], "reason": "restart", "mode": "full",
+        "confirmation_text": "FULL RESET 2026-07-10 DAY",
     })
     _production(client, p["id"], "2026-07-19", "Day", 5)
     assert _view(client, p["id"], "2026-08-03")["opening"]["base_qty"] == 500  # derived from production, not from the reset row

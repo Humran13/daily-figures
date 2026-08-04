@@ -301,6 +301,7 @@ def test_genuine_manager_correction_remains_an_override(client, login_as):
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-15", "shift": "Day",
         "opening": {"cartons": 500, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     assert res.status_code == 200
     assert res.get_json()["opening"]["cartons"] == 500
@@ -317,6 +318,7 @@ def test_genuine_super_admin_correction_remains_an_override(client, setup):
     res = client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-07-15", "shift": "Day",
         "opening": {"cartons": 777, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     assert res.status_code == 200
     figure = DailyFigure.query.filter_by(product_id=pid, date="2026-07-15", shift="Day").first()

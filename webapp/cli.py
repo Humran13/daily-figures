@@ -143,8 +143,13 @@ def register_cli(app):
         """Read-only audit of every legacy `entries` row's Opening Stock
         migration — decodes and reconciles the full spreadsheet equation
         (Opening + Production + Returns - Issued = Closing) for each row,
-        cross-references the current DailyFigure/StockAdjustment state,
-        and classifies every row. Never modifies anything. Example:
+        cross-references the current DailyFigure/StockAdjustment state
+        AND (since the urgent "reset-created zero" correction) any
+        `reset_daily_values` AuditLog record for that exact period, and
+        classifies every row. A later period's negative Closing is never
+        confirmed CLASS_GENUINE_NEGATIVE until every earlier period for
+        that same product is proven clean. Never modifies anything.
+        Example:
 
         \b
         flask audit-legacy-opening-migration
@@ -178,7 +183,16 @@ def register_cli(app):
                 )
             click.echo(f"  CLASSIFICATION: {entry.get('classification')}")
             click.echo(f"  reason: {entry.get('reason')}")
-            if entry.get("classification") == legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR:
+            if entry.get("reset_evidence"):
+                re_ = entry["reset_evidence"]
+                click.echo(
+                    f"  reset evidence: mode={re_['mode']} actor={re_['actor_username']} at={re_['reset_at']} "
+                    f"reason=\"{re_['reason']}\""
+                )
+            if entry.get("classification") in (
+                legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR,
+                legacy_migration_service.CLASS_MISSING_ANCHOR_AFTER_RESET,
+            ):
                 click.echo(
                     f"  projected_closing_after_repair={entry.get('projected_closing_after_repair')} "
                     f"({entry.get('projected_closing_after_repair_label')})  "
@@ -189,10 +203,15 @@ def register_cli(app):
         click.echo(f"Total legacy rows audited: {len(report)}")
         for classification, count in sorted(counts.items()):
             click.echo(f"  {classification}: {count}")
+        repairable = (
+            counts.get(legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR, 0)
+            + counts.get(legacy_migration_service.CLASS_MISSING_ANCHOR_AFTER_RESET, 0)
+        )
         click.echo(
             f"\nRun `flask repair-legacy-opening-migration` (dry run by default) to see the exact repair "
-            f"candidates among the {counts.get(legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR, 0)} "
-            f"'{legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR}' row(s) above."
+            f"candidates among the {repairable} "
+            f"'{legacy_migration_service.CLASS_MISSING_OPENING_ANCHOR}'/"
+            f"'{legacy_migration_service.CLASS_MISSING_ANCHOR_AFTER_RESET}' row(s) above."
         )
 
     @app.cli.command("repair-legacy-opening-migration")
@@ -201,11 +220,17 @@ def register_cli(app):
     @click.option("--preview-token", "preview_token", default=None, help="The token printed by the dry run — required with --apply.")
     @click.option("--actor-username", "actor_username", default=None, help="An existing user to attribute the repair to — required with --apply.")
     def repair_legacy_opening_migration_command(product_id, apply_, preview_token, actor_username):
-        """Repairs ONLY proven-missing legacy Opening Stock anchors — a
-        pure provenance reclassification (opening_stock_source ->
-        legacy_migrated_opening), never a quantity change, never touching
-        a genuine later manual correction, a reconciliation mismatch, or
-        a genuine negative legacy balance. Dry run by default.
+        """Repairs ONLY two proven-safe categories: CLASS_MISSING_OPENING_
+        ANCHOR (a pure provenance reclassification, opening_stock_source
+        -> legacy_migrated_opening, never a quantity change) and, since
+        the urgent "reset-created zero" correction,
+        CLASS_MISSING_ANCHOR_AFTER_RESET (the same reclassification PLUS
+        restoring opening_base_qty/cartons/packs/pieces to the proven
+        legacy value, for a row a Reset Daily Values action zeroed).
+        Never touches a genuine later manual correction, a reconciliation
+        mismatch, a genuine negative legacy balance, a plain reset-created
+        zero with nothing to restore, or anything ambiguous. Dry run by
+        default.
 
         \b
         flask repair-legacy-opening-migration --product-id 2
@@ -214,13 +239,19 @@ def register_cli(app):
         if not apply_:
             result = legacy_migration_service.preview_opening_repair(product_id)
             if result["count"] == 0:
-                click.echo("Nothing to repair — no CLASS_MISSING_OPENING_ANCHOR rows for this scope.")
+                click.echo(
+                    "Nothing to repair — no CLASS_MISSING_OPENING_ANCHOR or "
+                    "CLASS_MISSING_ANCHOR_AFTER_RESET rows for this scope."
+                )
                 return
             click.echo(f"DRY RUN — {result['count']} row(s) would be repaired:\n")
             for c in result["candidates"]:
+                restores_quantity = c["classification"] == legacy_migration_service.CLASS_MISSING_ANCHOR_AFTER_RESET
+                after_opening = c["legacy_base_units"]["opening"] if restores_quantity else c["existing_opening_base_qty"]
                 click.echo(
                     f"  entries.id={c['entries_id']} daily_figure_id={c['existing_daily_figure_id']} "
-                    f"product={c['product_name']} date={c['date']} shift={c['shift']}"
+                    f"product={c['product_name']} date={c['date']} shift={c['shift']} "
+                    f"[{c['classification']}]"
                 )
                 click.echo(f"    {c['reason']}")
                 click.echo(
@@ -228,7 +259,7 @@ def register_cli(app):
                     f"current_closing={c['current_closing_base_qty']}"
                 )
                 click.echo(
-                    f"    after:  source=legacy_migrated_opening opening_base_qty={c['existing_opening_base_qty']} "
+                    f"    after:  source=legacy_migrated_opening opening_base_qty={after_opening} "
                     f"projected_closing={c['projected_closing_after_repair']} ({c['projected_closing_after_repair_label']})"
                 )
             click.echo(f"\nPreview token: {result['preview_token']}")

@@ -69,6 +69,10 @@ def test_manager_can_execute_reset(client, login_as):
 # =====================================================================
 
 def test_super_admin_can_reset_one_product(client, setup):
+    """Final reset-safety correction, section 2 — the default mode
+    (figures_only / "Status Only") no longer zeroes Opening Stock at all;
+    it only clears workflow/review state. The reset call itself must
+    still succeed, but Opening Stock is left exactly as it was."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-01", "shift": "Day",
@@ -79,7 +83,7 @@ def test_super_admin_can_reset_one_product(client, setup):
     })
     assert res.status_code == 200
     view = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
-    assert view["opening"]["base_qty"] == 0
+    assert view["opening"]["base_qty"] == 500  # unchanged — Status Only never touches Opening Stock
 
 
 def test_super_admin_can_reset_all_products_for_a_date_shift(client, setup):
@@ -94,13 +98,15 @@ def test_super_admin_can_reset_all_products_for_a_date_shift(client, setup):
 
 
 def test_other_dates_remain_unchanged(client, setup):
-    """08-04's Opening Stock is deliberately set to a value that differs
-    from what pure carry-forward from 08-03 would derive (7 cartons, not
-    4), so it becomes a genuine independent anchor in its own right — not
-    one that merely happens to match 08-03's carried-forward balance. That
-    way, resetting 08-03 (which un-anchors it — see daily_reset_service.py)
-    is a real test of "reset doesn't affect an unrelated date", rather than
-    coincidentally relying on 08-04 having never been independently
+    """08-04's Opening Stock is deliberately set (via an explicit,
+    authorized correction — final reset-safety correction, section 4) to
+    a value that differs from what pure carry-forward from 08-03 would
+    derive (7 cartons, not 4), so it becomes a genuine independent anchor
+    in its own right — not one that merely happens to match 08-03's
+    carried-forward balance. That way, resetting 08-03 — which, even under
+    the default Status Only mode, no longer touches Opening Stock at all —
+    is a real test of "reset doesn't affect an unrelated date", rather
+    than coincidentally relying on 08-04 having never been independently
     anchored at all."""
     pid = setup["product"]["id"]
     client.post("/api/daily-figures", json={
@@ -110,6 +116,7 @@ def test_other_dates_remain_unchanged(client, setup):
     client.post("/api/daily-figures", json={
         "product_id": pid, "date": "2026-08-04", "shift": "Day",
         "opening": {"cartons": 7, "packs": 0, "pieces": 0},
+        "opening_stock_explicitly_edited": True, "opening_correction_reason": "physical count",
     })
     client.post("/api/daily-reset", json={"date": "2026-08-03", "shift": "Day", "reason": "scoped reset"})
 
