@@ -64,6 +64,22 @@ OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING = "legacy_migrated_opening"
 # after it has been mislabeled — see audit_opening_migration()'s
 # CLASS_RESET_CREATED_ZERO / CLASS_MISSING_ANCHOR_AFTER_RESET.
 OPENING_STOCK_SOURCE_RESET_CREATED = "reset_created"
+# Final stock architecture — clean ledger cutover. Written ONLY by
+# webapp/services/ledger_cutover_service.py's activate_cutover(), exactly
+# once per product at the cutover's own effective Date + Shift, from an
+# explicitly entered and verified physical-count balance — never derived
+# from (and never second-guessed by) any pre-cutover history. Deliberately
+# unconditionally trusted, exactly like manual_correction/
+# legacy_migrated_opening: this is what makes it a hard ledger BOUNDARY —
+# see _find_anchor_figure()/get_prior_closing_base_qty() in
+# stock_service.py. Because those functions already walk backward and stop
+# at the FIRST trusted anchor they find, placing a cutover row at exactly
+# the cutover's own period means every later period's carry-forward search
+# naturally stops there and never reaches pre-cutover data — no other
+# function needed to change to enforce "pre-cutover movements do not
+# affect post-cutover Opening Stock." See DailyFigure.cutover_id below for
+# the traceability link back to the LedgerCutover that created this row.
+OPENING_STOCK_SOURCE_LEDGER_CUTOVER = "ledger_cutover"
 OPENING_STOCK_SOURCES = [
     OPENING_STOCK_SOURCE_DERIVED,
     OPENING_STOCK_SOURCE_INITIAL_MANUAL,
@@ -71,6 +87,7 @@ OPENING_STOCK_SOURCES = [
     OPENING_STOCK_SOURCE_LEGACY_INFERRED,
     OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
     OPENING_STOCK_SOURCE_RESET_CREATED,
+    OPENING_STOCK_SOURCE_LEDGER_CUTOVER,
 ]
 # Sources a row must have to even be a *candidate* anchor at all — every
 # other source is invisible to anchor lookup, exactly like "no row exists
@@ -80,20 +97,23 @@ OPENING_STOCK_SOURCES_ANCHOR_ELIGIBLE = (
     OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
     OPENING_STOCK_SOURCE_LEGACY_INFERRED,
     OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
+    OPENING_STOCK_SOURCE_LEDGER_CUTOVER,
 )
 # Only a deliberate, evidenced correction (the submitted value differed
 # from live derivation at the moment an elevated user saved it — see
-# upsert_daily_figure()) — or a legacy ledger row already reconciled by
-# the business before migration — is trusted UNCONDITIONALLY, regardless
-# of whether finalized movement is later discovered before it. Every
-# other anchor-eligible source is *live-revalidated* on every read: if
-# finalized movement now exists before it, it is no longer trusted (see
+# upsert_daily_figure()) — a legacy ledger row already reconciled by the
+# business before migration — or an activated cutover's own verified
+# physical count — is trusted UNCONDITIONALLY, regardless of whether
+# finalized movement is later discovered before it. Every other anchor-
+# eligible source is *live-revalidated* on every read: if finalized
+# movement now exists before it, it is no longer trusted (see
 # _find_anchor_figure()) — this is what lets a later period entered
 # before its own history recalculate automatically once that history is
 # entered, without needing a fresh migration or a manual reset every time.
 OPENING_STOCK_SOURCES_UNCONDITIONAL_ANCHOR = (
     OPENING_STOCK_SOURCE_MANUAL_CORRECTION,
     OPENING_STOCK_SOURCE_LEGACY_MIGRATED_OPENING,
+    OPENING_STOCK_SOURCE_LEDGER_CUTOVER,
 )
 
 
@@ -150,6 +170,11 @@ class DailyFigure(db.Model):
     #                        revalidated), but kept distinguishable for
     #                        audit/reporting.
     opening_stock_source = db.Column(db.String(20), nullable=False, default=OPENING_STOCK_SOURCE_DERIVED)
+    # Final stock architecture — set only when opening_stock_source is
+    # ledger_cutover; traces this exact row back to the LedgerCutover that
+    # created it (see webapp/models/ledger_cutover.py). Nullable/None for
+    # every other provenance and for all pre-existing rows.
+    cutover_id = db.Column(db.Integer, db.ForeignKey("ledger_cutovers.id"), nullable=True)
 
     return_cartons = db.Column(db.Integer, nullable=False, default=0)
     return_packs = db.Column(db.Integer, nullable=False, default=0)

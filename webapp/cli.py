@@ -13,6 +13,7 @@ from webapp.services.stock_ledger_service import (
     LedgerError, LedgerReconciliationError, audit_legacy_adjustments, build_ledger, first_negative_period,
 )
 from webapp.services import legacy_migration as legacy_migration_service
+from webapp.services import ledger_cutover_service
 
 
 def register_cli(app):
@@ -298,3 +299,125 @@ def register_cli(app):
                 f"-> projected_closing={r['projected_closing_after_repair']}"
             )
         click.echo("\nRe-run `flask stock-ledger` for these products to confirm the repaired ledger.")
+
+    @app.cli.command("preview-ledger-cutover")
+    @click.option("--cutover-id", "cutover_id", required=True, type=int, help="The draft/verified cutover to preview.")
+    def preview_ledger_cutover_command(cutover_id):
+        """Read-only preview of a VERIFIED ledger cutover — no writes.
+        Shows every active product's entered balance, its packaging-aware
+        label, missing products, existing overlapping activated cutovers,
+        the projected first Closing Stock, and the exact preview token
+        `flask activate-ledger-cutover --apply` requires.
+
+        \b
+        flask preview-ledger-cutover --cutover-id 1
+        """
+        try:
+            report = ledger_cutover_service.preview_activation(cutover_id)
+        except ledger_cutover_service.LedgerCutoverError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+
+        c = report["cutover"]
+        click.echo(f"Cutover id={c['id']}  effective={c['effective_date']} {c['effective_shift']}  status={c['status']}")
+        click.echo(f"Reason: {c['reason']}")
+
+        if report["missing_products"]:
+            click.echo("\nMISSING PRODUCTS (must each have a balance before activation):")
+            for p in report["missing_products"]:
+                click.echo(f"  - {p['product_name']} (id={p['product_id']})")
+
+        click.echo(f"\n{'Product':<32} {'Balance':>14} {'Base Units':>12} {'Projected 1st Closing':>24}")
+        for row in report["products"]:
+            if not row["has_balance"]:
+                continue
+            click.echo(
+                f"{row['product_name']:<32} {row['label'] or '':>14} {row['base_qty']:>12} "
+                f"{row['projected_first_closing_label'] or '':>24}"
+            )
+
+        if report["existing_active_cutovers"]:
+            click.echo("\nWARNING: an activated cutover already governs part of this timeline:")
+            for ac in report["existing_active_cutovers"]:
+                click.echo(f"  - id={ac['id']} effective={ac['effective_date']} {ac['effective_shift']}")
+
+        click.echo(f"\nReady to activate: {report['ready']}")
+        click.echo(f"Preview token: {report['preview_token']}")
+        click.echo(
+            "\nNo data was changed. To apply (never run automatically):\n"
+            f"  flask activate-ledger-cutover --cutover-id {cutover_id} --preview-token {report['preview_token']} "
+            f'--actor-username <you> --reason "<reason>" --confirmation-text '
+            f'"ACTIVATE LEDGER CUTOVER {c["effective_date"]} {c["effective_shift"].upper()}" '
+            "--backup-confirmed --apply"
+        )
+
+    @app.cli.command("activate-ledger-cutover")
+    @click.option("--cutover-id", "cutover_id", required=True, type=int, help="The verified cutover to activate.")
+    @click.option("--apply", "apply_", is_flag=True, default=False, help="Actually apply the activation (default is a dry run).")
+    @click.option("--preview-token", "preview_token", default=None, help="The token printed by preview-ledger-cutover — required with --apply.")
+    @click.option("--actor-username", "actor_username", default=None, help="An existing user to attribute the activation to — required with --apply.")
+    @click.option("--reason", "reason", default=None, help="Why this cutover is being activated now — required with --apply.")
+    @click.option("--confirmation-text", "confirmation_text", default=None, help='Must match exactly: "ACTIVATE LEDGER CUTOVER <date> <SHIFT>" — required with --apply.')
+    @click.option("--backup-confirmed", "backup_confirmed", is_flag=True, default=False, help="Explicit attestation that a database backup was taken — required with --apply.")
+    def activate_ledger_cutover_command(cutover_id, apply_, preview_token, actor_username, reason, confirmation_text, backup_confirmed):
+        """Activates a verified ledger cutover — dry-run by default.
+        Writes exactly one unconditionally-trusted DailyFigure anchor row
+        per verified product balance, at the cutover's own effective
+        Date + Shift. Idempotent (refuses a second activation of the same
+        cutover), atomic (single transaction), audited, and refuses a
+        stale preview token or an incomplete balance set. Do not run
+        --apply against a live database without following the safe
+        backup/dry-run/verify/rollback procedure.
+
+        \b
+        flask preview-ledger-cutover --cutover-id 1
+        flask activate-ledger-cutover --cutover-id 1 --preview-token <token> --actor-username root \\
+            --reason "clean cutover" --confirmation-text "ACTIVATE LEDGER CUTOVER 2026-08-01 DAY" \\
+            --backup-confirmed --apply
+        """
+        if not apply_:
+            click.echo(
+                "Dry run — this command only ever writes with --apply. Run "
+                "`flask preview-ledger-cutover --cutover-id <id>` first to see the exact candidate balances "
+                "and the token --apply requires."
+            )
+            return
+
+        missing = [
+            name for name, val in (
+                ("--preview-token", preview_token), ("--actor-username", actor_username),
+                ("--reason", reason), ("--confirmation-text", confirmation_text),
+            ) if not val
+        ]
+        if missing or not backup_confirmed:
+            if not backup_confirmed:
+                missing.append("--backup-confirmed")
+            click.echo(f"Error: --apply requires {', '.join(missing)}.", err=True)
+            raise SystemExit(1)
+
+        from webapp.extensions import db as _db
+        from webapp.models.user import User
+        actor = User.query.filter_by(username=actor_username).first()
+        if actor is None:
+            click.echo(f"Error: no user named '{actor_username}' exists.", err=True)
+            raise SystemExit(1)
+
+        try:
+            result = ledger_cutover_service.activate_cutover(
+                cutover_id, actor, preview_token=preview_token, confirmation_text=confirmation_text,
+                backup_confirmed=backup_confirmed, reason=reason,
+            )
+        except ledger_cutover_service.LedgerCutoverConflict as e:
+            _db.session.rollback()
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(2)
+        except ledger_cutover_service.LedgerCutoverError as e:
+            _db.session.rollback()
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+
+        _db.session.commit()
+        click.echo(f"Activated cutover id={cutover_id} — {result['count']} product(s) written:\n")
+        for p in result["products_written"]:
+            click.echo(f"  {p['product_name']}: opening_base_qty={p['opening_base_qty']} (daily_figure_id={p['daily_figure_id']})")
+        click.echo("\nRe-run `flask stock-ledger` for these products to confirm the new ledger.")

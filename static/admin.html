@@ -82,6 +82,7 @@
       <div class="tab" data-panel="company">Company Settings</div>
       <div class="tab" data-panel="flags">Feature Flags</div>
       <div class="tab" data-panel="reset">Reset Daily Values</div>
+      <div class="tab" data-panel="cutover">Ledger Cutover</div>
     </div>
 
     <!-- USERS -->
@@ -372,6 +373,78 @@
           <table><thead><tr><th>Product</th><th>Opening Stock entered</th><th>Notes</th><th>Review status</th><th>Dispatch</th><th>Returns</th><th>Production</th></tr></thead>
           <tbody id="resetPreviewTable"></tbody></table>
           <button class="btn-danger" id="resetOpenConfirmBtn" style="margin-top:10px;">Reset these values&hellip;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEDGER CUTOVER -->
+    <div class="panel" id="panel-cutover">
+      <div class="card">
+        <h2>Clean ledger cutover</h2>
+        <p class="small">
+          A cutover establishes a new, verified operational starting point for every active product's Opening
+          Stock without deleting or rewriting historical data. Pre-cutover records remain visible for reference
+          but never contribute to post-cutover stock once a cutover is activated. Workflow: draft &rarr; every
+          active product gets a verified physical-count balance &rarr; verify &rarr; activate (requires a typed
+          confirmation phrase and explicit backup confirmation).
+        </p>
+        <div id="cutoverActiveBanner" class="msg"></div>
+
+        <h3 style="margin-top:18px;">Existing cutovers</h3>
+        <table><thead><tr><th>ID</th><th>Effective</th><th>Status</th><th>Reason</th><th></th></tr></thead>
+        <tbody id="cutoverListTable"></tbody></table>
+
+        <h3 style="margin-top:18px;">Start a new draft cutover</h3>
+        <div class="row">
+          <div><label>Effective Date</label><input type="date" id="cutoverDate"></div>
+          <div><label>Effective Shift</label>
+            <select id="cutoverShift">
+              <option value="Day">Day</option>
+              <option value="Night">Night</option>
+            </select>
+          </div>
+          <div style="flex:2;"><label>Reason</label><input id="cutoverReason" placeholder="e.g. clean physical stock count, 1 August 2026"></div>
+        </div>
+        <button class="btn-primary" id="cutoverCreateBtn">Create draft</button>
+        <div class="msg" id="cutoverCreateMsg"></div>
+
+        <div id="cutoverEditor" class="hidden" style="margin-top:20px;">
+          <h3>Draft #<span id="cutoverEditorId"></span> — enter every active product's verified balance</h3>
+          <p class="small">Zero is valid. Negative balances are rejected. Every active product must have a balance before verification.</p>
+          <table><thead><tr><th>Product</th><th>Packaging</th><th>Cartons</th><th>Packs</th><th>Pieces</th><th>Base units</th><th></th></tr></thead>
+          <tbody id="cutoverBalancesTable"></tbody></table>
+          <div class="msg" id="cutoverBalancesMsg"></div>
+
+          <h3 style="margin-top:16px;">Optional CSV import</h3>
+          <p class="small">Columns: product_name or product_id, cartons, packs, pieces. Never activates automatically — only stages balances above.</p>
+          <input type="file" id="cutoverCsvFile" accept=".csv">
+          <button class="btn-ghost" id="cutoverCsvImportBtn">Import CSV</button>
+          <div class="msg" id="cutoverCsvMsg"></div>
+
+          <div style="margin-top:16px;">
+            <button class="btn-primary" id="cutoverVerifyBtn">Verify cutover</button>
+            <button class="btn-ghost" id="cutoverCancelBtn">Cancel this draft</button>
+          </div>
+          <div class="msg" id="cutoverVerifyMsg"></div>
+        </div>
+
+        <div id="cutoverActivation" class="hidden" style="margin-top:20px;">
+          <h3>Activate cutover #<span id="cutoverActivateId"></span></h3>
+          <div id="cutoverActivationPreview"></div>
+          <div class="row">
+            <div style="flex:2;"><label>Reason for activating now</label><input id="cutoverActivateReason"></div>
+          </div>
+          <div class="row">
+            <div style="flex:2;">
+              <label>Type exactly: <code id="cutoverConfirmPhrase"></code></label>
+              <input id="cutoverConfirmInput">
+            </div>
+          </div>
+          <label><input type="checkbox" id="cutoverBackupConfirmed"> I confirm a database backup has been taken before activating.</label>
+          <div style="margin-top:10px;">
+            <button class="btn-danger" id="cutoverActivateBtn">Activate cutover</button>
+          </div>
+          <div class="msg" id="cutoverActivateMsg"></div>
         </div>
       </div>
     </div>
@@ -1135,6 +1208,177 @@ document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async
   document.getElementById('resetPreviewMsg').className = 'msg ok';
 });
 
+// ---------- ledger cutover ----------
+let cutoverEditingId = null;
+
+async function loadCutoverActiveBanner(){
+  const {data} = await api('/api/ledger-cutover/active');
+  const el = document.getElementById('cutoverActiveBanner');
+  if(data){
+    el.textContent = `Active ledger cutover: effective ${data.effective_date} ${data.effective_shift} (id ${data.id}). Pre-cutover records are preserved for reference only.`;
+    el.className = 'msg ok';
+  } else {
+    el.textContent = 'No ledger cutover has been activated yet — every period still derives from full history.';
+    el.className = 'msg';
+  }
+}
+
+async function loadCutovers(){
+  const {data} = await api('/api/ledger-cutover');
+  const rows = (Array.isArray(data) ? data : []).map(c => `
+    <tr>
+      <td>${c.id}</td>
+      <td>${c.effective_date} ${c.effective_shift}</td>
+      <td><span class="pill ${c.status === 'activated' ? 'pill-finalized' : c.status === 'cancelled' ? 'pill-void' : 'pill-draft'}">${c.status}</span></td>
+      <td class="small">${escapeHtml(c.reason || '')}</td>
+      <td>
+        ${c.status === 'draft' ? `<button class="btn-ghost" data-cutover-edit="${c.id}">Edit balances</button>` : ''}
+        ${c.status === 'verified' ? `<button class="btn-ghost" data-cutover-activate-prep="${c.id}">Prepare activation</button>` : ''}
+      </td>
+    </tr>`).join('');
+  document.getElementById('cutoverListTable').innerHTML = rows || '<tr><td colspan="5" class="small">No cutovers yet.</td></tr>';
+  document.querySelectorAll('[data-cutover-edit]').forEach(b => b.addEventListener('click', () => openCutoverEditor(b.dataset.cutoverEdit)));
+  document.querySelectorAll('[data-cutover-activate-prep]').forEach(b => b.addEventListener('click', () => prepareCutoverActivation(b.dataset.cutoverActivatePrep)));
+  await loadCutoverActiveBanner();
+}
+
+document.getElementById('cutoverCreateBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('cutoverCreateMsg');
+  const {status, data} = await api('/api/ledger-cutover', {
+    method: 'POST',
+    body: JSON.stringify({
+      effective_date: document.getElementById('cutoverDate').value,
+      effective_shift: document.getElementById('cutoverShift').value,
+      reason: document.getElementById('cutoverReason').value,
+    }),
+  });
+  if(status !== 201){ msg.textContent = data.error || 'Could not create draft.'; msg.className = 'msg err'; return; }
+  msg.textContent = `Draft #${data.id} created.`; msg.className = 'msg ok';
+  await loadCutovers();
+  openCutoverEditor(data.id);
+});
+
+async function openCutoverEditor(cutoverId){
+  cutoverEditingId = cutoverId;
+  const {data} = await api(`/api/ledger-cutover/${cutoverId}`);
+  document.getElementById('cutoverEditor').classList.remove('hidden');
+  document.getElementById('cutoverActivation').classList.add('hidden');
+  document.getElementById('cutoverEditorId').textContent = cutoverId;
+  const rows = data.products.map(p => `
+    <tr data-cutover-row="${p.product_id}">
+      <td>${escapeHtml(p.product_name)}</td>
+      <td class="small">${p.packaging_rule ? (p.packaging_rule.carton_to_pieces ? `${p.packaging_rule.carton_to_pieces}/carton` : `${p.packaging_rule.cartons_to_packs}x${p.packaging_rule.packs_to_pieces}`) : 'none'}</td>
+      <td><input type="number" min="0" style="width:70px;" data-cartons value="${p.cartons ?? 0}"></td>
+      <td><input type="number" min="0" style="width:60px;" data-packs value="${p.packs ?? 0}" ${p.packaging_rule && p.packaging_rule.carton_to_pieces ? 'disabled' : ''}></td>
+      <td><input type="number" min="0" style="width:60px;" data-pieces value="${p.pieces ?? 0}"></td>
+      <td class="small">${p.has_balance ? `${p.base_qty} (${p.label})` : '<em>not entered</em>'}</td>
+      <td><button class="btn-ghost" data-cutover-save-balance="${p.product_id}">Save</button></td>
+    </tr>`).join('');
+  document.getElementById('cutoverBalancesTable').innerHTML = rows;
+  document.querySelectorAll('[data-cutover-save-balance]').forEach(b => {
+    b.addEventListener('click', async () => {
+      const tr = b.closest('tr');
+      const msg = document.getElementById('cutoverBalancesMsg');
+      const {status, data} = await api(`/api/ledger-cutover/${cutoverId}/balances`, {
+        method: 'POST',
+        body: JSON.stringify({
+          product_id: parseInt(b.dataset.cutoverSaveBalance, 10),
+          cartons: parseInt(tr.querySelector('[data-cartons]').value || '0', 10),
+          packs: parseInt(tr.querySelector('[data-packs]').value || '0', 10),
+          pieces: parseInt(tr.querySelector('[data-pieces]').value || '0', 10),
+        }),
+      });
+      if(status !== 200){ msg.textContent = data.error || 'Could not save balance.'; msg.className = 'msg err'; return; }
+      msg.textContent = `Saved ${data.product_name}: ${data.base_qty} base units.`; msg.className = 'msg ok';
+      openCutoverEditor(cutoverId);
+    });
+  });
+}
+
+document.getElementById('cutoverCsvImportBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('cutoverCsvMsg');
+  const file = document.getElementById('cutoverCsvFile').files[0];
+  if(!file){ msg.textContent = 'Choose a CSV file first.'; msg.className = 'msg err'; return; }
+  const text = await file.text();
+  const res = await fetch(`/api/ledger-cutover/${cutoverEditingId}/import-csv`, {
+    method: 'POST', headers: {'Content-Type': 'text/csv'}, body: text,
+  });
+  const data = await res.json().catch(() => ({}));
+  if(res.status !== 200){ msg.textContent = data.error || 'CSV import failed.'; msg.className = 'msg err'; return; }
+  msg.textContent = `Staged ${data.staged_count} row(s).` + (data.errors.length ? ` ${data.errors.length} row(s) had errors — see below.` : '');
+  msg.className = data.errors.length ? 'msg err' : 'msg ok';
+  if(data.errors.length){
+    msg.innerHTML += '<br>' + data.errors.map(e => `Row ${e.row}: ${escapeHtml(e.error)}`).join('<br>');
+  }
+  openCutoverEditor(cutoverEditingId);
+});
+
+document.getElementById('cutoverVerifyBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('cutoverVerifyMsg');
+  const {status, data} = await api(`/api/ledger-cutover/${cutoverEditingId}/verify`, {method: 'POST'});
+  if(status !== 200){ msg.textContent = data.error || 'Could not verify — every active product needs a balance.'; msg.className = 'msg err'; return; }
+  msg.textContent = 'Cutover verified. Use "Prepare activation" from the list above to activate it.'; msg.className = 'msg ok';
+  document.getElementById('cutoverEditor').classList.add('hidden');
+  await loadCutovers();
+});
+
+document.getElementById('cutoverCancelBtn').addEventListener('click', async () => {
+  const reason = prompt('Reason for cancelling this draft cutover:');
+  if(!reason) return;
+  const {status, data} = await api(`/api/ledger-cutover/${cutoverEditingId}/cancel`, {method: 'POST', body: JSON.stringify({reason})});
+  const msg = document.getElementById('cutoverVerifyMsg');
+  if(status !== 200){ msg.textContent = data.error || 'Could not cancel.'; msg.className = 'msg err'; return; }
+  document.getElementById('cutoverEditor').classList.add('hidden');
+  await loadCutovers();
+});
+
+let cutoverActivationToken = null;
+async function prepareCutoverActivation(cutoverId){
+  const {status, data} = await api(`/api/ledger-cutover/${cutoverId}/preview-activation`, {method: 'POST'});
+  const el = document.getElementById('cutoverActivation');
+  el.classList.remove('hidden');
+  document.getElementById('cutoverEditor').classList.add('hidden');
+  if(status !== 200){ document.getElementById('cutoverActivationPreview').textContent = data.error || 'Could not preview activation.'; return; }
+  cutoverActivationToken = data.preview_token;
+  document.getElementById('cutoverActivateId').textContent = cutoverId;
+  const phrase = `ACTIVATE LEDGER CUTOVER ${data.cutover.effective_date} ${data.cutover.effective_shift.toUpperCase()}`;
+  document.getElementById('cutoverConfirmPhrase').textContent = phrase;
+  document.getElementById('cutoverConfirmInput').value = '';
+  document.getElementById('cutoverBackupConfirmed').checked = false;
+  const rows = data.products.filter(p => p.has_balance).map(p =>
+    `<tr><td>${escapeHtml(p.product_name)}</td><td>${p.label}</td><td>projected first Closing: ${p.projected_first_closing_label}</td></tr>`
+  ).join('');
+  document.getElementById('cutoverActivationPreview').innerHTML =
+    `<table><thead><tr><th>Product</th><th>Opening Stock</th><th>Projection</th></tr></thead><tbody>${rows}</tbody></table>` +
+    (data.existing_active_cutovers.length ? `<p class="msg err">Warning: an activated cutover already governs part of this timeline.</p>` : '');
+  document.getElementById('cutoverActivateBtn').dataset.cutoverId = cutoverId;
+}
+
+document.getElementById('cutoverActivateBtn').addEventListener('click', async () => {
+  const msg = document.getElementById('cutoverActivateMsg');
+  const cutoverId = document.getElementById('cutoverActivateBtn').dataset.cutoverId;
+  const phrase = document.getElementById('cutoverConfirmPhrase').textContent;
+  if(document.getElementById('cutoverConfirmInput').value !== phrase){
+    msg.textContent = 'Confirmation phrase does not match exactly.'; msg.className = 'msg err'; return;
+  }
+  if(!document.getElementById('cutoverBackupConfirmed').checked){
+    msg.textContent = 'You must confirm a database backup was taken.'; msg.className = 'msg err'; return;
+  }
+  const {status, data} = await api(`/api/ledger-cutover/${cutoverId}/activate`, {
+    method: 'POST',
+    body: JSON.stringify({
+      preview_token: cutoverActivationToken,
+      confirmation_text: phrase,
+      backup_confirmed: true,
+      reason: document.getElementById('cutoverActivateReason').value,
+    }),
+  });
+  if(status !== 200){ msg.textContent = data.error || 'Activation failed.'; msg.className = 'msg err'; return; }
+  msg.textContent = `Activated — ${data.count} product(s) written.`; msg.className = 'msg ok';
+  document.getElementById('cutoverActivation').classList.add('hidden');
+  await loadCutovers();
+});
+
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
@@ -1147,7 +1391,7 @@ document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async
   await loadSalesCategoriesAdmin();
   await Promise.all([
     loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue(),
-    loadCompanySettings(), loadFeatureFlagsAdmin(),
+    loadCompanySettings(), loadFeatureFlagsAdmin(), loadCutovers(),
   ]);
   populateResetProductSelect();
 })();

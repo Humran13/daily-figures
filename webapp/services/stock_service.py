@@ -624,6 +624,22 @@ def daily_figure_view(product, date, shift):
 
     closing_base = compute_closing(opening_base, production_base, return_base, issued)
 
+    # Final stock architecture — ledger boundary awareness. Cheap lazy
+    # import (avoids a circular import: ledger_cutover_service itself
+    # imports stock_service) and a small, indexed query against a table
+    # that will typically hold very few rows. is_pre_cutover is True only
+    # when an ACTIVATED cutover exists whose effective period is AFTER
+    # this one — i.e. this period predates the active ledger boundary and
+    # is preserved for reference only, never contributing to the active
+    # balance. cutover_id mirrors the DailyFigure row's own column when
+    # this period IS itself a cutover's anchor.
+    from webapp.services import ledger_cutover_service as _cutover_svc
+    active_cutover = _cutover_svc.get_active_cutover()
+    is_pre_cutover = (
+        active_cutover is not None
+        and _sort_key(date, shift) < _sort_key(active_cutover.effective_date, active_cutover.effective_shift)
+    )
+
     return {
         "product_id": product.id,
         "product_name": product.name,
@@ -631,6 +647,8 @@ def daily_figure_view(product, date, shift):
         "shift": shift,
         "has_entry": figure is not None,
         "opening_editable": opening_editable,
+        "is_pre_cutover": is_pre_cutover,
+        "cutover_id": figure.cutover_id if figure is not None else None,
         "packaging_rule": rule.to_dict() if rule else None,
         "opening": {"base_qty": opening_base, **(_split_or_none(opening_base, rule) or {})} if rule else None,
         "return_": {

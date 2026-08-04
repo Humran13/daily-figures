@@ -67,8 +67,17 @@ def export_summary(fmt):
         "closing_cartons": part(row, "closing", "cartons"), "closing_packs": part(row, "closing", "packs"), "closing_pieces": part(row, "closing", "pieces"),
     } for row in data]
 
+    filters = {"date_from": date_from, "date_to": date_to}
+    from webapp.services import ledger_cutover_service as _cutover_svc
+    active_cutover = _cutover_svc.get_active_cutover()
+    if active_cutover is not None:
+        filters["ledger_boundary"] = (
+            f"New verified stock ledger begins on {active_cutover.effective_date} - {active_cutover.effective_shift}. "
+            "Historical legacy figures before this are preserved for reference and do not contribute to the active balance."
+        )
+
     try:
-        content = build_export(fmt, title="Date-Range Summary", filters={"date_from": date_from, "date_to": date_to},
+        content = build_export(fmt, title="Date-Range Summary", filters=filters,
                                 generated_by=current_user().username, columns=columns, rows=rows,
                                 **branding_service.export_kwargs())
     except ValueError as e:

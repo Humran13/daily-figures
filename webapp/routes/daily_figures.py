@@ -41,6 +41,64 @@ def list_views():
     return jsonify([svc.daily_figure_view(p, date, shift) for p in products])
 
 
+@daily_figures_bp.route("/operator-summary", methods=["GET"])
+@login_required
+@feature_required("daily_figures")
+def operator_summary():
+    """
+    Operator Daily Figures redesign — the ONE batched, authoritative
+    response backing the Operator's compact read-only table (and reusable
+    by any other read-only summary surface). Server-side role-authorized:
+    reachable by any authenticated role (matching every other read-only
+    Daily Figures endpoint), but returns exactly the same shared
+    stock_service.daily_figure_view() data every other screen already
+    uses — never a second, independently-reconstructed calculation, and
+    never editable through this endpoint (it is GET-only; the only write
+    path remains POST /api/daily-figures, still fully role/permission-
+    gated there).
+
+    Filtered server-side to products with genuine activity THIS exact
+    Date + Shift (Production, Returns, or Issued != 0) — a product whose
+    balance was merely carried forward, or that only has a completion-
+    status/No-Activity record, is excluded. Ordered by the same
+    authoritative usage ranking the Dashboard's own Daily Figures table
+    uses (product_usage_service.ranked_active_products()), so this never
+    duplicates or reinvents that ordering either.
+    """
+    date, shift, err = _require_date_shift()
+    if err:
+        return err
+
+    from webapp.services import product_usage_service
+    ranked_products = product_usage_service.ranked_active_products()
+
+    rows = []
+    for product in ranked_products:
+        view = svc.daily_figure_view(product, date, shift)
+        if view["production"]["base_qty"] == 0 and view["return_"]["base_qty"] == 0 and view["issued"]["base_qty"] == 0:
+            continue
+        rows.append(view)
+
+    from webapp.models.dispatch import STATUS_FINALIZED as DISPATCH_FINALIZED, Dispatch
+    from webapp.models.production_record import STATUS_FINALIZED as PRODUCTION_FINALIZED, ProductionRecord
+    from webapp.models.return_record import STATUS_FINALIZED as RETURNS_FINALIZED, ReturnRecord
+
+    production_count = ProductionRecord.query.filter_by(date=date, shift=shift, status=PRODUCTION_FINALIZED).count()
+    # Dispatch/Returns are Day-only by the same established rule every
+    # other surface in this app already follows — never invented here.
+    dispatch_count = Dispatch.query.filter_by(date=date, shift=shift, status=DISPATCH_FINALIZED).count() if shift == "Day" else 0
+    returns_count = ReturnRecord.query.filter_by(date=date, status=RETURNS_FINALIZED).count() if shift == "Day" else 0
+
+    return jsonify({
+        "date": date, "shift": shift,
+        "products": rows,
+        "products_worked_on": len(rows),
+        "production_records": production_count,
+        "return_records": returns_count,
+        "dispatch_records": dispatch_count,
+    })
+
+
 @daily_figures_bp.route("/<int:product_id>", methods=["GET"])
 @login_required
 @feature_required("daily_figures")
@@ -297,7 +355,7 @@ def export_daily_figures(fmt):
     columns = [
         ("date", "Date"), ("shift", "Shift"), ("product_name", "Product"),
         ("opening_stock", "Opening Stock"), ("return_qty", "Return"), ("production_qty", "Production"),
-        ("issued_qty", "Issued"), ("closing_stock", "Closing Stock"), ("notes", "Notes"),
+        ("issued_qty", "Issued"), ("closing_stock", "Closing Stock"), ("notes", "Notes"), ("ledger_period", "Ledger Period"),
     ]
     rows = []
     for row in rows_db:
@@ -311,7 +369,19 @@ def export_daily_figures(fmt):
             "issued_qty": _qty_str(view["issued"], rule),
             "closing_stock": _qty_str(view["closing"], rule),
             "notes": view["notes"] or "",
+            # Final stock architecture, ledger boundary rule — every
+            # export row is explicitly labeled pre- or post-cutover,
+            # never left to be inferred or silently mixed.
+            "ledger_period": "Pre-cutover (reference only)" if view.get("is_pre_cutover") else "Active ledger",
         })
+
+    from webapp.services import ledger_cutover_service as _cutover_svc
+    active_cutover = _cutover_svc.get_active_cutover()
+    if active_cutover is not None:
+        filters_applied["ledger_boundary"] = (
+            f"New verified stock ledger begins on {active_cutover.effective_date} - {active_cutover.effective_shift}. "
+            "Historical legacy figures before this are preserved for reference and do not contribute to the active balance."
+        )
 
     try:
         content = build_export(fmt, title="Daily Figures", filters=filters_applied,

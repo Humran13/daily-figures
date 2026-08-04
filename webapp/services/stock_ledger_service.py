@@ -266,6 +266,7 @@ def _period_entry(product, date, shift, rule):
     # raise loudly instead of producing misleading output. Uses the exact
     # same compute_closing() every other screen uses, never a third,
     # independently-reinvented formula.
+    formula_reconciles = None
     if opening_base is not None and closing_base is not None:
         expected_closing = svc.compute_closing(opening_base, production_total, returns_total, issued_total)
         if expected_closing != closing_base:
@@ -276,6 +277,7 @@ def _period_entry(product, date, shift, rule):
                 f"closing={closing_base}. This diagnostic is missing a contributing source; it never "
                 f"guesses or silently displays a mismatched total."
             )
+        formula_reconciles = True  # LedgerReconciliationError above would have already raised otherwise
 
     movement_here = bool(production_total or returns_total or dispatch_total or adjustment_total)
     if not movement_here:
@@ -313,6 +315,13 @@ def _period_entry(product, date, shift, rule):
         "opening_base_qty": opening_base,
         "opening_label": svc.qty_label_signed(opening_base, rule),
         "opening_source": figure.opening_stock_source if figure is not None else None,
+        # Final stock architecture — traces this exact period back to the
+        # LedgerCutover that anchored it, when applicable. None for any
+        # period not itself a cutover's own anchor row (a LATER period
+        # that merely carries forward FROM a cutover has its own
+        # anchor_row_id pointing at the cutover row instead — see below).
+        "cutover_id": figure.cutover_id if figure is not None else None,
+        "formula_reconciles": formula_reconciles,
         "anchor_row_id": anchor_row.id if anchor_row is not None else None,
         "anchor_trusted": anchor_trusted,
         "anchor_trust_reason": anchor_reason,
@@ -332,6 +341,28 @@ def _period_entry(product, date, shift, rule):
         "period_kind": kind,
         "warnings": warnings,
     }
+
+
+def calculate_period(product_id, date, shift):
+    """
+    Final stock architecture, section 4 — the one authoritative,
+    chronological "what happened in this exact period" function every
+    stock surface may call: Daily Figures, Dashboard, Dashboard Attention,
+    History, Exports, Reset preview, the stock-ledger CLI, Reports, and
+    low-stock warnings. Never reconstructs the formula independently —
+    this is a thin, public wrapper around the same `_period_entry()` this
+    module's own read-only diagnostic ledger (`build_ledger()`) has always
+    used, itself built entirely from stock_service.py's shared functions.
+    Raises LedgerError for an unknown product/shift, LedgerReconciliationError
+    if the components fail to reconcile against the authoritative Closing.
+    """
+    product = db.session.get(Product, product_id)
+    if product is None:
+        raise LedgerError("product does not exist")
+    if shift not in SHIFTS:
+        raise LedgerError(f"shift must be one of {SHIFTS}")
+    rule = product.current_packaging_rule()
+    return _period_entry(product, date, shift, rule)
 
 
 def build_ledger(product_id, date_from, date_to, shift=None):

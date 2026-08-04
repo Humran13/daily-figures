@@ -67,6 +67,7 @@ def create_app():
     from webapp.routes.daily_entry_status import daily_entry_status_bp
     from webapp.routes.daily_reset import daily_reset_bp
     from webapp.routes.daily_review import daily_review_bp
+    from webapp.routes.ledger_cutover import ledger_cutover_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_products_bp)
@@ -89,6 +90,7 @@ def create_app():
     app.register_blueprint(daily_entry_status_bp)
     app.register_blueprint(daily_reset_bp)
     app.register_blueprint(daily_review_bp)
+    app.register_blueprint(ledger_cutover_bp)
     app.register_blueprint(pwa_bp)
 
     from webapp.cli import register_cli

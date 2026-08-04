@@ -59,7 +59,12 @@ Opening Stock anchor.
 from datetime import datetime, timedelta
 
 from webapp.extensions import db
-from webapp.models.daily_figure import OPENING_STOCK_SOURCE_RESET_CREATED, DailyFigure, StockAdjustment
+from webapp.models.daily_figure import (
+    OPENING_STOCK_SOURCE_LEDGER_CUTOVER,
+    OPENING_STOCK_SOURCE_RESET_CREATED,
+    DailyFigure,
+    StockAdjustment,
+)
 from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, SHIFTS, STATUS_VOID as DISPATCH_VOID, Dispatch, DispatchLine
 from webapp.models.product import Product
 from webapp.models.production_record import (
@@ -514,6 +519,20 @@ def execute(date, shift, product_id, reason, actor, mode=MODE_FIGURES_ONLY, conf
             # immediately, and a later routine save can never promote it
             # into an authoritative correction (see upsert_daily_figure()).
             if mode == MODE_FULL:
+                # Final stock architecture, ledger boundary rule — a Full
+                # Reset must never alter an activated cutover's own anchor
+                # row. Any OTHER (later) period's recalculation already
+                # respects the boundary automatically (get_prior_closing_
+                # base_qty() below stops at the nearest unconditionally-
+                # trusted anchor, which is the cutover row itself for any
+                # period at or after it) — this guard only needs to catch
+                # the one case that isn't automatic: resetting the exact
+                # cutover period itself.
+                if figure.opening_stock_source == OPENING_STOCK_SOURCE_LEDGER_CUTOVER:
+                    raise DailyResetError(
+                        f"'{product.name}' on {date} {shift} is the activated ledger cutover's own anchor — "
+                        "a Full Reset cannot alter it. Cancel/supersede the cutover explicitly instead."
+                    )
                 from webapp.services import stock_service as svc
                 prior_closing = svc.get_prior_closing_base_qty(product.id, date, shift, exclude_id=figure.id)
                 recalculated_opening = prior_closing if prior_closing is not None else 0

@@ -85,6 +85,28 @@
   .done-card h2{ margin:0 0 8px; font-size:19px; }
   .done-card p{ color:var(--ink-soft); font-size:14px; margin:0 0 20px; }
   .hist-summary{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:18px; }
+  /* Operator Daily Figures redesign — a simple, compact, read-only table.
+     Deliberately a literal <table> (not the .figure-row card pattern used
+     elsewhere) per the exact required column layout; the table container
+     scrolls horizontally on its own (mobile) while the rest of the page
+     stays fixed-width — never full-page horizontal overflow. */
+  .op-summary{ display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  .op-summary .stat{ flex:1; min-width:90px; background:white; border:1.5px solid var(--line); border-radius:10px; padding:10px; text-align:center; }
+  .op-summary .stat .n{ font-family:var(--mono); font-size:18px; font-weight:800; }
+  .op-summary .stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); }
+  .op-note{ font-size:11px; color:var(--ink-soft); margin:0 0 14px; }
+  .op-table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
+  table.op-table{ border-collapse:collapse; width:100%; min-width:520px; font-size:13px; }
+  table.op-table thead{ position:sticky; top:0; background:var(--paper-dim); z-index:1; }
+  table.op-table th{ text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); padding:10px 12px; white-space:nowrap; }
+  table.op-table th:first-child{ text-align:left; }
+  table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:10px 12px; border-top:1px solid var(--line); white-space:nowrap; }
+  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); }
+  table.op-table tbody tr:nth-child(even){ background:var(--paper-dim); }
+  table.op-table td.op-closing{ font-weight:800; font-size:14px; }
+  table.op-table td.op-closing.op-negative{ color:var(--red); background:#F3E4E4; }
+  .op-empty{ text-align:center; padding:36px 20px; color:var(--ink-soft); }
+  .op-empty p{ margin:0 0 16px; font-size:14px; }
   .hist-stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
   .hist-stat .n{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--teal-dark); }
   .hist-stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-top:2px; }
@@ -181,6 +203,13 @@
       </div>
       <div id="entryCard"></div>
       <div id="doneCard" class="hidden"></div>
+      <!-- Operator Daily Figures redesign — a simple, read-only, compact
+           table replacing the per-product Next/Skip card flow for the
+           Operator role only (see boot()'s role branch and
+           renderOperatorTable() below). Manager/Super Administrator/
+           Viewer are completely unaffected — they still use #entryCard/
+           #doneCard above exactly as before. -->
+      <div id="operatorTable" class="hidden"></div>
       <!-- Final pre-deployment correction: Manager/Super Administrator
            final review screen — replaces the Operator-only "done" card
            for elevated roles. Reaching the end of the product list never
@@ -327,6 +356,91 @@ function attachZeroClearBehavior(input){
   input.addEventListener('blur', ()=>{
     if(input.value.trim() === '') input.value = '0';
   });
+}
+
+// ---------- role-based view dispatch ----------
+// Server-authoritative: currentUser.role comes from applyUser(user), set
+// in boot() from the /api/session response fetched in init() — never a
+// value the client can forge. Direct URL access re-runs this same init()
+// -> boot() -> renderCurrentView() chain, so an Operator cannot reach the
+// elevated per-product card interface by any client-side navigation;
+// every write remains independently, fully gated server-side regardless
+// (see stock_service.upsert_daily_figure()'s own role/permission checks,
+// unchanged by this redesign).
+function renderCurrentView(){
+  if(currentUser && currentUser.role === 'operator'){
+    document.getElementById('progressWrap').classList.add('hidden');
+    document.getElementById('entryCard').classList.add('hidden');
+    document.getElementById('doneCard').classList.add('hidden');
+    document.getElementById('reviewCard').classList.add('hidden');
+    document.getElementById('operatorTable').classList.remove('hidden');
+    renderOperatorTable();
+  } else {
+    document.getElementById('operatorTable').classList.add('hidden');
+    document.getElementById('progressWrap').classList.remove('hidden');
+    renderEntryCard();
+  }
+}
+
+// ---------- Operator Daily Figures redesign: simple read-only table ----------
+// One batched, authoritative request (GET /api/daily-figures/operator-
+// summary) backs the entire table — never one request per product, never
+// a client-side recalculation of Opening/Closing (every value here is
+// exactly what the server's stock_service.daily_figure_view() computed,
+// the same function Daily Figures/Dashboard/History/Exports/Reset/the
+// stock-ledger CLI all already share). The frontend only formats and
+// filters for display; it never derives a number.
+async function renderOperatorTable(){
+  const date = document.getElementById('dateInput').value;
+  const shift = document.getElementById('shiftInput').value;
+  const container = document.getElementById('operatorTable');
+  container.innerHTML = '<p class="op-note">Loading…</p>';
+
+  let data;
+  try{
+    data = await apiGet(`/api/daily-figures/operator-summary?date=${date}&shift=${shift}`);
+  } catch(e){
+    container.innerHTML = '<p class="op-note">Could not load Daily Figures for this period.</p>';
+    return;
+  }
+
+  const summary = `
+    <div class="op-summary">
+      <div class="stat"><div class="n">${data.products_worked_on}</div><div class="l">Products worked on</div></div>
+      <div class="stat"><div class="n">${data.production_records}</div><div class="l">Production records</div></div>
+      <div class="stat"><div class="n">${data.return_records}</div><div class="l">Return records</div></div>
+      <div class="stat"><div class="n">${data.dispatch_records}</div><div class="l">Dispatch records</div></div>
+    </div>
+    <p class="op-note">These figures are calculated from finalized Production, Returns, and Dispatch records.</p>`;
+
+  if(!data.products.length){
+    container.innerHTML = summary + `
+      <div class="op-empty">
+        <p>No Production, Returns, or Issued activity has been recorded for this period.</p>
+      </div>`;
+    return;
+  }
+
+  const rows = data.products.map(r => {
+    const closingNegative = r.closing.base_qty < 0;
+    return `
+      <tr>
+        <td>${escapeHtml(r.product_name)}</td>
+        <td>${qtyLabel(r.opening, r.packaging_rule)}</td>
+        <td>${qtyLabel(r.production, r.packaging_rule)}</td>
+        <td>${qtyLabel(r.return_, r.packaging_rule)}</td>
+        <td>${qtyLabel(r.issued, r.packaging_rule)}</td>
+        <td class="op-closing${closingNegative ? ' op-negative' : ''}">${qtyLabel(r.closing, r.packaging_rule)}</td>
+      </tr>`;
+  }).join('');
+
+  container.innerHTML = summary + `
+    <div class="op-table-wrap">
+      <table class="op-table">
+        <thead><tr><th>Product</th><th>Opening Stock</th><th>Production</th><th>Returns</th><th>Issued</th><th>Closing Stock</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 // ---------- entry wizard ----------
@@ -961,8 +1075,8 @@ function switchTab(name){
   if(name==='history') renderHistory();
 }
 document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
-document.getElementById('dateInput').addEventListener('change', async ()=>{ currentIdx=0; sessionValues={}; await loadProducts(); renderEntryCard(); });
-document.getElementById('shiftInput').addEventListener('change', async ()=>{ currentIdx=0; sessionValues={}; await loadProducts(); renderEntryCard(); });
+document.getElementById('dateInput').addEventListener('change', async ()=>{ currentIdx=0; sessionValues={}; await loadProducts(); renderCurrentView(); });
+document.getElementById('shiftInput').addEventListener('change', async ()=>{ currentIdx=0; sessionValues={}; await loadProducts(); renderCurrentView(); });
 // ---------- login ----------
 // Every role now lands on its own role-aware page after login — Viewer/
 // Manager/Super Admin on Dashboard, Operator on the first enabled
@@ -1070,8 +1184,11 @@ async function boot(user){
   if(user.role === 'operator'){
     operatorPermissions = await apiGet('/api/admin/operator-daily-figure-permissions');
   }
+  // Still loaded for every role, including Operator — the History tab's
+  // product-name filter (shared by every role) depends on this list;
+  // only the ENTRY tab's rendering branches by role, below.
   await loadProducts();
-  renderEntryCard();
+  renderCurrentView();
 
   const q = new URLSearchParams(window.location.search);
   if(q.get('tab') === 'history'){
