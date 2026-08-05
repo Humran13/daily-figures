@@ -17,6 +17,14 @@ independently-reconstructed calculation, and never itself a write path
 (GET-only; the only way to change Opening Stock remains POST
 /api/daily-figures, unchanged and still fully role/permission-gated
 there).
+
+The endpoint's product visibility is a period-wide hybrid: "preview"
+(no product anywhere has finalized activity) lists every active product;
+"activity" (at least one product does) shows ONLY products with real
+finalized Production, Returns, or Issued for this exact Date + Shift —
+untouched products, including Opening/Closing-only ones, are hidden
+entirely. See test_final_operator_table_preview_mode_investigation.py
+for the dedicated mode-transition tests.
 """
 import pathlib
 
@@ -151,78 +159,74 @@ def test_product_with_nonzero_issued_appears(client, super_admin):
 
 def _trigger_activity(client, date_str, shift):
     """Creates a throwaway product with real finalized Production on the
-    given period — forces the endpoint into "activity" mode, so the
-    target (non-qualifying) product's position AFTER it can be tested
-    meaningfully."""
+    given period — forces the endpoint into "activity" mode so the target
+    product's ABSENCE from the qualifying list can be tested meaningfully
+    (in "preview" mode, every product appears as a placeholder — see
+    test_zero_activity_products_are_placeholders_not_rows_with_invented_figures
+    for that distinct case)."""
     trigger = _make_product(client, f"Activity Trigger {date_str} {shift}")
     _finalize_production(client, trigger["id"], date_str, shift, 1)
     return trigger
 
 
-def _index_of(data, product_id):
-    return [r["product_id"] for r in data["products"]].index(product_id)
-
-
-def test_product_with_all_movements_zero_still_appears_but_after_worked_on(client, super_admin):
-    """Display correction — a product is never filtered out for having
-    zero movement; it is still listed with its real (zero) figures, just
-    ordered after any genuinely worked-on product."""
+def test_product_with_all_movements_zero_does_not_appear(client, super_admin):
+    """With NO qualifying activity anywhere, the period is in preview
+    mode, so the zero-movement product still APPEARS (as a placeholder
+    row, per the required scaffold behavior) but never with invented
+    figures. Once activity mode starts (a companion product has real
+    activity), it is correctly excluded."""
     p = _make_product(client, "Zero Movement Product")
     client.post("/api/daily-figures", json={
         "product_id": p["id"], "date": "2026-08-01", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
     })
-    trigger = _trigger_activity(client, "2026-08-01", "Day")
-    data = _summary(client, "2026-08-01")
-    assert data["mode"] == "activity"
-    assert p["id"] in [r["product_id"] for r in data["products"]]
-    assert _index_of(data, trigger["id"]) < _index_of(data, p["id"])
-    row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["production"]["base_qty"] == 0  # real value, never invented, never nulled
+    preview_data = _summary(client, "2026-08-01")
+    assert preview_data["mode"] == "preview"
+    assert p["id"] in [r["product_id"] for r in preview_data["products"]]
+    placeholder_row = next(r for r in preview_data["products"] if r["product_id"] == p["id"])
+    assert placeholder_row["production"] is None
+
+    _trigger_activity(client, "2026-08-01", "Day")
+    activity_data = _summary(client, "2026-08-01")
+    assert activity_data["mode"] == "activity"
+    assert p["id"] not in [r["product_id"] for r in activity_data["products"]]
 
 
-def test_passive_opening_closing_only_product_still_appears_after_worked_on(client, super_admin):
+def test_passive_opening_closing_only_product_does_not_appear(client, super_admin):
     p = _make_product(client, "Passive Carry Product")
     client.post("/api/daily-figures", json={
         "product_id": p["id"], "date": "2026-07-01", "shift": "Day",
         "opening": {"cartons": 40, "packs": 0, "pieces": 0},
     })
-    trigger = _trigger_activity(client, "2026-08-15", "Day")
+    _trigger_activity(client, "2026-08-15", "Day")
     data = _summary(client, "2026-08-15")  # a later date — carries 40 cartons forward, no movement of its own
     assert data["mode"] == "activity"
-    assert p["id"] in [r["product_id"] for r in data["products"]]
-    assert _index_of(data, trigger["id"]) < _index_of(data, p["id"])
-    row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["opening"]["base_qty"] == 4000  # Opening Stock alone never makes it "worked on"
+    assert p["id"] not in [r["product_id"] for r in data["products"]]
 
 
-def test_no_activity_only_product_still_appears_after_worked_on(client, super_admin, login_as):
+def test_no_activity_only_product_does_not_appear(client, super_admin, login_as):
     p = _make_product(client, "No Activity Only Product")
-    trigger = _trigger_activity(client, "2026-08-01", "Day")
+    _trigger_activity(client, "2026-08-01", "Day")
     client.patch("/api/admin/operator-daily-figure-permissions", json={"can_edit_opening": True})
     login_as("op_no_activity", "password123", "operator")
     client.post("/api/daily-entry-status/no-activity", json={"product_id": p["id"], "date": "2026-08-01", "shift": "Day"})
     data = _summary(client, "2026-08-01")
     assert data["mode"] == "activity"
-    assert p["id"] in [r["product_id"] for r in data["products"]]
-    assert _index_of(data, trigger["id"]) < _index_of(data, p["id"])
+    assert p["id"] not in [r["product_id"] for r in data["products"]]
 
 
-def test_draft_only_production_still_appears_after_worked_on(client, super_admin):
+def test_draft_only_production_does_not_appear(client, super_admin):
     p = _make_product(client, "Draft Only Product")
     client.post("/api/production", json={
         "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": p["id"], "cartons": 5, "packs": 0, "pieces": 0}],
     })  # never finalized
-    trigger = _trigger_activity(client, "2026-08-01", "Day")
+    _trigger_activity(client, "2026-08-01", "Day")
     data = _summary(client, "2026-08-01")
     assert data["mode"] == "activity"
-    assert p["id"] in [r["product_id"] for r in data["products"]]
-    assert _index_of(data, trigger["id"]) < _index_of(data, p["id"])
-    row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["production"]["base_qty"] == 0  # the draft never counts toward the real figure
+    assert p["id"] not in [r["product_id"] for r in data["products"]]
 
 
-def test_voided_only_dispatch_still_appears_after_worked_on(client, super_admin):
+def test_voided_only_dispatch_does_not_appear(client, super_admin):
     p = _make_product(client, "Voided Only Product")
     cat = client.post("/api/admin/sales-categories", json={"name": "Op Cat 3"}).get_json()
     cust = client.post("/api/admin/customers", json={"name": "Op Cust 3", "sales_category_id": cat["id"]}).get_json()
@@ -232,13 +236,10 @@ def test_voided_only_dispatch_still_appears_after_worked_on(client, super_admin)
     }).get_json()
     client.post(f"/api/dispatches/{d['id']}/finalize")
     client.post(f"/api/dispatches/{d['id']}/void", json={"reason": "test void"})
-    trigger = _trigger_activity(client, "2026-08-01", "Day")
+    _trigger_activity(client, "2026-08-01", "Day")
     data = _summary(client, "2026-08-01")
     assert data["mode"] == "activity"
-    assert p["id"] in [r["product_id"] for r in data["products"]]
-    assert _index_of(data, trigger["id"]) < _index_of(data, p["id"])
-    row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["issued"]["base_qty"] == 0  # the voided dispatch never counts
+    assert p["id"] not in [r["product_id"] for r in data["products"]]
 
 
 def test_multiple_qualifying_products_all_appear(client, super_admin):
@@ -278,18 +279,16 @@ def test_night_table_uses_night_production(client, super_admin):
     data = _summary(client, "2026-08-01", "Night")
     assert data["mode"] == "activity"
     assert p["id"] in [r["product_id"] for r in data["products"]]
-    night_row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert night_row["production"]["base_qty"] == 500
     # Day has no activity of its own — correctly falls back to preview
-    # mode; the product still appears (never filtered), with its real
-    # (zero) Day figures — Night's production never leaks onto Day.
+    # mode (the product still appears, but only as a placeholder, never
+    # with Night's production leaking into Day).
     day_data = _summary(client, "2026-08-01", "Day")
     assert day_data["mode"] == "preview"
     day_row = next(r for r in day_data["products"] if r["product_id"] == p["id"])
-    assert day_row["production"]["base_qty"] == 0
+    assert day_row["production"] is None
 
 
-def test_day_only_returns_do_not_leak_into_night_figures(client, super_admin):
+def test_day_only_returns_do_not_appear_as_night_movement(client, super_admin):
     p = _make_product(client, "Returns Day Only Product")
     cat = client.post("/api/admin/sales-categories", json={"name": "Op Cat 4"}).get_json()
     cust = client.post("/api/admin/customers", json={"name": "Op Cust 4", "sales_category_id": cat["id"]}).get_json()
@@ -300,11 +299,10 @@ def test_day_only_returns_do_not_leak_into_night_figures(client, super_admin):
     _trigger_activity(client, "2026-08-01", "Night")
     night_data = _summary(client, "2026-08-01", "Night")
     assert night_data["mode"] == "activity"
-    row = next(r for r in night_data["products"] if r["product_id"] == p["id"])
-    assert row["return_"]["base_qty"] == 0  # the Day-only return never counts toward Night
+    assert p["id"] not in [r["product_id"] for r in night_data["products"]]
 
 
-def test_day_only_dispatch_does_not_leak_into_night_figures(client, super_admin):
+def test_day_only_dispatch_does_not_appear_as_night_movement(client, super_admin):
     p = _make_product(client, "Dispatch Day Only Product")
     cat = client.post("/api/admin/sales-categories", json={"name": "Op Cat 5"}).get_json()
     cust = client.post("/api/admin/customers", json={"name": "Op Cust 5", "sales_category_id": cat["id"]}).get_json()
@@ -316,8 +314,7 @@ def test_day_only_dispatch_does_not_leak_into_night_figures(client, super_admin)
     _trigger_activity(client, "2026-08-01", "Night")
     night_data = _summary(client, "2026-08-01", "Night")
     assert night_data["mode"] == "activity"
-    row = next(r for r in night_data["products"] if r["product_id"] == p["id"])
-    assert row["issued"]["base_qty"] == 0  # the Day-only dispatch never counts toward Night
+    assert p["id"] not in [r["product_id"] for r in night_data["products"]]
 
 
 def test_selected_date_is_respected(client, super_admin):
@@ -330,19 +327,16 @@ def test_selected_date_is_respected(client, super_admin):
     day2 = _summary(client, "2026-08-02")
     assert day2["mode"] == "preview"  # no activity on 08-02 anywhere
     day2_row = next(r for r in day2["products"] if r["product_id"] == p["id"])
-    assert day2_row["production"]["base_qty"] == 0  # 08-01's production never leaks onto 08-02
+    assert day2_row["production"] is None  # 08-01's production never leaks onto 08-02
 
 
-def test_activity_from_another_date_does_not_count_toward_this_date(client, super_admin):
+def test_activity_from_another_date_does_not_cause_product_to_appear(client, super_admin):
     p = _make_product(client, "Other Date Product")
     _finalize_production(client, p["id"], "2026-07-01", "Day", 5)
-    trigger = _trigger_activity(client, "2026-08-01", "Day")
+    _trigger_activity(client, "2026-08-01", "Day")
     data = _summary(client, "2026-08-01")
     assert data["mode"] == "activity"
-    assert p["id"] in [r["product_id"] for r in data["products"]]
-    assert _index_of(data, trigger["id"]) < _index_of(data, p["id"])  # not itself "worked on" on 08-01
-    row = next(r for r in data["products"] if r["product_id"] == p["id"])
-    assert row["production"]["base_qty"] == 0
+    assert p["id"] not in [r["product_id"] for r in data["products"]]
 
 
 # =====================================================================
@@ -498,11 +492,10 @@ def test_no_activity_is_not_treated_as_an_api_error(client, super_admin):
     assert p["id"] in [r["product_id"] for r in data["products"]]
 
 
-def test_zero_activity_products_appear_with_their_real_zero_figures(client, super_admin):
-    """Display correction — with no activity anywhere, every product is
-    still listed (preview mode, never an empty products:[] response),
-    each with its real (genuinely zero) movement figures — never
-    filtered out, never replaced with a placeholder."""
+def test_zero_activity_products_are_placeholders_not_rows_with_invented_figures(client, super_admin):
+    """With no activity anywhere, every product is still listed (preview
+    mode, never an empty products:[] response), but none of them get
+    invented movement figures."""
     ids = []
     for i in range(3):
         p = _make_product(client, f"Zero Activity Product {i}")
@@ -517,7 +510,4 @@ def test_zero_activity_products_appear_with_their_real_zero_figures(client, supe
     for pid in ids:
         assert pid in row_ids
     for r in data["products"]:
-        if r["product_id"] in ids:
-            assert r["production"]["base_qty"] == 0
-            assert r["return_"]["base_qty"] == 0
-            assert r["issued"]["base_qty"] == 0
+        assert r["production"] is None and r["return_"] is None and r["issued"] is None

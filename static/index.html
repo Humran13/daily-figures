@@ -91,29 +91,30 @@
      scrolls horizontally on its own (mobile) while the rest of the page
      stays fixed-width — never full-page horizontal overflow. */
   .op-note{ font-size:11px; color:var(--ink-soft); margin:0 0 14px; }
-  /* Layout correction — the previous min-width:520px + white-space:nowrap
-     on every header forced the table to be at least as wide as this
-     app's entire content column (.shell's max-width, minus main's
-     padding), guaranteeing horizontal scroll on every normal viewport
-     this app ever renders at (it is deliberately narrow/single-column
-     throughout, not a wide desktop layout). table-layout:fixed with
-     explicit proportional column widths (Product wider than the five
-     numeric columns) lets the table always fit the available width
-     instead; overflow-x:auto stays on the wrapper only as a last-resort
-     safety net for an unusually narrow viewport, never the normal case. */
+  /* Layout correction — a fixed-percentage table (table-layout:fixed with
+     narrow % column widths) squeezed multi-digit quantities enough to
+     visually overlap neighboring cells on some products/viewports.
+     Restored proven pattern: the table keeps a real min-width and each
+     column its own min-width (never collapsing below what a quantity
+     needs), and ONLY the table's own wrapper scrolls horizontally when
+     the viewport is narrower than that — the page/.shell itself never
+     gains horizontal overflow, since the scroll container is this wrapper
+     alone. */
+  .op-swipe-hint{ display:none; font-size:10px; color:var(--ink-soft); text-align:right; margin:0 0 4px; }
   .op-table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
-  table.op-table{ border-collapse:collapse; width:100%; table-layout:fixed; font-size:11px; }
+  table.op-table{ border-collapse:collapse; width:100%; min-width:600px; font-size:12px; }
   table.op-table thead{ position:sticky; top:0; background:var(--paper-dim); z-index:1; }
-  table.op-table th{ text-align:right; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--ink-soft); padding:7px 5px; white-space:normal; line-height:1.25; word-break:break-word; }
-  table.op-table th:first-child{ text-align:left; width:24%; }
-  table.op-table th:not(:first-child){ width:15.2%; }
-  table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:7px 5px; border-top:1px solid var(--line); white-space:nowrap; }
+  table.op-table th{ text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); padding:9px 10px; white-space:nowrap; }
+  table.op-table th:first-child{ text-align:left; min-width:150px; }
+  table.op-table th:not(:first-child){ min-width:85px; }
+  table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:9px 10px; border-top:1px solid var(--line); white-space:nowrap; }
   table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); white-space:normal; word-break:break-word; }
   table.op-table tbody tr:nth-child(even){ background:var(--paper-dim); }
-  table.op-table td.op-closing{ font-weight:800; font-size:12px; }
+  table.op-table td.op-closing{ font-weight:800; font-size:13px; }
   table.op-table td.op-closing.op-negative{ color:var(--red); background:#F3E4E4; }
   .op-empty{ text-align:center; padding:36px 20px; color:var(--ink-soft); }
   .op-empty p{ margin:0 0 16px; font-size:14px; }
+  @media (max-width:600px){ .op-swipe-hint{ display:block; } }
   .hist-stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px 10px; text-align:center; }
   .hist-stat .n{ font-family:var(--mono); font-size:19px; font-weight:800; color:var(--teal-dark); }
   .hist-stat .l{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-top:2px; }
@@ -453,6 +454,7 @@ function _operatorTableHtml(products){
       </tr>`;
   }).join('');
   return `
+    <p class="op-swipe-hint">Swipe horizontally to view all figures.</p>
     <div class="op-table-wrap">
       <table class="op-table">
         <thead><tr><th>Product</th><th>Opening Stock</th><th>Production</th><th>Returns</th><th>Issued</th><th>Closing Stock</th></tr></thead>
