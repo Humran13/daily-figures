@@ -206,6 +206,24 @@
       </div>
     </div>
 
+    <!-- POST-FINALIZE SUCCESS — after finalizing (from New/Edit Draft), the
+         user lands here instead of being thrown into Dispatch History, so
+         entering several dispatches for the same date is a fast loop:
+         Finalize -> Add New Dispatch (same date retained) -> repeat. -->
+    <div id="tab-success" class="hidden">
+      <div class="card" style="text-align:center;padding:32px 16px;">
+        <div style="font-size:40px;margin-bottom:8px;">&#10003;</div>
+        <h2 style="margin:0 0 6px;">Dispatch Finalized</h2>
+        <p class="hint" id="successSummary" style="margin-bottom:22px;"></p>
+        <div class="nav-row">
+          <button class="btn btn-primary" id="successAddNewBtn">Add New Dispatch</button>
+        </div>
+        <div class="nav-row">
+          <button class="btn btn-ghost" id="successViewHistoryBtn">View Dispatch History</button>
+        </div>
+      </div>
+    </div>
+
     <!-- DETAIL -->
     <div id="tab-detail" class="hidden">
       <div class="card no-print">
@@ -226,6 +244,21 @@
            finalize round trip. -->
       <div class="card hidden no-print" id="correctPanel">
         <h3 style="margin-top:0;">Correct record</h3>
+        <div class="field"><label>Dispatch Date</label><input type="date" id="correctDate"></div>
+        <div class="field">
+          <label>Sales Category</label>
+          <select id="correctSalesCategory"><option value="">Select a category…</option></select>
+        </div>
+        <div class="field" id="correctRecipientFieldWrap" style="display:none;">
+          <label>Recipient</label>
+          <input id="correctCustomerSearch" placeholder="Type to search…" autocomplete="off">
+          <div class="autocomplete-list hidden" id="correctCustomerResults"></div>
+          <div class="hint" id="correctCustomerSelectedHint"></div>
+        </div>
+        <div class="field hidden" id="correctTempNameFieldWrap">
+          <label>Temporary / New Customer Name</label>
+          <input id="correctTempCustomerName" placeholder="e.g. Walk-in Customer, Unknown Customer, or a new name">
+        </div>
         <div id="correctLineList"></div>
         <div class="row">
           <div style="flex:1;"><label>Add a product</label>
@@ -238,6 +271,23 @@
         <div class="nav-row">
           <button class="btn btn-primary" id="correctSaveBtn">Save correction</button>
           <button class="btn btn-ghost" id="correctCancelBtn">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Delete Dispatch — permanent hard delete, Manager/Super
+           Administrator only. Not void, not a status change: on success
+           the record is physically gone, so this panel closes back to
+           the list rather than re-opening a detail that no longer
+           exists. -->
+      <div class="card hidden no-print" id="deletePanel">
+        <h3 style="margin-top:0;color:var(--red);">Delete this Dispatch permanently?</h3>
+        <p class="hint" id="deleteSummary" style="margin-bottom:12px;"></p>
+        <p class="hint" style="color:var(--red);margin-bottom:12px;">This will permanently remove this Dispatch and its product quantities. Stock figures will be recalculated.</p>
+        <div><label>Deletion reason (required)</label><textarea id="deleteReason" rows="2" placeholder="Why is this dispatch being deleted?"></textarea></div>
+        <div class="msg" id="deleteMsg"></div>
+        <div class="nav-row">
+          <button class="btn btn-danger" id="deleteConfirmBtn">Delete Dispatch</button>
+          <button class="btn btn-ghost" id="deleteCancelBtn">Cancel</button>
         </div>
       </div>
     </div>
@@ -336,6 +386,7 @@ function switchTab(name){
   document.getElementById('tab-list').classList.toggle('hidden', name!=='list');
   document.getElementById('tab-new').classList.toggle('hidden', name!=='new');
   document.getElementById('tab-detail').classList.toggle('hidden', name!=='detail');
+  document.getElementById('tab-success').classList.toggle('hidden', name!=='success');
   if(name==='list') loadList();
 }
 document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>{
@@ -564,19 +615,29 @@ document.getElementById('dNumber').addEventListener('input', (e)=>{
 });
 
 // ---------- save ----------
-function resetForm(){
+// preserveDate: when finalizing rapidly re-enters the New Dispatch form
+// via the post-finalize success screen's "Add New Dispatch" button, the
+// just-used working date is carried over instead of resetting to today —
+// important when entering several historical dispatches for the same
+// past date in a row (see showFinalizeSuccess()). Every other entry
+// point into resetForm() (switching tabs, boot, cancelling an edit) omits
+// this and gets today's date exactly as before.
+function resetForm(preserveDate){
   editingDispatchId = null;
   selectedCustomer = null;
   selectedCategory = null;
   currentLines = [];
-  document.getElementById('dDate').value = todayStr();
+  document.getElementById('dDate').value = preserveDate || todayStr();
   document.getElementById('dSalesCategory').value = '';
   document.getElementById('recipientFieldWrap').style.display = 'none';
   resetRecipientOnly();
   document.getElementById('dNumber').value = '';
+  document.getElementById('dNumber').disabled = false;
   document.getElementById('dInvoice').value = '';
   document.getElementById('dNotes').value = '';
   document.getElementById('saveMsg').textContent = '';
+  document.getElementById('finalizeBtn').disabled = false;
+  document.getElementById('saveDraftBtn').disabled = false;
   renderLines();
   applyViewerReadOnly();
 }
@@ -598,12 +659,35 @@ async function saveDispatch(finalize){
   if(!selectedCategory){ msg.textContent='Select a sales category first.'; msg.className='msg err'; return; }
   if(!selectedCustomer && !tempName){ msg.textContent='Select a recipient, or enter a temporary/new customer name.'; msg.className='msg err'; return; }
   const number = document.getElementById('dNumber').value.trim();
-  if(!number){ msg.textContent='Dispatch number is required.'; msg.className='msg err'; return; }
+  if(!editingDispatchId && !number){ msg.textContent='Dispatch number is required.'; msg.className='msg err'; return; }
   if(currentLines.length===0){ msg.textContent='Add at least one product.'; msg.className='msg err'; return; }
 
+  // Finalization duplicate protection (double-click / slow network) —
+  // the backend already refuses to finalize a non-draft dispatch a second
+  // time (finalize_dispatch() checks status first), so Issued can never
+  // count twice either way; disabling both buttons for the duration of
+  // this call is purely to avoid a confusing second in-flight request/
+  // error toast, not the actual safety mechanism.
+  const draftBtn = document.getElementById('saveDraftBtn');
+  const finalizeBtn = document.getElementById('finalizeBtn');
+  draftBtn.disabled = true; finalizeBtn.disabled = true;
+  try{
+    if(editingDispatchId) await saveEditedDraft(finalize, msg);
+    else await saveNewDispatch(finalize, msg);
+  } finally {
+    draftBtn.disabled = false; finalizeBtn.disabled = false;
+  }
+}
+document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveDispatch(false));
+document.getElementById('finalizeBtn').addEventListener('click', ()=>saveDispatch(true));
+
+async function saveNewDispatch(finalize, msg){
+  const tempName = document.getElementById('dTempCustomerName').value.trim();
+  const number = document.getElementById('dNumber').value.trim();
+  const usedDate = document.getElementById('dDate').value;
   const body = {
     dispatch_number: number,
-    date: document.getElementById('dDate').value,
+    date: usedDate,
     sales_category_id: selectedCategory.id,
     customer_id: selectedCustomer ? selectedCustomer.id : null,
     new_customer_name: selectedCustomer ? null : tempName,
@@ -627,14 +711,117 @@ async function saveDispatch(finalize){
       switchTab('detail');
       return;
     }
+    showFinalizeSuccess(usedDate, `#${data.dispatch_number} · ${data.customer_name || tempName || ''}`);
+    return;
   }
 
-  toast(finalize ? 'Dispatch finalized.' : 'Draft saved.');
+  toast('Draft saved.');
   resetForm();
   switchTab('list');
 }
-document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveDispatch(false));
-document.getElementById('finalizeBtn').addEventListener('click', ()=>saveDispatch(true));
+
+// Draft editing (Operator on their own draft, or Manager/Super Admin on
+// any draft — enforced server-side by _load_editable_dispatch()/can_edit(),
+// never only by hiding the button). Two calls, both idempotent-safe to
+// re-run: PATCH the header, PUT the full line set (replace_lines() wipes
+// and re-inserts the dispatch's lines atomically, so re-saving the same
+// draft any number of times can never leave a duplicate line behind).
+async function saveEditedDraft(finalize, msg){
+  const tempCustomerName = document.getElementById('dTempCustomerName').value.trim();
+  const id = editingDispatchId;
+  const usedDate = document.getElementById('dDate').value;
+
+  const headerBody = {
+    date: usedDate,
+    sales_category_id: selectedCategory.id,
+    customer_id: selectedCustomer ? selectedCustomer.id : null,
+    new_customer_name: selectedCustomer ? null : tempCustomerName,
+    invoice_number: document.getElementById('dInvoice').value || null,
+    notes: document.getElementById('dNotes').value || null,
+  };
+  const patchRes = await api(`/api/dispatches/${id}`, {method:'PATCH', body: JSON.stringify(headerBody)});
+  if(patchRes.status !== 200){
+    msg.textContent = patchRes.data.error || 'Could not save dispatch.';
+    msg.className = 'msg err';
+    return;
+  }
+
+  const linesBody = {lines: currentLines.map(l => ({product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces}))};
+  const linesRes = await api(`/api/dispatches/${id}/lines`, {method:'PUT', body: JSON.stringify(linesBody)});
+  if(linesRes.status !== 200){
+    msg.textContent = linesRes.data.error || 'Could not save product lines.';
+    msg.className = 'msg err';
+    return;
+  }
+
+  if(finalize){
+    const fin = await api(`/api/dispatches/${id}/finalize`, {method:'POST'});
+    if(fin.status !== 200){
+      toast('Draft saved, but finalizing failed: ' + (fin.data.error||''));
+      openDetail(id);
+      switchTab('detail');
+      return;
+    }
+    const d = linesRes.data;
+    showFinalizeSuccess(usedDate, `#${d.dispatch_number} · ${d.customer_name || tempCustomerName || ''}`);
+    return;
+  }
+
+  toast('Draft saved.');
+  resetForm();
+  switchTab('list');
+}
+
+function openEditDraft(data){
+  editingDispatchId = data.id;
+  document.getElementById('dDate').value = data.date;
+  document.getElementById('dNumber').value = data.dispatch_number;
+  document.getElementById('dNumber').disabled = true; // not editable once a dispatch exists
+  document.getElementById('dInvoice').value = data.invoice_number || '';
+  document.getElementById('dNotes').value = data.notes || '';
+
+  selectedCategory = data.sales_category_id ? salesCategoriesCache.find(c => c.id === data.sales_category_id) : null;
+  document.getElementById('dSalesCategory').value = data.sales_category_id || '';
+  const recipientField = document.getElementById('recipientFieldWrap');
+  const input = document.getElementById('dCustomerSearch');
+  if(selectedCategory){
+    recipientField.style.display = '';
+    input.disabled = false;
+  } else {
+    recipientField.style.display = 'none';
+    input.disabled = true;
+  }
+  selectedCustomer = data.customer_id ? {id: data.customer_id, name: data.customer_name} : null;
+  input.value = data.customer_name || '';
+  document.getElementById('customerSelectedHint').textContent = selectedCustomer && selectedCategory ? `Selected · ${selectedCategory.name}` : '';
+  document.getElementById('customerResults').classList.add('hidden');
+  document.getElementById('tempNameFieldWrap').classList.add('hidden');
+  document.getElementById('dTempCustomerName').value = '';
+
+  currentLines = data.lines.map(l => ({
+    product_id: l.product_id, product_name: l.product_name,
+    rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
+    cartons: l.cartons, packs: l.packs, pieces: l.pieces,
+  }));
+  renderLines();
+  document.getElementById('saveMsg').textContent = '';
+  switchTab('new');
+}
+
+// ---------- post-finalize success screen ----------
+let lastFinalizedDate = null;
+function showFinalizeSuccess(date, summary){
+  lastFinalizedDate = date;
+  document.getElementById('successSummary').textContent = summary || '';
+  switchTab('success');
+}
+document.getElementById('successAddNewBtn').addEventListener('click', ()=>{
+  resetForm(lastFinalizedDate);
+  switchTab('new');
+});
+document.getElementById('successViewHistoryBtn').addEventListener('click', ()=>{
+  switchTab('list');
+});
 
 // ---------- list ----------
 function statusPill(status){
@@ -704,13 +891,21 @@ async function loadList(){
     return;
   }
 
+  // Collapsed by default (section 13/14) — every date group, including
+  // today's/the newest, starts collapsed so a long history stays scannable;
+  // clicking the head (date text or chevron — the whole head is one click
+  // target below) toggles it open/closed. No dispatch is hidden from the
+  // data — collapsing is purely a display state.
   const groups = groupByDate(results);
   list.innerHTML = groups.map(g => {
     const finalizedCount = g.items.filter(d=>d.status==='finalized').length;
+    const draftCount = g.items.filter(d=>d.status==='draft').length;
+    const summary = `${g.items.length} dispatch${g.items.length===1?'':'es'} · ${finalizedCount} finalized` +
+      (draftCount ? ` · ${draftCount} draft` : '');
     return `
-    <div class="date-group">
+    <div class="date-group collapsed">
       <div class="date-group-head" data-toggle-group>
-        <div><div class="date">${g.date}</div><div class="summary">${g.items.length} dispatch${g.items.length===1?'':'es'} · ${finalizedCount} finalized</div></div>
+        <div><div class="date">${g.date}</div><div class="summary">${summary}</div></div>
         <span class="chev">▾</span>
       </div>
       <div class="date-group-body">
@@ -833,22 +1028,33 @@ async function openDetail(id){
 
   const actions = document.getElementById('detailActions');
   const buttons = [];
+  const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
+  const ownsDraft = currentUser && data.created_by === currentUser.id;
   if(data.status === 'draft'){
+    // Draft/Finalized UX — an Operator sees Edit Draft only on their own
+    // drafts (server-enforced by can_edit(); this is display-only, never
+    // the real gate); Manager/Super Admin see it on any draft.
+    if(isElevated || ownsDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit Draft</button>`);
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
-  if(currentUser && ['super_admin','manager'].includes(currentUser.role)){
+  if(isElevated){
     if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
     if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="void">Void</button>`);
     // Correct Record: amends and refinalizes the original in one step.
     // Reopen (above) is kept for anyone who deliberately wants the record
     // left open instead — the two are not the same action.
     if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Correct record</button>`);
+    // Permanent delete — never void/cancel/soft-delete. Draft or
+    // finalized (both may be genuinely wrong); not offered on an already-
+    // void record, which is out of this action's scope.
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete Dispatch</button>`);
   }
   buttons.push(`<button class="btn btn-ghost" data-action="duplicate">Duplicate</button>`);
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
   document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
   msg.textContent = '';
 
@@ -856,6 +1062,7 @@ async function openDetail(id){
     btn.addEventListener('click', async ()=>{
       const action = btn.dataset.action;
       if(action === 'print'){ window.print(); return; }
+      if(action === 'edit-draft'){ openEditDraft(data); return; }
       if(action === 'finalize'){
         const r = await api(`/api/dispatches/${data.id}/finalize`, {method:'POST'});
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
@@ -876,6 +1083,7 @@ async function openDetail(id){
         return;
       }
       if(action === 'correct'){ openCorrectPanel(data); return; }
+      if(action === 'delete'){ openDeletePanel(data); return; }
     });
   });
 }
@@ -883,6 +1091,8 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab
 
 // ---------- Correct Record ----------
 let correctLines = [];
+let correctSelectedCustomer = null;
+let correctSelectedCategory = null;
 
 function openCorrectPanel(data){
   correctLines = data.lines.map(l => ({
@@ -890,9 +1100,26 @@ function openCorrectPanel(data){
     rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
     cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes,
   }));
+  document.getElementById('correctDate').value = data.date;
   document.getElementById('correctNotes').value = data.notes || '';
   document.getElementById('correctReason').value = '';
   document.getElementById('correctMsg').textContent = '';
+
+  const catSelect = document.getElementById('correctSalesCategory');
+  catSelect.innerHTML = '<option value="">Select a category…</option>' +
+    salesCategoriesCache.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  catSelect.value = data.sales_category_id || '';
+  correctSelectedCategory = data.sales_category_id ? salesCategoriesCache.find(c => c.id === data.sales_category_id) : null;
+  correctSelectedCustomer = data.customer_id ? {id: data.customer_id, name: data.customer_name} : null;
+  const recipientField = document.getElementById('correctRecipientFieldWrap');
+  const custInput = document.getElementById('correctCustomerSearch');
+  recipientField.style.display = correctSelectedCategory ? '' : 'none';
+  custInput.value = data.customer_name || '';
+  document.getElementById('correctCustomerSelectedHint').textContent = correctSelectedCustomer && correctSelectedCategory ? `Selected · ${correctSelectedCategory.name}` : '';
+  document.getElementById('correctCustomerResults').classList.add('hidden');
+  document.getElementById('correctTempNameFieldWrap').classList.add('hidden');
+  document.getElementById('correctTempCustomerName').value = '';
+
   const select = document.getElementById('correctAddProductSelect');
   select.innerHTML = '<option value="">+ Add a product…</option>' +
     productsCache.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
@@ -900,6 +1127,62 @@ function openCorrectPanel(data){
   document.getElementById('correctPanel').classList.remove('hidden');
   document.getElementById('correctPanel').scrollIntoView({behavior:'smooth'});
 }
+
+document.getElementById('correctSalesCategory').addEventListener('change', (e)=>{
+  const id = e.target.value;
+  correctSelectedCategory = id ? salesCategoriesCache.find(c => String(c.id) === id) : null;
+  correctSelectedCustomer = null;
+  document.getElementById('correctCustomerSearch').value = '';
+  document.getElementById('correctCustomerSelectedHint').textContent = '';
+  document.getElementById('correctCustomerResults').classList.add('hidden');
+  document.getElementById('correctTempCustomerName').value = '';
+  document.getElementById('correctTempNameFieldWrap').classList.add('hidden');
+  document.getElementById('correctRecipientFieldWrap').style.display = correctSelectedCategory ? '' : 'none';
+});
+
+let correctCustomerSearchTimer;
+document.getElementById('correctCustomerSearch').addEventListener('input', (e)=>{
+  correctSelectedCustomer = null;
+  document.getElementById('correctCustomerSelectedHint').textContent = '';
+  clearTimeout(correctCustomerSearchTimer);
+  if(!correctSelectedCategory) return;
+  const q = e.target.value.trim();
+  correctCustomerSearchTimer = setTimeout(async ()=>{
+    const params = new URLSearchParams({sales_category_id: correctSelectedCategory.id});
+    if(q) params.set('q', q);
+    const {data} = await api(`/api/admin/customers?${params.toString()}`);
+    const results = document.getElementById('correctCustomerResults');
+    const items = Array.isArray(data) ? data : [];
+    results.innerHTML = items.map(c=>`<div class="autocomplete-item" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.is_temporary ? ' <span class="cat">(unverified)</span>' : ''}</div>`).join('')
+      + `<div class="autocomplete-item" data-other="1" style="font-weight:700;color:var(--teal-dark);">+ Other / New Customer</div>`;
+    results.classList.remove('hidden');
+    results.querySelectorAll('[data-id]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        correctSelectedCustomer = {id: parseInt(el.dataset.id,10), name: el.dataset.name};
+        document.getElementById('correctCustomerSearch').value = el.dataset.name;
+        document.getElementById('correctCustomerSelectedHint').textContent = `Selected · ${correctSelectedCategory.name}`;
+        document.getElementById('correctTempNameFieldWrap').classList.add('hidden');
+        results.classList.add('hidden');
+      });
+    });
+    const otherEl = results.querySelector('[data-other]');
+    if(otherEl){
+      otherEl.addEventListener('click', ()=>{
+        correctSelectedCustomer = null;
+        document.getElementById('correctCustomerSearch').value = '';
+        document.getElementById('correctCustomerSelectedHint').textContent = '';
+        document.getElementById('correctTempNameFieldWrap').classList.remove('hidden');
+        document.getElementById('correctTempCustomerName').focus();
+        results.classList.add('hidden');
+      });
+    }
+  }, 200);
+});
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('#correctCustomerSearch') && !e.target.closest('#correctCustomerResults')){
+    document.getElementById('correctCustomerResults').classList.add('hidden');
+  }
+});
 
 function renderCorrectLines(){
   const container = document.getElementById('correctLineList');
@@ -953,12 +1236,22 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
   const reason = document.getElementById('correctReason').value.trim();
   if(!reason){ msg.textContent = 'A correction reason is required.'; msg.className = 'msg err'; return; }
   if(correctLines.length === 0){ msg.textContent = 'At least one product line is required.'; msg.className = 'msg err'; return; }
+  const tempCustomerName = document.getElementById('correctTempCustomerName').value.trim();
+  if(correctSelectedCategory && !correctSelectedCustomer && !tempCustomerName){
+    msg.textContent = 'Select a recipient, or enter a temporary/new customer name.'; msg.className = 'msg err'; return;
+  }
 
   const body = {
     reason, notes: document.getElementById('correctNotes').value,
+    date: document.getElementById('correctDate').value || undefined,
     expected_updated_at: currentDetail.updated_at,
     lines: correctLines.map(l => ({id: l.id, product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes})),
   };
+  if(correctSelectedCategory){
+    body.sales_category_id = correctSelectedCategory.id;
+    body.customer_id = correctSelectedCustomer ? correctSelectedCustomer.id : null;
+    body.new_customer_name = correctSelectedCustomer ? null : tempCustomerName;
+  }
   const r = await api(`/api/dispatches/${currentDetail.id}/correct`, {method:'POST', body: JSON.stringify(body)});
   if(r.status !== 200){
     msg.textContent = r.data.error || 'Could not save correction.'; msg.className = 'msg err';
@@ -967,6 +1260,41 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
   toast('Correction saved.');
   document.getElementById('correctPanel').classList.add('hidden');
   openDetail(currentDetail.id);
+});
+
+// ---------- Delete Dispatch (permanent hard delete) ----------
+// Manager/Super Administrator only (server-enforced — the button itself
+// is only ever rendered for those roles in openDetail() above, but that
+// is a UX convenience, not the real gate). Never void/cancel/soft-delete:
+// on success the record is physically gone, so this closes back to the
+// list instead of trying to re-open a detail that no longer exists.
+function openDeletePanel(data){
+  const productsSummary = data.lines.map(l => `${l.product_name} (${l.quantity_label})`).join(', ');
+  document.getElementById('deleteSummary').innerHTML =
+    `<strong>#${escapeHtml(data.dispatch_number)}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.customer_name || '—')}<br>` +
+    `${escapeHtml(productsSummary)}<br>Status: ${escapeHtml(data.status)}`;
+  document.getElementById('deleteReason').value = '';
+  document.getElementById('deleteMsg').textContent = '';
+  document.getElementById('deletePanel').classList.remove('hidden');
+  document.getElementById('deletePanel').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('deleteCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('deletePanel').classList.add('hidden');
+});
+document.getElementById('deleteConfirmBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('deleteMsg');
+  const reason = document.getElementById('deleteReason').value.trim();
+  if(!reason){ msg.textContent = 'A deletion reason is required.'; msg.className = 'msg err'; return; }
+  if(!confirm('Delete this Dispatch permanently? This cannot be undone.')) return;
+
+  const r = await api(`/api/dispatches/${currentDetail.id}`, {method:'DELETE', body: JSON.stringify({reason, confirm: true})});
+  if(r.status !== 200){
+    msg.textContent = r.data.error || 'Could not delete dispatch.'; msg.className = 'msg err';
+    return;
+  }
+  toast('Dispatch deleted.');
+  document.getElementById('deletePanel').classList.add('hidden');
+  switchTab('list');
 });
 
 // ---------- boot ----------

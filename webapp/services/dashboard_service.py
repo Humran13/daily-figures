@@ -423,6 +423,22 @@ def build_dashboard(date):
 
     active_customers = Customer.query.filter_by(active=True).count()
 
+    # Dashboard UX correction — "Customers" in the Daily Activity row means
+    # how many DISTINCT recipients received a FINALIZED dispatch on THIS
+    # selected date, never the lifetime count of active customer records
+    # (that unrelated, whole-system total is `active_customers` above,
+    # unchanged and still returned as-is for whatever else already reads
+    # it). A recipient with several dispatches the same day still counts
+    # once; a draft, a deleted (physically absent), or another date's
+    # dispatch never contributes at all — COUNT(DISTINCT ...) over exactly
+    # the same finalized+date-filtered rows every Issued calculation
+    # already uses.
+    unique_recipients_today = (
+        db.session.query(db.func.count(db.distinct(Dispatch.customer_id)))
+        .filter(Dispatch.date == date, Dispatch.status == STATUS_FINALIZED)
+        .scalar()
+    ) or 0
+
     draft_dispatch_count = Dispatch.query.filter_by(status=STATUS_DRAFT).count()
     draft_dispatches = (
         Dispatch.query.filter_by(status=STATUS_DRAFT).order_by(Dispatch.created_at.desc()).limit(10).all()
@@ -449,6 +465,7 @@ def build_dashboard(date):
         "top_products": top_products,
         "top_products_window_days": RECENT_WINDOW_DAYS,
         "active_customers": active_customers,
+        "unique_recipients_today": unique_recipients_today,
         "draft_dispatches": {
             "count": draft_dispatch_count,
             "items": _drafts_view(draft_dispatches),

@@ -85,7 +85,8 @@ def get_record(source_type, record_id):
     return db.session.get(_REGISTRY[source_type]["model"], record_id)
 
 
-def correct_record(source_type, record_id, *, lines, notes, reason, actor, expected_updated_at=None):
+def correct_record(source_type, record_id, *, lines, notes, reason, actor, expected_updated_at=None,
+                    date=None, customer_id=None, new_customer_name=None, sales_category_id=None):
     """
     lines: a list of {id, product_id, cartons, packs, pieces, line_notes}
       dicts describing the FULL corrected line set —
@@ -99,6 +100,21 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
       audit trail, not written onto the record's business notes field
       (that field is for business content, not this action's paper trail
       — mirrors Reset Daily Values' identical separation).
+    date: optional replacement for the record's own `date` — every source
+      type has this column, so this applies generically. Because every
+      Issued/Production/Returns figure everywhere in this app is computed
+      live from these rows (see stock_service.py's dispatch_issued_base_qty()
+      etc. — never a stored/cached total), moving a record's date here is
+      enough on its own for the old date to lose its contribution and the
+      new date to gain it exactly once — no manual ledger patching.
+    customer_id / new_customer_name / sales_category_id: optional recipient
+      correction — DISPATCH ONLY (Returns/Production have no recipient
+      concept in this app yet); a caller for those source types must leave
+      all three None, which is always true today since only the dispatch
+      correction route ever passes them. Delegates to
+      dispatch_service.update_recipient() for the exact same
+      resolve/validate/snapshot logic the main create/edit paths use —
+      never a second, competing implementation.
 
     Returns (record, summary) where summary has "added_lines",
     "removed_lines", and "changed_lines" — exactly what the audit entry
@@ -111,6 +127,9 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
         raise RecordCorrectionError("A correction reason is required")
     if not lines:
         raise RecordCorrectionError("A correction needs at least one product line")
+    changing_recipient = customer_id is not None or new_customer_name is not None or sales_category_id is not None
+    if changing_recipient and source_type != "dispatch":
+        raise RecordCorrectionError(f"recipient correction is not supported for source type: {source_type}")
 
     cfg = _REGISTRY[source_type]
     record = db.session.get(cfg["model"], record_id)
@@ -128,9 +147,22 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
 
     error_cls = cfg["error"]
     was_finalized = record.status == STATUS_FINALIZED
+    date_before = record.date
 
     if was_finalized:
         cfg["reopen"](record, actor, f"Correction: {reason}")
+
+    if date is not None:
+        record.date = date
+
+    if changing_recipient:
+        try:
+            dispatch_service.update_recipient(
+                record, customer_id=customer_id, new_customer_name=new_customer_name,
+                sales_category_id=sales_category_id, user=actor,
+            )
+        except dispatch_service.DispatchError as e:
+            raise error_cls(str(e)) from e
 
     existing_by_id = {line.id: line for line in record.lines}
     keep_ids = set()
@@ -190,11 +222,15 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
 
     record_audit(
         actor, "correct_record", cfg["audit_entity_type"], entity_id=record.id,
-        before={"reason": reason, "actor_role": actor.role, "status_before": STATUS_FINALIZED if was_finalized else record.status},
+        before={
+            "reason": reason, "actor_role": actor.role, "status_before": STATUS_FINALIZED if was_finalized else record.status,
+            "date_before": date_before,
+        },
         after={
             "reason": reason, "actor_role": actor.role, "status_after": record.status,
             "added_lines": added_lines, "removed_lines": removed_lines, "changed_lines": changed_lines,
             "notes": getattr(record, cfg["notes_field"]) if notes is not None else None,
+            "date_after": record.date,
         },
     )
     return record, {"added_lines": added_lines, "removed_lines": removed_lines, "changed_lines": changed_lines}

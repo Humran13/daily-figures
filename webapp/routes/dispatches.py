@@ -299,6 +299,38 @@ def update_dispatch(dispatch_id):
     return jsonify(dispatch.to_dict())
 
 
+@dispatches_bp.route("/<int:dispatch_id>/lines", methods=["PUT"])
+@login_required
+@feature_required("dispatch")
+def replace_lines(dispatch_id):
+    """
+    Bulk-replace a draft dispatch's entire line set in one atomic call —
+    what "Save draft" (again, after editing) uses instead of a client-side
+    add/update/remove diff against the per-line POST/PATCH/DELETE
+    endpoints below, so re-saving a draft any number of times can never
+    leave a duplicate or stale line behind (see
+    dispatch_service.replace_lines()'s own docstring).
+    """
+    user = current_user()
+    dispatch, err = _load_editable_dispatch(dispatch_id, user)
+    if err:
+        return err
+    if dispatch.status != STATUS_DRAFT:
+        return _error("only a draft dispatch's lines can be replaced directly — reopen it first", 409)
+
+    d = request.get_json(force=True) or {}
+    before = dispatch.to_dict()
+    try:
+        svc.replace_lines(dispatch, d.get("lines") or [], user)
+    except (DispatchError, PackagingError) as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "replace_lines", "dispatch", entity_id=dispatch.id, before=before, after=dispatch.to_dict())
+    db.session.commit()
+    return jsonify(dispatch.to_dict())
+
+
 @dispatches_bp.route("/<int:dispatch_id>/lines", methods=["POST"])
 @login_required
 @feature_required("dispatch")
@@ -463,6 +495,57 @@ def void(dispatch_id):
     return jsonify(dispatch.to_dict())
 
 
+@dispatches_bp.route("/<int:dispatch_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("dispatch")
+def delete_dispatch(dispatch_id):
+    """
+    Permanent hard delete — not void, not a status change. Manager/Super
+    Administrator only. The Dispatch row (and its lines, via ORM cascade)
+    is physically removed; every live calculation (Issued, Dashboard,
+    History, Operator Daily Figures, exports, recipient/category
+    breakdowns) already reads Dispatch/DispatchLine straight from the
+    database, so removal alone is enough to correct all of them — no
+    stock is ever patched by hand here.
+
+    An AuditLog snapshot is captured BEFORE the delete (the row won't
+    exist to inspect afterwards) — this is the one place the deleted
+    dispatch's data survives, purely for administrator accountability; it
+    is never read back as an operational dispatch by anything else in the
+    app (AuditLog has no FK relationship to Dispatch, and nothing queries
+    it as a dispatch source).
+    """
+    user = current_user()
+    dispatch = db.session.get(Dispatch, dispatch_id)
+    if dispatch is None:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    reason = (d.get("reason") or "").strip()
+    if not reason:
+        return _error("A reason is required to permanently delete a dispatch")
+    if not d.get("confirm"):
+        return _error("Explicit confirmation is required to permanently delete a dispatch")
+
+    snapshot = {
+        **dispatch.to_dict(),
+        "operation": "permanent_delete_dispatch",
+        "deletion_reason": reason,
+        "previous_status": dispatch.status,
+    }
+
+    try:
+        product_usage_service.remove_usage("dispatch", dispatch.id)
+        svc.delete_dispatch(dispatch, reason)
+    except DispatchError as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "permanent_delete_dispatch", "dispatch", entity_id=dispatch_id, before=snapshot, after=None)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted_id": dispatch_id})
+
+
 @dispatches_bp.route("/<int:dispatch_id>/duplicate", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("dispatch")
@@ -509,6 +592,10 @@ def correct(dispatch_id):
             "dispatch", dispatch_id,
             lines=d.get("lines"), notes=d.get("notes"), reason=d.get("reason"),
             actor=user, expected_updated_at=d.get("expected_updated_at"),
+            date=d.get("date"),
+            customer_id=int(d["customer_id"]) if d.get("customer_id") else None,
+            new_customer_name=(d.get("new_customer_name") or "").strip() or None,
+            sales_category_id=int(d["sales_category_id"]) if d.get("sales_category_id") else None,
         )
     except RecordCorrectionConflict as e:
         db.session.rollback()

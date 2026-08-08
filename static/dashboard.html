@@ -35,7 +35,7 @@
   .last-updated{ font-size:11px; color:var(--ink-soft); margin:-4px 0 12px; }
   .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
   .card h2{ margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); }
-  .stat-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .stat-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
   .stat{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:10px 6px; text-align:center; }
   .stat .n{ font-family:var(--mono); font-size:17px; font-weight:800; color:var(--teal-dark); }
   .stat .l{ font-size:9px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); margin-top:2px; }
@@ -161,7 +161,6 @@
       <div class="stat-grid">
         <div class="stat"><div class="n" id="dispatchFinalizedStat">—</div><div class="l">Dispatches</div><div class="sub" id="dispatchDraftStat"></div></div>
         <div class="stat"><div class="n" id="returnsFinalizedStat">—</div><div class="l">Returns</div><div class="sub" id="returnsDraftStat"></div></div>
-        <div class="stat"><div class="n" id="productionFinalizedStat">—</div><div class="l">Production</div><div class="sub" id="productionDraftStat"></div></div>
         <div class="stat"><div class="n" id="activeCustomersStat">—</div><div class="l">Customers</div></div>
       </div>
       <p class="last-updated" id="lastActivityAt" style="margin-top:10px;"></p>
@@ -369,13 +368,20 @@ async function loadDashboard(){
   document.getElementById('dispatchDraftStat').textContent = activity.dispatch && activity.dispatch.draft ? `${activity.dispatch.draft} draft` : '';
   document.getElementById('returnsFinalizedStat').textContent = activity.returns ? activity.returns.finalized : 0;
   document.getElementById('returnsDraftStat').textContent = activity.returns && activity.returns.draft ? `${activity.returns.draft} draft` : '';
-  const prod = activity.production || {};
-  document.getElementById('productionFinalizedStat').textContent = `${prod.day_finalized||0}D / ${prod.night_finalized||0}N`;
-  document.getElementById('productionDraftStat').textContent = prod.draft ? `${prod.draft} draft` : '';
+  // Production summary card intentionally removed from this Daily Activity
+  // row (Dispatches/Returns/Customers only) — Production itself is
+  // unaffected everywhere else (Production entry/history, Daily Figures,
+  // stock formula, reports, ledger calculations all still use
+  // activity.production / production_by_shift, unchanged).
   document.getElementById('lastActivityAt').textContent = activity.last_activity_at
     ? `Last recorded activity for this date: ${new Date(activity.last_activity_at + 'Z').toLocaleString()}`
     : 'No recorded activity for this date yet.';
-  document.getElementById('activeCustomersStat').textContent = data.active_customers ?? 0;
+  // "Customers" here means unique recipients of a FINALIZED dispatch on
+  // THIS selected date (COUNT DISTINCT recipient_id) — never the
+  // unrelated lifetime `active_customers` total (that whole-system count
+  // is still returned by the API for whatever else may use it, just not
+  // this card).
+  document.getElementById('activeCustomersStat').textContent = data.unique_recipients_today ?? 0;
 
   // ---- 3. Per-Product Daily Figures — only products worked on today ----
   document.getElementById('stockSummaryTitle').textContent = `Per-product Daily Figures — ${data.date || date}`;

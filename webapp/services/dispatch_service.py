@@ -249,6 +249,35 @@ def reopen_dispatch(dispatch, user, reason):
     dispatch.updated_by = user.id
 
 
+def replace_lines(dispatch, lines, user):
+    """
+    Atomically replace a DRAFT dispatch's entire line set — every existing
+    line removed, the new set inserted fresh — so re-saving a draft (an
+    Operator editing "Save draft" again, any number of times) can never
+    leave a duplicate or stale line behind, regardless of how many lines
+    were added/changed/removed. Lines are built (and therefore validated)
+    BEFORE anything is deleted, so a bad line never leaves the dispatch
+    with zero/partial lines even transiently.
+    """
+    if dispatch.status != STATUS_DRAFT:
+        raise DispatchError("only a draft dispatch's lines can be replaced directly — reopen it first")
+    if not lines:
+        raise DispatchError("A dispatch needs at least one product line")
+
+    now = _utcnow()
+    built_lines = [build_line(**line, at=now) for line in lines]
+
+    for line in list(dispatch.lines):
+        db.session.delete(line)
+    db.session.flush()
+
+    for line in built_lines:
+        db.session.add(DispatchLine(dispatch_id=dispatch.id, **line))
+    dispatch.updated_by = user.id
+    db.session.flush()
+    return dispatch
+
+
 def void_dispatch(dispatch, user, reason):
     if dispatch.status == STATUS_VOID:
         raise DispatchError("Dispatch is already void")
@@ -319,3 +348,28 @@ def duplicate_dispatch(source, new_dispatch_number, user, sales_category_id=None
     db.session.flush()
 
     return new_dispatch
+
+
+def delete_dispatch(dispatch, reason):
+    """
+    Permanent hard delete — Manager/Super Administrator only (enforced by
+    the route's roles_required, not here). Physically removes the
+    Dispatch row; DispatchLine rows go with it via the ORM cascade
+    already declared on Dispatch.lines ("all, delete-orphan" — see
+    webapp/models/dispatch.py). No status is ever set to any
+    "deleted"/"void"/"cancelled" value — the row simply stops existing,
+    so every live query (Issued totals, History, Dashboard, Operator
+    Daily Figures, exports, recipient/category breakdowns) that already
+    reads Dispatch/DispatchLine straight from the database automatically
+    reflects the removal — no separate stock-patching step, no fake
+    compensating transaction.
+
+    Caller is responsible for capturing an audit snapshot BEFORE calling
+    this (the row won't exist to inspect afterwards) and for removing the
+    product-usage-ranking events via product_usage_service.remove_usage(),
+    exactly like void_dispatch's caller already does.
+    """
+    if not reason:
+        raise DispatchError("A reason is required to permanently delete a dispatch")
+    db.session.delete(dispatch)
+    db.session.flush()
