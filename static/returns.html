@@ -231,6 +231,7 @@ let currentUser = null;
 let productsCache = [];
 let currentLines = [];
 let editingReturnId = null;
+let editingReturnOriginalLineIds = []; // captured when opening a draft for edit — used to diff which lines to remove
 let currentDetail = null;
 let selectedCustomer = null; // {id, name}
 const OTHER_FREE_TEXT = '__free_text__';
@@ -444,6 +445,7 @@ function updateLineHint(idx){
 // ---------- save ----------
 function resetForm(){
   editingReturnId = null;
+  editingReturnOriginalLineIds = [];
   selectedCustomer = null;
   currentLines = [];
   document.getElementById('rDate').value = todayStr();
@@ -484,6 +486,20 @@ async function saveReturn(finalize){
   const msg = document.getElementById('saveMsg');
   if(currentLines.length===0){ msg.textContent='Add at least one product.'; msg.className='msg err'; return; }
 
+  const draftBtn = document.getElementById('saveDraftBtn');
+  const finalizeBtn = document.getElementById('finalizeBtn');
+  draftBtn.disabled = true; finalizeBtn.disabled = true;
+  try{
+    if(editingReturnId) await saveEditedReturnDraft(finalize, msg);
+    else await saveNewReturn(finalize, msg);
+  } finally {
+    draftBtn.disabled = false; finalizeBtn.disabled = false;
+  }
+}
+document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveReturn(false));
+document.getElementById('finalizeBtn').addEventListener('click', ()=>saveReturn(true));
+
+async function saveNewReturn(finalize, msg){
   const freeTextName = selectedCustomer ? null : (document.getElementById('rReturnedBySearch').value.trim() || null);
   const body = {
     date: document.getElementById('rDate').value,
@@ -515,8 +531,93 @@ async function saveReturn(finalize){
   resetForm();
   switchTab('list');
 }
-document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveReturn(false));
-document.getElementById('finalizeBtn').addEventListener('click', ()=>saveReturn(true));
+
+// Draft editing (Operator on their own draft, or Manager/Super Admin on
+// any draft — enforced server-side by _load_editable_return()/can_edit(),
+// never only by hiding the button). Reuses the exact same header/line
+// endpoints the backend already exposed for this — update_return() (PATCH)
+// plus add_line/update_line/remove_line — rather than a second, competing
+// edit engine. Not atomic across the several calls the way Dispatch's
+// single PUT /lines is (Returns has no bulk-replace endpoint), so new
+// lines are added and existing ones updated BEFORE any removal, which
+// guarantees the record never transiently drops to zero lines (remove_line
+// refuses to remove the last remaining line).
+async function saveEditedReturnDraft(finalize, msg){
+  const id = editingReturnId;
+  const freeTextName = selectedCustomer ? null : (document.getElementById('rReturnedBySearch').value.trim() || null);
+  const headerBody = {
+    date: document.getElementById('rDate').value,
+    customer_id: selectedCustomer ? selectedCustomer.id : null,
+    returned_by_name: freeTextName,
+    signed_by_name: document.getElementById('rSignedByName').value || null,
+    remarks: document.getElementById('rRemarks').value || null,
+  };
+  const patchRes = await api(`/api/returns/${id}`, {method:'PATCH', body: JSON.stringify(headerBody)});
+  if(patchRes.status !== 200){
+    msg.textContent = patchRes.data.error || 'Could not save return.';
+    msg.className = 'msg err';
+    return;
+  }
+
+  const keepIds = new Set();
+  for(const line of currentLines){
+    const lineBody = {product_id: line.product_id, cartons: line.cartons, packs: line.packs, pieces: line.pieces};
+    if(line.id == null){
+      const r = await api(`/api/returns/${id}/lines`, {method:'POST', body: JSON.stringify(lineBody)});
+      if(r.status !== 201){ msg.textContent = r.data.error || 'Could not save product lines.'; msg.className = 'msg err'; return; }
+    } else {
+      keepIds.add(line.id);
+      const r = await api(`/api/returns/${id}/lines/${line.id}`, {method:'PATCH', body: JSON.stringify(lineBody)});
+      if(r.status !== 200){ msg.textContent = r.data.error || 'Could not save product lines.'; msg.className = 'msg err'; return; }
+    }
+  }
+  for(const origId of editingReturnOriginalLineIds){
+    if(!keepIds.has(origId)){
+      const r = await api(`/api/returns/${id}/lines/${origId}`, {method:'DELETE'});
+      if(r.status !== 200){ msg.textContent = r.data.error || 'Could not save product lines.'; msg.className = 'msg err'; return; }
+    }
+  }
+
+  if(finalize){
+    const fin = await api(`/api/returns/${id}/finalize`, {method:'POST'});
+    if(fin.status !== 200){
+      toast('Draft saved, but finalizing failed: ' + (fin.data.error||''));
+      openDetail(id);
+      switchTab('detail');
+      return;
+    }
+    toast('Return finalized.');
+    resetForm();
+    switchTab('list');
+    return;
+  }
+
+  toast('Draft saved.');
+  resetForm();
+  switchTab('list');
+}
+
+function openEditDraft(data){
+  editingReturnId = data.id;
+  editingReturnOriginalLineIds = data.lines.map(l => l.id);
+  document.getElementById('rDate').value = data.date;
+  selectedCustomer = data.returned_by_customer_id ? {id: data.returned_by_customer_id, name: data.returned_by_name} : null;
+  document.getElementById('rReturnedBySearch').value = data.returned_by_name || '';
+  document.getElementById('returnedByHint').textContent = selectedCustomer ? 'Matched to an existing customer' : '';
+  document.getElementById('returnedByResults').classList.add('hidden');
+  document.getElementById('rSignedByName').value = data.signed_by_name || '';
+  document.getElementById('rSignedByName').readOnly = currentUser.role === 'operator';
+  document.getElementById('rRemarks').value = data.remarks || '';
+
+  currentLines = data.lines.map(l => ({
+    id: l.id, product_id: l.product_id, product_name: l.product_name,
+    rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
+    cartons: l.cartons, packs: l.packs, pieces: l.pieces,
+  }));
+  renderLines();
+  document.getElementById('saveMsg').textContent = '';
+  switchTab('new');
+}
 
 // ---------- list ----------
 function statusPill(status){
@@ -664,18 +765,26 @@ async function openDetail(id){
     </div>
   `).join('');
 
-  // Standard History action set (Manager/Super Admin): Reopen, Edit,
-  // Delete, Print — Void and Duplicate are not offered here.
+  // Standardized History action set: Preview, Edit, Delete, Print. See
+  // static/dispatch.html's identical block for the full rationale — same
+  // single-Edit-per-state rule, same Reopen/Void/Duplicate UI removal.
   const actions = document.getElementById('detailActions');
   const buttons = [];
   const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
+  const isViewer = currentUser && currentUser.role === 'viewer';
+  const ownsDraft = currentUser && data.created_by === currentUser.id;
+  const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
-  if(isElevated){
-    if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
+  if(!isViewer) buttons.push(`<button class="btn btn-ghost" data-action="preview">Preview</button>`);
+  if(data.status === 'draft'){
+    if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
+  } else if(isElevated && data.status !== 'void'){
+    buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+  }
+  if(isElevated && data.status !== 'void'){
+    buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
   }
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
@@ -694,13 +803,13 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'reopen'){
-        const reason = prompt(`Reason to ${action} this return:`);
-        if(!reason) return;
-        const r = await api(`/api/returns/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
-        if(r.status===200){ toast('Reopened.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+      if(action === 'preview'){
+        document.getElementById('correctPanel').classList.add('hidden');
+        document.getElementById('deletePanel').classList.add('hidden');
+        document.getElementById('detailHeader').scrollIntoView({behavior:'smooth'});
         return;
       }
+      if(action === 'edit-draft'){ openEditDraft(data); return; }
       if(action === 'correct'){ openCorrectPanel(data); return; }
       if(action === 'delete'){ openDeletePanel(data); return; }
     });

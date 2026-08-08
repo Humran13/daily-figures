@@ -230,6 +230,7 @@ let currentUser = null;
 let productsCache = [];
 let currentLines = [];
 let editingProductionId = null;
+let editingProductionOriginalLineIds = []; // captured when opening a draft for edit — used to diff which lines to remove
 let currentDetail = null;
 
 function toast(msg){
@@ -404,6 +405,7 @@ function updateLineHint(idx){
 // ---------- save ----------
 function resetForm(){
   editingProductionId = null;
+  editingProductionOriginalLineIds = [];
   currentLines = [];
   document.getElementById('pDate').value = todayStr();
   document.getElementById('pShift').value = 'Day';
@@ -425,6 +427,20 @@ async function saveProduction(finalize){
   const msg = document.getElementById('saveMsg');
   if(currentLines.length===0){ msg.textContent='Add at least one product.'; msg.className='msg err'; return; }
 
+  const draftBtn = document.getElementById('saveDraftBtn');
+  const finalizeBtn = document.getElementById('finalizeBtn');
+  draftBtn.disabled = true; finalizeBtn.disabled = true;
+  try{
+    if(editingProductionId) await saveEditedProductionDraft(finalize, msg);
+    else await saveNewProduction(finalize, msg);
+  } finally {
+    draftBtn.disabled = false; finalizeBtn.disabled = false;
+  }
+}
+document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveProduction(false));
+document.getElementById('finalizeBtn').addEventListener('click', ()=>saveProduction(true));
+
+async function saveNewProduction(finalize, msg){
   const body = {
     date: document.getElementById('pDate').value,
     shift: document.getElementById('pShift').value,
@@ -453,8 +469,82 @@ async function saveProduction(finalize){
   resetForm();
   switchTab('list');
 }
-document.getElementById('saveDraftBtn').addEventListener('click', ()=>saveProduction(false));
-document.getElementById('finalizeBtn').addEventListener('click', ()=>saveProduction(true));
+
+// Draft editing (Operator on their own draft, or Manager/Super Admin on
+// any draft — enforced server-side by _load_editable_production()/
+// can_edit(), never only by hiding the button). See static/returns.html's
+// identical saveEditedReturnDraft() for the full rationale: reuses the
+// existing header/line endpoints (update_production, add_line/update_line/
+// remove_line) rather than a second edit engine; additions/updates happen
+// before removals so the record never transiently drops to zero lines.
+async function saveEditedProductionDraft(finalize, msg){
+  const id = editingProductionId;
+  const headerBody = {
+    date: document.getElementById('pDate').value,
+    shift: document.getElementById('pShift').value,
+    remarks: document.getElementById('pRemarks').value || null,
+  };
+  const patchRes = await api(`/api/production/${id}`, {method:'PATCH', body: JSON.stringify(headerBody)});
+  if(patchRes.status !== 200){
+    msg.textContent = patchRes.data.error || 'Could not save production entry.';
+    msg.className = 'msg err';
+    return;
+  }
+
+  const keepIds = new Set();
+  for(const line of currentLines){
+    const lineBody = {product_id: line.product_id, cartons: line.cartons, packs: line.packs, pieces: line.pieces};
+    if(line.id == null){
+      const r = await api(`/api/production/${id}/lines`, {method:'POST', body: JSON.stringify(lineBody)});
+      if(r.status !== 201){ msg.textContent = r.data.error || 'Could not save product lines.'; msg.className = 'msg err'; return; }
+    } else {
+      keepIds.add(line.id);
+      const r = await api(`/api/production/${id}/lines/${line.id}`, {method:'PATCH', body: JSON.stringify(lineBody)});
+      if(r.status !== 200){ msg.textContent = r.data.error || 'Could not save product lines.'; msg.className = 'msg err'; return; }
+    }
+  }
+  for(const origId of editingProductionOriginalLineIds){
+    if(!keepIds.has(origId)){
+      const r = await api(`/api/production/${id}/lines/${origId}`, {method:'DELETE'});
+      if(r.status !== 200){ msg.textContent = r.data.error || 'Could not save product lines.'; msg.className = 'msg err'; return; }
+    }
+  }
+
+  if(finalize){
+    const fin = await api(`/api/production/${id}/finalize`, {method:'POST'});
+    if(fin.status !== 200){
+      toast('Draft saved, but finalizing failed: ' + (fin.data.error||''));
+      openDetail(id);
+      switchTab('detail');
+      return;
+    }
+    toast('Production finalized.');
+    resetForm();
+    switchTab('list');
+    return;
+  }
+
+  toast('Draft saved.');
+  resetForm();
+  switchTab('list');
+}
+
+function openEditDraft(data){
+  editingProductionId = data.id;
+  editingProductionOriginalLineIds = data.lines.map(l => l.id);
+  document.getElementById('pDate').value = data.date;
+  document.getElementById('pShift').value = data.shift;
+  document.getElementById('pRemarks').value = data.remarks || '';
+
+  currentLines = data.lines.map(l => ({
+    id: l.id, product_id: l.product_id, product_name: l.product_name,
+    rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
+    cartons: l.cartons, packs: l.packs, pieces: l.pieces,
+  }));
+  renderLines();
+  document.getElementById('saveMsg').textContent = '';
+  switchTab('new');
+}
 
 // ---------- list ----------
 function statusPill(status){
@@ -593,18 +683,26 @@ async function openDetail(id){
     </div>
   `).join('');
 
-  // Standard History action set (Manager/Super Admin): Reopen, Edit,
-  // Delete, Print — Void and Duplicate are not offered here.
+  // Standardized History action set: Preview, Edit, Delete, Print. See
+  // static/dispatch.html's identical block for the full rationale — same
+  // single-Edit-per-state rule, same Reopen/Void/Duplicate UI removal.
   const actions = document.getElementById('detailActions');
   const buttons = [];
   const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
+  const isViewer = currentUser && currentUser.role === 'viewer';
+  const ownsDraft = currentUser && data.created_by === currentUser.id;
+  const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
-  if(isElevated){
-    if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
+  if(!isViewer) buttons.push(`<button class="btn btn-ghost" data-action="preview">Preview</button>`);
+  if(data.status === 'draft'){
+    if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
+  } else if(isElevated && data.status !== 'void'){
+    buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+  }
+  if(isElevated && data.status !== 'void'){
+    buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
   }
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
@@ -623,13 +721,13 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'reopen'){
-        const reason = prompt(`Reason to ${action} this production entry:`);
-        if(!reason) return;
-        const r = await api(`/api/production/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
-        if(r.status===200){ toast('Reopened.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+      if(action === 'preview'){
+        document.getElementById('correctPanel').classList.add('hidden');
+        document.getElementById('deletePanel').classList.add('hidden');
+        document.getElementById('detailHeader').scrollIntoView({behavior:'smooth'});
         return;
       }
+      if(action === 'edit-draft'){ openEditDraft(data); return; }
       if(action === 'correct'){ openCorrectPanel(data); return; }
       if(action === 'delete'){ openDeletePanel(data); return; }
     });

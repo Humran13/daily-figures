@@ -270,6 +270,8 @@ def test_returns_html_signer_field_defaults_and_locks_for_operator():
 
 # =====================================================================
 # SECTION 16 — STANDARD HISTORY ACTION BUTTONS
+# (Preview, Edit, Delete, Print — Reopen/Void/Duplicate/Edit Draft/
+#  Correct Record removed from the UI; their backend routes are untouched.)
 # =====================================================================
 
 def _detail_actions_body(html, marker="const actions = document.getElementById('detailActions');"):
@@ -278,36 +280,146 @@ def _detail_actions_body(html, marker="const actions = document.getElementById('
     return html[idx:end]
 
 
-def test_dispatch_elevated_actions_are_reopen_edit_delete_print():
+ALL_THREE_HTML = (DISPATCH_HTML, RETURNS_HTML, PRODUCTION_HTML)
+
+# The exact single-Edit-per-state branch every one of the three pages
+# shares verbatim (see static/dispatch.html's openDetail()) — Draft gets
+# the draft-editing workflow, everything else (Manager/Super Admin only)
+# gets Correct Record, and the two are mutually exclusive via if/else if,
+# never both pushed for the same record.
+_SINGLE_EDIT_BRANCH = (
+    "if(data.status === 'draft'){\n"
+    "    if(canEditDraft) buttons.push(`<button class=\"btn btn-ghost\" data-action=\"edit-draft\">Edit</button>`);\n"
+    "  } else if(isElevated && data.status !== 'void'){\n"
+    "    buttons.push(`<button class=\"btn btn-ghost\" data-action=\"correct\">Edit</button>`);\n"
+    "  }"
+)
+_DELETE_BRANCH = (
+    "if(isElevated && data.status !== 'void'){\n"
+    "    buttons.push(`<button class=\"btn btn-danger\" data-action=\"delete\">Delete</button>`);\n"
+    "  }"
+)
+_PREVIEW_LINE = "if(!isViewer) buttons.push(`<button class=\"btn btn-ghost\" data-action=\"preview\">Preview</button>`);"
+
+
+def test_dispatch_elevated_actions_are_preview_edit_delete_print():
     body = _detail_actions_body(DISPATCH_HTML)
-    assert 'data-action="reopen">Reopen<' in body
+    assert 'data-action="preview">Preview<' in body
     assert 'data-action="correct">Edit<' in body
     assert 'data-action="delete">Delete<' in body
-    assert 'data-action="print">Print<' in DISPATCH_HTML[DISPATCH_HTML.index(body):DISPATCH_HTML.index(body) + len(body) + 200]
+    assert 'data-action="reopen"' not in body
+    tail = DISPATCH_HTML[DISPATCH_HTML.index(body):DISPATCH_HTML.index(body) + len(body) + 200]
+    assert 'data-action="print">Print<' in tail
 
 
-def test_dispatch_no_void_or_duplicate_button():
-    body = _detail_actions_body(DISPATCH_HTML)
-    assert 'data-action="void"' not in body
-    assert 'data-action="duplicate"' not in body
-    assert ">Void<" not in body
-    assert ">Duplicate<" not in body
-
-
-def test_returns_elevated_actions_standardized():
+def test_returns_elevated_actions_are_preview_edit_delete_print():
     body = _detail_actions_body(RETURNS_HTML)
-    assert 'data-action="reopen">Reopen<' in body
+    assert 'data-action="preview">Preview<' in body
     assert 'data-action="correct">Edit<' in body
     assert 'data-action="delete">Delete<' in body
-    assert 'data-action="void"' not in body
+    assert 'data-action="reopen"' not in body
 
 
-def test_production_elevated_actions_standardized():
+def test_production_elevated_actions_are_preview_edit_delete_print():
     body = _detail_actions_body(PRODUCTION_HTML)
-    assert 'data-action="reopen">Reopen<' in body
+    assert 'data-action="preview">Preview<' in body
     assert 'data-action="correct">Edit<' in body
     assert 'data-action="delete">Delete<' in body
-    assert 'data-action="void"' not in body
+    assert 'data-action="reopen"' not in body
+
+
+def test_no_void_reopen_or_duplicate_button_on_any_history_page():
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert 'data-action="void"' not in body
+        assert 'data-action="duplicate"' not in body
+        assert 'data-action="reopen"' not in body
+        assert ">Void<" not in body
+        assert ">Duplicate<" not in body
+        assert ">Reopen<" not in body
+
+
+def test_no_edit_draft_or_correct_record_button_label_remains():
+    # The button itself is always labelled "Edit" now — "Edit Draft" (the
+    # old draft-only label) is gone; "Correct record" is a panel heading,
+    # never a top-level action-row button label, so it must not appear as
+    # one either.
+    for html in ALL_THREE_HTML:
+        assert ">Edit Draft<" not in html
+        assert 'data-action="edit-draft">Edit Draft<' not in html
+
+
+def test_preview_is_offered_to_every_non_viewer_role_in_markup():
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert _PREVIEW_LINE in body
+
+
+def test_viewer_gated_out_of_preview_button():
+    # Preview is explicitly gated behind !isViewer — Viewer's existing
+    # read-only detail view already serves as its preview, so no new
+    # button is added for that role (not a permission change either way).
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert "!isViewer" in body
+
+
+def test_operator_button_set_includes_preview_edit_print_via_owned_draft():
+    # canEditDraft = data.status === 'draft' && (isElevated || ownsDraft) —
+    # an Operator viewing a draft they own reaches Preview, Edit
+    # (edit-draft), and Print; Delete never appears for them (see below).
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert "const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);" in body
+        assert _PREVIEW_LINE in body
+        assert 'data-action="edit-draft">Edit<' in body
+
+
+def test_delete_is_reachable_only_through_isElevated_gate():
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert _DELETE_BRANCH in body
+
+
+def test_single_edit_action_per_record_state_no_duplicates():
+    # Draft-edit and Correct-record are mutually exclusive branches of one
+    # if/else if — the old bug (both "Edit Draft" and elevated "Edit"
+    # showing simultaneously on a draft) can't reoccur while this
+    # structure holds.
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert _SINGLE_EDIT_BRANCH in body
+        # Never two independent top-level "if(...) buttons.push(...Edit...)"
+        # statements — only the one shared if/else if above.
+        assert body.count('data-action="edit-draft">Edit<') == 1
+        assert body.count('data-action="correct">Edit<') == 1
+
+
+def test_operator_never_reaches_correct_edit_backend_route(client, setup, login_as):
+    # Belt-and-braces on top of the markup checks above: even if a client
+    # forged the "correct" action for a finalized record, the backend
+    # route itself still 403s an Operator — matches "Do not weaken
+    # authorization merely to make the frontend uniform."
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-NOEDIT-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+
+    created = _create_return(client, setup["product"]["id"]).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day",
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+
+    login_as("tux_noedit_op", "password123", "operator")
+    assert client.post(f"/api/dispatches/{d['id']}/correct", json={"reason": "x", "lines": []}).status_code == 403
+    assert client.post(f"/api/returns/{created['id']}/correct", json={"reason": "x", "lines": []}).status_code == 403
+    assert client.post(f"/api/production/{prod['id']}/correct", json={"reason": "x", "lines": []}).status_code == 403
 
 
 def test_operator_and_viewer_do_not_gain_elevated_actions(client, setup, login_as):
@@ -360,6 +472,151 @@ def test_edit_action_uses_existing_correction_service(client, setup, super_admin
     })
     assert res.status_code == 200
     assert _issued_base_qty(client, pid, "2026-08-01") == 300
+
+
+# ---------------------------------------------------------------------
+# Draft "Edit" for Returns/Production — the single Edit button on a draft
+# now opens a real draft-editing workflow (matching Dispatch's pre-existing
+# Edit Draft), built on the header/line endpoints (update_header +
+# add_line/update_line/remove_line) that already existed server-side and
+# already allowed the owning Operator via can_edit() — this only wires the
+# frontend to them, it does not add new backend permissions.
+# ---------------------------------------------------------------------
+
+def test_operator_can_edit_own_draft_return_via_existing_endpoints(client, setup, login_as):
+    login_as("tux_ret_edit_op", "password123", "operator")
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid, cartons=2).get_json()
+
+    patch_res = client.patch(f"/api/returns/{created['id']}", json={"remarks": "edited by owner"})
+    assert patch_res.status_code == 200
+    line_res = client.patch(
+        f"/api/returns/{created['id']}/lines/{created['lines'][0]['id']}",
+        json={"cartons": 5, "packs": 0, "pieces": 0},
+    )
+    assert line_res.status_code == 200
+
+    client.post(f"/api/returns/{created['id']}/finalize")
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 500
+    assert len(client.get(f"/api/returns/{created['id']}").get_json()["lines"]) == 1  # edited in place, not duplicated
+
+
+def test_operator_cannot_edit_another_users_draft_return(client, setup, super_admin, login_as):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid).get_json()  # created while logged in as super_admin
+    login_as("tux_ret_edit_op2", "password123", "operator")
+    res = client.patch(f"/api/returns/{created['id']}", json={"remarks": "not mine to edit"})
+    assert res.status_code == 403
+
+
+def test_operator_cannot_edit_return_lines_once_finalized_via_draft_endpoints(client, setup, login_as):
+    login_as("tux_ret_edit_op3", "password123", "operator")
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    res = client.patch(f"/api/returns/{created['id']}", json={"remarks": "too late"})
+    # can_edit() already denies an Operator on a non-draft record before the
+    # draft-only status guard is even reached — 403, not 409 (a Manager/
+    # Super Admin, who always passes can_edit, would hit the 409 instead).
+    assert res.status_code == 403
+
+
+def test_manager_cannot_edit_return_header_once_finalized_without_reopening(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    res = client.patch(f"/api/returns/{created['id']}", json={"remarks": "too late"})
+    assert res.status_code == 409  # "reopen it first" — the draft-only guard still applies
+
+
+def test_returns_draft_edit_adding_and_removing_lines_does_not_leave_duplicates(client, setup, login_as):
+    pid = setup["product"]["id"]
+    other = _make_product(client, "TUX Other Product")  # created while logged in as super_admin
+    login_as("tux_ret_edit_op4", "password123", "operator")
+    created = _create_return(client, pid, cartons=1).get_json()
+    original_line_id = created["lines"][0]["id"]
+
+    add_res = client.post(f"/api/returns/{created['id']}/lines", json={"product_id": other["id"], "cartons": 1, "packs": 0, "pieces": 0})
+    assert add_res.status_code == 201
+    del_res = client.delete(f"/api/returns/{created['id']}/lines/{original_line_id}")
+    assert del_res.status_code == 200
+
+    lines = client.get(f"/api/returns/{created['id']}").get_json()["lines"]
+    assert len(lines) == 1
+    assert lines[0]["product_id"] == other["id"]
+
+
+def test_operator_can_edit_own_draft_production_via_existing_endpoints(client, setup, login_as):
+    login_as("tux_prod_edit_op", "password123", "operator")
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    }).get_json()
+
+    patch_res = client.patch(f"/api/production/{prod['id']}", json={"remarks": "edited by owner"})
+    assert patch_res.status_code == 200
+    line_res = client.patch(
+        f"/api/production/{prod['id']}/lines/{prod['lines'][0]['id']}",
+        json={"cartons": 4, "packs": 0, "pieces": 0},
+    )
+    assert line_res.status_code == 200
+
+    client.post(f"/api/production/{prod['id']}/finalize")
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["production"]["base_qty"] == 400
+    assert len(client.get(f"/api/production/{prod['id']}").get_json()["lines"]) == 1
+
+
+def test_operator_cannot_edit_another_users_draft_production(client, setup, super_admin, login_as):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()  # created while logged in as super_admin
+    login_as("tux_prod_edit_op2", "password123", "operator")
+    res = client.patch(f"/api/production/{prod['id']}", json={"remarks": "not mine to edit"})
+    assert res.status_code == 403
+
+
+def test_operator_cannot_edit_production_lines_once_finalized_via_draft_endpoints(client, setup, login_as):
+    login_as("tux_prod_edit_op3", "password123", "operator")
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    res = client.patch(f"/api/production/{prod['id']}", json={"remarks": "too late"})
+    assert res.status_code == 403  # can_edit() denies before the draft-only status guard is reached
+
+
+def test_manager_cannot_edit_production_header_once_finalized_without_reopening(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    res = client.patch(f"/api/production/{prod['id']}", json={"remarks": "too late"})
+    assert res.status_code == 409  # "reopen it first" — the draft-only guard still applies
+
+
+def test_returns_html_edit_draft_reuses_header_and_line_endpoints():
+    assert "async function saveEditedReturnDraft(finalize, msg){" in RETURNS_HTML
+    idx = RETURNS_HTML.index("async function saveEditedReturnDraft(finalize, msg){")
+    end = RETURNS_HTML.index("\nfunction openEditDraft(data){", idx)
+    body = RETURNS_HTML[idx:end]
+    assert "method:'PATCH', body: JSON.stringify(headerBody)" in body
+    assert "/lines`, {method:'POST'" in body
+    assert "/lines/${line.id}`, {method:'PATCH'" in body
+    assert "/lines/${origId}`, {method:'DELETE'}" in body
+
+
+def test_production_html_edit_draft_reuses_header_and_line_endpoints():
+    assert "async function saveEditedProductionDraft(finalize, msg){" in PRODUCTION_HTML
+    idx = PRODUCTION_HTML.index("async function saveEditedProductionDraft(finalize, msg){")
+    end = PRODUCTION_HTML.index("\nfunction openEditDraft(data){", idx)
+    body = PRODUCTION_HTML[idx:end]
+    assert "method:'PATCH', body: JSON.stringify(headerBody)" in body
+    assert "/lines`, {method:'POST'" in body
+    assert "/lines/${line.id}`, {method:'PATCH'" in body
+    assert "/lines/${origId}`, {method:'DELETE'}" in body
 
 
 def test_delete_retains_permanent_delete_semantics_for_returns(client, setup, super_admin, app):
@@ -447,10 +704,127 @@ def test_production_delete_audit_snapshot_survives(client, setup, super_admin, a
         assert before["deletion_reason"] == "audit check"
 
 
+def test_repeating_delete_is_safe_returns(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    first = client.delete(f"/api/returns/{created['id']}", json={"reason": "x", "confirm": True})
+    assert first.status_code == 200
+    second = client.delete(f"/api/returns/{created['id']}", json={"reason": "x", "confirm": True})
+    assert second.status_code == 404  # already gone — not a crash, not a double-delete
+
+
+def test_repeating_delete_is_safe_production(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    first = client.delete(f"/api/production/{prod['id']}", json={"reason": "x", "confirm": True})
+    assert first.status_code == 200
+    second = client.delete(f"/api/production/{prod['id']}", json={"reason": "x", "confirm": True})
+    assert second.status_code == 404
+
+
+def test_delete_removes_no_unrelated_data_returns(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    keep = _create_return(client, pid, cartons=3).get_json()
+    client.post(f"/api/returns/{keep['id']}/finalize")
+    doomed = _create_return(client, pid, cartons=1).get_json()
+    client.post(f"/api/returns/{doomed['id']}/finalize")
+
+    res = client.delete(f"/api/returns/{doomed['id']}", json={"reason": "entered in error", "confirm": True})
+    assert res.status_code == 200
+
+    still_there = client.get(f"/api/returns/{keep['id']}")
+    assert still_there.status_code == 200
+    assert still_there.get_json()["lines"][0]["cartons"] == 3
+
+
+def test_delete_removes_no_unrelated_data_production(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    keep = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{keep['id']}/finalize")
+    doomed = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{doomed['id']}/finalize")
+
+    res = client.delete(f"/api/production/{doomed['id']}", json={"reason": "entered in error", "confirm": True})
+    assert res.status_code == 200
+
+    still_there = client.get(f"/api/production/{keep['id']}")
+    assert still_there.status_code == 200
+    assert still_there.get_json()["lines"][0]["cartons"] == 3
+
+
+# =====================================================================
+# SECTION — PREVIEW SAFETY
+# =====================================================================
+
+def test_preview_action_makes_no_api_call_on_any_history_page():
+    # Preview is defined as strictly display-only: it must never call api()
+    # (the only path any of these pages use to reach the backend), so it
+    # can never change status, stock, audit state, or create/finalize/
+    # reopen anything — true by construction, not by convention.
+    for html in ALL_THREE_HTML:
+        idx = html.index("if(action === 'preview'){")
+        end = html.index("if(action ===", idx + 10)
+        body = html[idx:end]
+        assert "api(" not in body
+
+
+def test_preview_opens_the_currently_loaded_record_read_only():
+    # Preview operates on the same `data` object openDetail() already
+    # fetched and rendered read-only above the action row — it does not
+    # re-fetch, re-render editable fields, or touch correctPanel/
+    # deletePanel except to hide them.
+    for html in ALL_THREE_HTML:
+        idx = html.index("if(action === 'preview'){")
+        end = html.index("if(action ===", idx + 10)
+        body = html[idx:end]
+        assert "correctPanel" in body and "classList.add('hidden')" in body
+        assert "deletePanel" in body
+
+
+# =====================================================================
+# SECTION — PRINT
+# =====================================================================
+
 def test_print_action_present_on_all_three_history_pages():
-    for html in (DISPATCH_HTML, RETURNS_HTML, PRODUCTION_HTML):
+    for html in ALL_THREE_HTML:
         assert 'data-action="print">Print<' in html
         assert "window.print()" in html
+
+
+def test_print_action_makes_no_api_call_on_any_history_page():
+    for html in ALL_THREE_HTML:
+        line = html[html.index("if(action === 'print'){"):]
+        line = line[:line.index("\n")]
+        assert "api(" not in line
+
+
+def test_print_available_to_operator_manager_super_admin_in_markup():
+    # Print is pushed unconditionally (never gated by isElevated/isViewer),
+    # so every authenticated role that can open a record reaches it.
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert "buttons.push(`<button class=\"btn btn-ghost\" data-action=\"print\">Print</button>`);" in body
+
+
+def test_printed_view_contains_record_detail_without_nav_controls():
+    # @media print hides header/.tabs/.no-print (nav chrome, filters,
+    # action buttons) but never touches #detailHeader/#detailLines (both
+    # plain .card, no no-print class) — those are exactly what prints.
+    for html in ALL_THREE_HTML:
+        idx = html.index("@media print {")
+        block = html[idx:html.index("}\n", idx) + 1]
+        assert "header, .tabs, .no-print { display:none !important; }" in block
+        assert 'id="detailHeader"' in html
+        assert 'class="card" id="detailHeader"' in html  # plain card, not tagged no-print
+        assert 'class="card" id="detailLines"' in html
 
 
 # =====================================================================

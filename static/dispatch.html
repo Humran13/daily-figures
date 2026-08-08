@@ -1034,26 +1034,39 @@ async function openDetail(id){
   const actions = document.getElementById('detailActions');
   const buttons = [];
   const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
+  const isViewer = currentUser && currentUser.role === 'viewer';
   const ownsDraft = currentUser && data.created_by === currentUser.id;
+  const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);
   if(data.status === 'draft'){
-    // Draft/Finalized UX — an Operator sees Edit Draft only on their own
-    // drafts (server-enforced by can_edit(); this is display-only, never
-    // the real gate); Manager/Super Admin see it on any draft.
-    if(isElevated || ownsDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit Draft</button>`);
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
-  // Standard History action set (Manager/Super Admin): Reopen, Edit,
-  // Delete, Print — Void and Duplicate are not offered here.
-  if(isElevated){
-    if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
-    // Correct Record: amends and refinalizes the original in one step.
-    // Reopen (above) is kept for anyone who deliberately wants the record
-    // left open instead — the two are not the same action.
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
-    // Permanent delete — never void/cancel/soft-delete. Draft or
-    // finalized (both may be genuinely wrong); not offered on an already-
-    // void record, which is out of this action's scope.
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
+  // Standardized History action set: Preview, Edit, Delete, Print.
+  // Reopen/Void/Duplicate are not offered here (their backend routes are
+  // untouched — see /reopen, /void, /duplicate — this is a UI-only
+  // removal). Viewer never gains Preview here since it never had one
+  // before (its read-only detail view already IS the preview) — adding a
+  // button would be pure UI noise, not a permission change.
+  if(!isViewer) buttons.push(`<button class="btn btn-ghost" data-action="preview">Preview</button>`);
+  // Edit — exactly one action per record, matching its current state:
+  //   Draft     -> the draft editing workflow (openEditDraft), for whoever
+  //                can edit this draft (elevated, or the Operator who owns
+  //                it — server-enforced by can_edit(), never only by
+  //                hiding this button).
+  //   Finalized -> the Correct Record workflow, Manager/Super Admin only
+  //                (Operator has no backend permission to correct a
+  //                finalized record — the button is simply not shown
+  //                rather than shown-then-403).
+  // Never both at once for the same record — that was the pre-existing
+  // "Edit Draft" + "Edit" duplicate-button bug this fixes.
+  if(data.status === 'draft'){
+    if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
+  } else if(isElevated && data.status !== 'void'){
+    buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+  }
+  // Permanent delete — never void/cancel/soft-delete. Manager/Super Admin
+  // only; not offered on an already-void record.
+  if(isElevated && data.status !== 'void'){
+    buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
   }
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
@@ -1073,11 +1086,14 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'reopen'){
-        const reason = prompt(`Reason to ${action} this dispatch:`);
-        if(!reason) return;
-        const r = await api(`/api/dispatches/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
-        if(r.status===200){ toast('Reopened.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+      if(action === 'preview'){
+        // Strictly read-only: closes any open Edit/Delete panel and shows
+        // the record's already-read-only header/lines — never touches
+        // status, stock, audit state, or creates/finalizes/reopens
+        // anything.
+        document.getElementById('correctPanel').classList.add('hidden');
+        document.getElementById('deletePanel').classList.add('hidden');
+        document.getElementById('detailHeader').scrollIntoView({behavior:'smooth'});
         return;
       }
       if(action === 'correct'){ openCorrectPanel(data); return; }
