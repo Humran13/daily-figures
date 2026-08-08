@@ -904,7 +904,7 @@ async function loadList(){
       (draftCount ? ` · ${draftCount} draft` : '');
     return `
     <div class="date-group collapsed">
-      <div class="date-group-head" data-toggle-group>
+      <div class="date-group-head" data-toggle-group aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${summary}</div></div>
         <span class="chev">▾</span>
       </div>
@@ -926,7 +926,12 @@ async function loadList(){
   list.querySelectorAll('[data-toggle-group]').forEach(head=>{
     head.addEventListener('click', (e)=>{
       if(e.target.closest('[data-open]')) return;
-      head.closest('.date-group').classList.toggle('collapsed');
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
     });
   });
   list.querySelectorAll('[data-open]').forEach(el=>{

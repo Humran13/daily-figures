@@ -550,12 +550,16 @@ async function loadList(){
     return;
   }
 
+  // Collapsed by default (global History UX rule) — every date group,
+  // including today's/the newest, starts collapsed; clicking the head
+  // (date text or chevron — the whole head is one click target below)
+  // toggles it. No return is hidden from the data, only its display.
   const groups = groupByDate(results);
   list.innerHTML = groups.map(g => {
     const finalizedCount = g.items.filter(r=>r.status==='finalized').length;
     return `
-    <div class="date-group">
-      <div class="date-group-head" data-toggle-group>
+    <div class="date-group collapsed">
+      <div class="date-group-head" data-toggle-group aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${g.items.length} return${g.items.length===1?'':'s'} · ${finalizedCount} finalized</div></div>
         <span class="chev">▾</span>
       </div>
@@ -575,7 +579,12 @@ async function loadList(){
   list.querySelectorAll('[data-toggle-group]').forEach(head=>{
     head.addEventListener('click', (e)=>{
       if(e.target.closest('[data-open]')) return;
-      head.closest('.date-group').classList.toggle('collapsed');
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
     });
   });
   list.querySelectorAll('[data-open]').forEach(el=>{

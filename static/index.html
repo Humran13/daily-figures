@@ -1055,10 +1055,15 @@ async function renderHistory(){
     return;
   }
 
+  // Collapsed by default (global History UX rule) — every date group,
+  // including today's/the newest, starts collapsed; clicking the head
+  // (date text or chevron) toggles it. No entry is hidden from the data,
+  // only its display; Opening/Production/Returns/Issued/Closing values
+  // themselves are untouched.
   const groups = groupHistoryByDate(results);
   list.innerHTML = groups.map(g => `
-    <div class="date-group">
-      <div class="date-group-head" data-toggle-hgroup>
+    <div class="date-group collapsed">
+      <div class="date-group-head" data-toggle-hgroup aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${g.items.length} product line${g.items.length===1?'':'s'}</div></div>
         <span class="chev">▾</span>
       </div>
@@ -1075,7 +1080,14 @@ async function renderHistory(){
     </div>`).join('');
 
   list.querySelectorAll('[data-toggle-hgroup]').forEach(head=>{
-    head.addEventListener('click', ()=>head.closest('.date-group').classList.toggle('collapsed'));
+    head.addEventListener('click', ()=>{
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
+    });
   });
   list.querySelectorAll('[data-drill]').forEach(el=>{
     el.addEventListener('click', (e)=>{

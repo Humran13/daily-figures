@@ -385,12 +385,16 @@ async function loadDispatchHistory(){
     return;
   }
 
+  // Collapsed by default (global History UX rule) — every date group,
+  // including today's/the newest, starts collapsed; clicking the head
+  // (date text or chevron — the whole head is one click target below)
+  // toggles it. No dispatch is hidden from the data, only its display.
   const groups = groupByDate(results);
   list.innerHTML = groups.map(g => {
     const finalizedCount = g.items.filter(d=>d.status==='finalized').length;
     return `
-    <div class="date-group">
-      <div class="date-group-head" data-toggle-group>
+    <div class="date-group collapsed">
+      <div class="date-group-head" data-toggle-group aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${g.items.length} dispatch${g.items.length===1?'':'es'} · ${finalizedCount} finalized</div></div>
         <span class="chev">▾</span>
       </div>
@@ -412,7 +416,12 @@ async function loadDispatchHistory(){
   list.querySelectorAll('[data-toggle-group]').forEach(head=>{
     head.addEventListener('click', (e)=>{
       if(e.target.closest('[data-open]')) return;
-      head.closest('.date-group').classList.toggle('collapsed');
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
     });
   });
   // Read-only here by design — opening a dispatch always goes to the
@@ -526,12 +535,13 @@ async function loadReturnsHistory(){
     list.innerHTML = '<div class="empty-state">No returns match these filters.</div>';
     return;
   }
+  // Collapsed by default (global History UX rule) — see loadDispatchHistory() above.
   const groups = groupByDate(results);
   list.innerHTML = groups.map(g => {
     const finalizedCount = g.items.filter(r=>r.status==='finalized').length;
     return `
-    <div class="date-group">
-      <div class="date-group-head" data-toggle-rgroup>
+    <div class="date-group collapsed">
+      <div class="date-group-head" data-toggle-rgroup aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${g.items.length} return${g.items.length===1?'':'s'} · ${finalizedCount} finalized</div></div>
         <span class="chev">▾</span>
       </div>
@@ -545,7 +555,15 @@ async function loadReturnsHistory(){
     </div>`;
   }).join('');
   list.querySelectorAll('[data-toggle-rgroup]').forEach(head=>{
-    head.addEventListener('click', (e)=>{ if(e.target.closest('[data-open-return]')) return; head.closest('.date-group').classList.toggle('collapsed'); });
+    head.addEventListener('click', (e)=>{
+      if(e.target.closest('[data-open-return]')) return;
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
+    });
   });
   // Read-only here — opening a return always goes to the Returns module,
   // the only place corrections happen (same convention as Dispatch History).
@@ -611,12 +629,14 @@ async function loadProductionHistory(){
     list.innerHTML = '<div class="empty-state">No production entries match these filters.</div>';
     return;
   }
+  // Collapsed by default (global History UX rule) — see loadDispatchHistory() above.
+  // Day/Night stays visible per-entry once expanded, unchanged.
   const groups = groupByDate(results);
   list.innerHTML = groups.map(g => {
     const finalizedCount = g.items.filter(r=>r.status==='finalized').length;
     return `
-    <div class="date-group">
-      <div class="date-group-head" data-toggle-pgroup>
+    <div class="date-group collapsed">
+      <div class="date-group-head" data-toggle-pgroup aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${g.items.length} entr${g.items.length===1?'y':'ies'} · ${finalizedCount} finalized</div></div>
         <span class="chev">▾</span>
       </div>
@@ -630,7 +650,15 @@ async function loadProductionHistory(){
     </div>`;
   }).join('');
   list.querySelectorAll('[data-toggle-pgroup]').forEach(head=>{
-    head.addEventListener('click', (e)=>{ if(e.target.closest('[data-open-production]')) return; head.closest('.date-group').classList.toggle('collapsed'); });
+    head.addEventListener('click', (e)=>{
+      if(e.target.closest('[data-open-production]')) return;
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
+    });
   });
   list.querySelectorAll('[data-open-production]').forEach(el=>{
     el.addEventListener('click', ()=>{ window.location.href = `/production.html?open=${el.dataset.openProduction}`; });
@@ -708,10 +736,11 @@ async function renderDailyFiguresHistory(){
     return;
   }
 
+  // Collapsed by default (global History UX rule) — see loadDispatchHistory() above.
   const groups = groupHistoryByDate(results);
   list.innerHTML = groups.map(g => `
-    <div class="date-group">
-      <div class="date-group-head" data-toggle-hgroup>
+    <div class="date-group collapsed">
+      <div class="date-group-head" data-toggle-hgroup aria-expanded="false" role="button" tabindex="0">
         <div><div class="date">${g.date}</div><div class="summary">${g.items.length} product line${g.items.length===1?'':'s'}</div></div>
         <span class="chev">▾</span>
       </div>
@@ -726,7 +755,14 @@ async function renderDailyFiguresHistory(){
     </div>`).join('');
 
   list.querySelectorAll('[data-toggle-hgroup]').forEach(head=>{
-    head.addEventListener('click', ()=>head.closest('.date-group').classList.toggle('collapsed'));
+    head.addEventListener('click', ()=>{
+      const group = head.closest('.date-group');
+      const nowCollapsed = group.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', String(!nowCollapsed));
+    });
+    head.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); head.click(); }
+    });
   });
   list.querySelectorAll('[data-drill]').forEach(el=>{
     el.addEventListener('click', (e)=>{
