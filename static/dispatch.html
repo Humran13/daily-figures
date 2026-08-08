@@ -237,6 +237,21 @@
       <div class="msg" id="detailMsg"></div>
       <div class="nav-row no-print" id="detailActions"></div>
 
+      <!-- Preview — strictly read-only full-record view, deliberately
+           distinct from Edit (no inputs at all). Reuses the exact markup
+           already rendered into detailHeader/detailLines by openDetail()
+           — opening this panel makes no additional API call, so it can
+           never change status, stock, or audit state. Available to every
+           role that can view this record (Preview button itself is
+           withheld from Viewer only — see openDetail()). -->
+      <div class="card hidden no-print" id="previewPanel">
+        <h3 style="margin-top:0;">Preview</h3>
+        <div id="previewBody"></div>
+        <div class="nav-row">
+          <button class="btn btn-ghost" id="previewCloseBtn">Close preview</button>
+        </div>
+      </div>
+
       <!-- Correct Record — final pre-deployment correction. Manager/Super
            Administrator only (gated the same way as Reopen/Void). Amends
            this exact record in place via POST .../correct, one atomic
@@ -244,6 +259,11 @@
            finalize round trip. -->
       <div class="card hidden no-print" id="correctPanel">
         <h3 style="margin-top:0;">Correct record</h3>
+        <!-- Dispatch Number is not currently safe/supported to change here
+             (see dispatches.py's correct() route/record_correction_service —
+             it isn't one of the corrected fields) — shown read-only so the
+             record being corrected is always unambiguous. -->
+        <div class="field"><label>Dispatch Number</label><input id="correctDispatchNumber" readonly disabled></div>
         <div class="field"><label>Dispatch Date</label><input type="date" id="correctDate"></div>
         <div class="field">
           <label>Sales Category</label>
@@ -1035,8 +1055,15 @@ async function openDetail(id){
   const buttons = [];
   const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
   const isViewer = currentUser && currentUser.role === 'viewer';
-  const ownsDraft = currentUser && data.created_by === currentUser.id;
-  const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);
+  const isOperator = currentUser && currentUser.role === 'operator';
+  const ownsRecord = currentUser && data.created_by === currentUser.id;
+  const canEditDraft = data.status === 'draft' && (isElevated || ownsRecord);
+  // Finalized Edit — Manager/Super Admin on any record; an Operator only
+  // on a record they themselves created (server-enforced by the
+  // /correct route's own ownership check, never only by hiding this
+  // button) — the button must not disappear for an Operator merely
+  // because the record they entered is now finalized.
+  const canEditFinalized = data.status !== 'draft' && data.status !== 'void' && (isElevated || (isOperator && ownsRecord));
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
@@ -1050,17 +1077,14 @@ async function openDetail(id){
   // Edit — exactly one action per record, matching its current state:
   //   Draft     -> the draft editing workflow (openEditDraft), for whoever
   //                can edit this draft (elevated, or the Operator who owns
-  //                it — server-enforced by can_edit(), never only by
-  //                hiding this button).
-  //   Finalized -> the Correct Record workflow, Manager/Super Admin only
-  //                (Operator has no backend permission to correct a
-  //                finalized record — the button is simply not shown
-  //                rather than shown-then-403).
+  //                it).
+  //   Finalized -> the Correct Record workflow — Manager/Super Admin on
+  //                any record, an Operator on their own.
   // Never both at once for the same record — that was the pre-existing
   // "Edit Draft" + "Edit" duplicate-button bug this fixes.
   if(data.status === 'draft'){
     if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
-  } else if(isElevated && data.status !== 'void'){
+  } else if(canEditFinalized){
     buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
   }
   // Permanent delete — never void/cancel/soft-delete. Manager/Super Admin
@@ -1071,6 +1095,7 @@ async function openDetail(id){
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
+  document.getElementById('previewPanel').classList.add('hidden');
   document.getElementById('correctPanel').classList.add('hidden');
   document.getElementById('deletePanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
@@ -1086,16 +1111,7 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'preview'){
-        // Strictly read-only: closes any open Edit/Delete panel and shows
-        // the record's already-read-only header/lines — never touches
-        // status, stock, audit state, or creates/finalizes/reopens
-        // anything.
-        document.getElementById('correctPanel').classList.add('hidden');
-        document.getElementById('deletePanel').classList.add('hidden');
-        document.getElementById('detailHeader').scrollIntoView({behavior:'smooth'});
-        return;
-      }
+      if(action === 'preview'){ openPreviewPanel(data); return; }
       if(action === 'correct'){ openCorrectPanel(data); return; }
       if(action === 'delete'){ openDeletePanel(data); return; }
     });
@@ -1103,17 +1119,35 @@ async function openDetail(id){
 }
 document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab('list'));
 
+// ---------- Preview (strictly read-only) ----------
+// Reuses the exact detailHeader/detailLines markup openDetail() already
+// rendered — no second rendering engine, no additional API call, so this
+// can never mutate status/stock/audit state by construction.
+function openPreviewPanel(data){
+  document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
+  document.getElementById('previewBody').innerHTML =
+    document.getElementById('detailHeader').innerHTML + document.getElementById('detailLines').innerHTML;
+  document.getElementById('previewPanel').classList.remove('hidden');
+  document.getElementById('previewPanel').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('previewCloseBtn').addEventListener('click', ()=>{
+  document.getElementById('previewPanel').classList.add('hidden');
+});
+
 // ---------- Correct Record ----------
 let correctLines = [];
 let correctSelectedCustomer = null;
 let correctSelectedCategory = null;
 
 function openCorrectPanel(data){
+  document.getElementById('previewPanel').classList.add('hidden');
   correctLines = data.lines.map(l => ({
     id: l.id, product_id: l.product_id, product_name: l.product_name,
     rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
     cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes,
   }));
+  document.getElementById('correctDispatchNumber').value = data.dispatch_number || '';
   document.getElementById('correctDate').value = data.date;
   document.getElementById('correctNotes').value = data.notes || '';
   document.getElementById('correctReason').value = '';
@@ -1283,6 +1317,7 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
 // on success the record is physically gone, so this closes back to the
 // list instead of trying to re-open a detail that no longer exists.
 function openDeletePanel(data){
+  document.getElementById('previewPanel').classList.add('hidden');
   const productsSummary = data.lines.map(l => `${l.product_name} (${l.quantity_label})`).join(', ');
   document.getElementById('deleteSummary').innerHTML =
     `<strong>#${escapeHtml(data.dispatch_number)}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.customer_name || '—')}<br>` +

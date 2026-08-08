@@ -192,15 +192,10 @@ def test_rename_duplicate_can_proceed_with_explicit_confirmation(client, setup):
     assert res.status_code == 200
 
 
-def test_admin_html_has_rename_action():
-    assert "data-rename-customer" in ADMIN_HTML
-
-
-def test_admin_html_rename_handler_checks_role_explicitly_not_just_page_access():
-    idx = ADMIN_HTML.index("document.querySelectorAll('[data-rename-customer]')")
-    end = ADMIN_HTML.index("document.querySelectorAll('[data-toggle-customer]')")
-    body = ADMIN_HTML[idx:end]
-    assert "currentUserRole !== 'super_admin'" in body
+# Rename was replaced by a full Edit action this round — see the
+# CUSTOMER FULL EDIT (Rename -> Edit) section further down for its
+# replacement tests (test_admin_html_has_edit_customer_action,
+# test_admin_html_edit_customer_save_checks_role_explicitly, etc.).
 
 
 # =====================================================================
@@ -284,13 +279,14 @@ ALL_THREE_HTML = (DISPATCH_HTML, RETURNS_HTML, PRODUCTION_HTML)
 
 # The exact single-Edit-per-state branch every one of the three pages
 # shares verbatim (see static/dispatch.html's openDetail()) — Draft gets
-# the draft-editing workflow, everything else (Manager/Super Admin only)
-# gets Correct Record, and the two are mutually exclusive via if/else if,
-# never both pushed for the same record.
+# the draft-editing workflow, everything else (Manager/Super Admin on any
+# record, an Operator only on their own — canEditFinalized) gets Correct
+# Record, and the two are mutually exclusive via if/else if, never both
+# pushed for the same record.
 _SINGLE_EDIT_BRANCH = (
     "if(data.status === 'draft'){\n"
     "    if(canEditDraft) buttons.push(`<button class=\"btn btn-ghost\" data-action=\"edit-draft\">Edit</button>`);\n"
-    "  } else if(isElevated && data.status !== 'void'){\n"
+    "  } else if(canEditFinalized){\n"
     "    buttons.push(`<button class=\"btn btn-ghost\" data-action=\"correct\">Edit</button>`);\n"
     "  }"
 )
@@ -365,14 +361,23 @@ def test_viewer_gated_out_of_preview_button():
 
 
 def test_operator_button_set_includes_preview_edit_print_via_owned_draft():
-    # canEditDraft = data.status === 'draft' && (isElevated || ownsDraft) —
+    # canEditDraft = data.status === 'draft' && (isElevated || ownsRecord) —
     # an Operator viewing a draft they own reaches Preview, Edit
     # (edit-draft), and Print; Delete never appears for them (see below).
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
-        assert "const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);" in body
+        assert "const canEditDraft = data.status === 'draft' && (isElevated || ownsRecord);" in body
         assert _PREVIEW_LINE in body
         assert 'data-action="edit-draft">Edit<' in body
+
+
+def test_operator_button_set_includes_edit_on_finalized_record_they_own():
+    # canEditFinalized — Operator no longer loses Edit the moment a record
+    # they created is finalized; only ownership + non-draft/non-void gates
+    # it (Manager/Super Admin bypass ownership entirely via isElevated).
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert "const canEditFinalized = data.status !== 'draft' && data.status !== 'void' && (isElevated || (isOperator && ownsRecord));" in body
 
 
 def test_delete_is_reachable_only_through_isElevated_gate():
@@ -395,11 +400,12 @@ def test_single_edit_action_per_record_state_no_duplicates():
         assert body.count('data-action="correct">Edit<') == 1
 
 
-def test_operator_never_reaches_correct_edit_backend_route(client, setup, login_as):
-    # Belt-and-braces on top of the markup checks above: even if a client
-    # forged the "correct" action for a finalized record, the backend
-    # route itself still 403s an Operator — matches "Do not weaken
-    # authorization merely to make the frontend uniform."
+def test_operator_cannot_correct_a_finalized_record_they_do_not_own(client, setup, login_as):
+    # An Operator may now correct a FINALIZED record — but only one they
+    # themselves created (see the ownership check in dispatches.py/
+    # returns.py/production.py's correct() routes). These records were all
+    # created while logged in as super_admin (via `setup`), so the
+    # Operator below owns none of them and must still be refused.
     d = client.post("/api/dispatches", json={
         "dispatch_number": "TUX-NOEDIT-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
         "sales_category_id": setup["category"]["id"],
@@ -762,31 +768,99 @@ def test_delete_removes_no_unrelated_data_production(client, setup, super_admin)
 
 # =====================================================================
 # SECTION — PREVIEW SAFETY
+# (root cause of the "Preview does nothing" bug: the action only hid
+#  Edit/Delete panels and scrolled to content that was already visible —
+#  with nothing hidden, clicking it produced no visible change at all.
+#  Fixed by giving Preview its own dedicated panel that is hidden by
+#  default and only becomes visible on click.)
 # =====================================================================
 
-def test_preview_action_makes_no_api_call_on_any_history_page():
-    # Preview is defined as strictly display-only: it must never call api()
-    # (the only path any of these pages use to reach the backend), so it
-    # can never change status, stock, audit state, or create/finalize/
-    # reopen anything — true by construction, not by convention.
+def _js_function_body(html, start_marker):
+    idx = html.index(start_marker)
+    end = html.index("\n}\n", idx)
+    return html[idx:end]
+
+
+def test_preview_action_delegates_to_a_dedicated_handler():
     for html in ALL_THREE_HTML:
         idx = html.index("if(action === 'preview'){")
         end = html.index("if(action ===", idx + 10)
         body = html[idx:end]
+        assert "openPreviewPanel(data)" in body
         assert "api(" not in body
 
 
-def test_preview_opens_the_currently_loaded_record_read_only():
-    # Preview operates on the same `data` object openDetail() already
-    # fetched and rendered read-only above the action row — it does not
-    # re-fetch, re-render editable fields, or touch correctPanel/
-    # deletePanel except to hide them.
+def test_open_preview_panel_makes_no_api_call():
+    # Preview must never call api() (the only path any of these pages use
+    # to reach the backend) — true by construction, not by convention, so
+    # it can never change status, stock, audit state, or create/finalize/
+    # reopen/duplicate anything.
     for html in ALL_THREE_HTML:
-        idx = html.index("if(action === 'preview'){")
-        end = html.index("if(action ===", idx + 10)
+        body = _js_function_body(html, "function openPreviewPanel(data){")
+        assert "api(" not in body
+
+
+def test_preview_reveals_a_distinct_panel_with_full_record_detail():
+    # The fix: a dedicated #previewPanel, hidden by default, that only
+    # becomes visible when Preview is clicked — populated from the exact
+    # same read-only detailHeader/detailLines markup openDetail() already
+    # rendered (no second rendering engine, no re-fetch, no new data).
+    for html in ALL_THREE_HTML:
+        assert 'class="card hidden no-print" id="previewPanel"' in html
+        body = _js_function_body(html, "function openPreviewPanel(data){")
+        assert "previewBody" in body
+        assert "detailHeader" in body and "detailLines" in body
+        assert "previewPanel').classList.remove('hidden')" in body
+
+
+def test_preview_panel_has_no_editable_inputs():
+    for html in ALL_THREE_HTML:
+        idx = html.index('id="previewPanel"')
+        end = html.index('id="correctPanel"', idx)
+        panel_markup = html[idx:end]
+        assert "<input" not in panel_markup
+        assert "<select" not in panel_markup
+        assert "<textarea" not in panel_markup
+
+
+def test_preview_close_button_only_hides_panel_no_mutation():
+    for html in ALL_THREE_HTML:
+        idx = html.index("previewCloseBtn').addEventListener('click'")
+        end = html.index("});", idx) + 3
         body = html[idx:end]
-        assert "correctPanel" in body and "classList.add('hidden')" in body
-        assert "deletePanel" in body
+        assert "api(" not in body
+        assert "classList.add('hidden')" in body
+
+
+def test_opening_correct_or_delete_panel_hides_preview_panel():
+    # Mutual exclusivity — Preview must never be left showing stale
+    # read-only content behind/above an active Edit or Delete form.
+    for html in ALL_THREE_HTML:
+        correct_body = _js_function_body(html, "function openCorrectPanel(data){")
+        assert "previewPanel').classList.add('hidden')" in correct_body
+        delete_body = _js_function_body(html, "function openDeletePanel(data){")
+        assert "previewPanel').classList.add('hidden')" in delete_body
+
+
+def test_preview_button_works_end_to_end_for_every_role(client, setup, login_as):
+    # Belt-and-braces backend proof alongside the markup checks above:
+    # Preview never issues a mutating request for any role, on either a
+    # draft or a finalized record — GET-ing the record (what Preview
+    # displays) never changes status/stock/audit state no matter who asks.
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-PREV-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+
+    for username, role in (("tux_prev_op", "operator"), ("tux_prev_mgr", "manager"), ("tux_prev_sa", "super_admin")):
+        login_as(username, "password123", role)
+        before = client.get(f"/api/dispatches/{d['id']}").get_json()
+        after_get = client.get(f"/api/dispatches/{d['id']}").get_json()
+        assert before["status"] == after_get["status"] == "finalized"
+        assert before["updated_at"] == after_get["updated_at"]
+        client.post("/api/logout")
 
 
 # =====================================================================
@@ -825,6 +899,721 @@ def test_printed_view_contains_record_detail_without_nav_controls():
         assert 'id="detailHeader"' in html
         assert 'class="card" id="detailHeader"' in html  # plain card, not tagged no-print
         assert 'class="card" id="detailLines"' in html
+
+
+# =====================================================================
+# SECTION — DISPATCH FULL EDIT
+# =====================================================================
+
+def test_dispatch_edit_form_displays_dispatch_number_read_only():
+    idx = DISPATCH_HTML.index('id="correctPanel"')
+    end = DISPATCH_HTML.index('id="correctDate"', idx)
+    body = DISPATCH_HTML[idx:end]
+    assert 'id="correctDispatchNumber"' in body
+    assert "readonly" in body and "disabled" in body
+
+
+def test_dispatch_edit_form_populates_dispatch_number_from_record():
+    idx = DISPATCH_HTML.index("function openCorrectPanel(data){")
+    end = DISPATCH_HTML.index("\n}\n", idx)
+    body = DISPATCH_HTML[idx:end]
+    assert "correctDispatchNumber').value = data.dispatch_number" in body
+
+
+def test_dispatch_edit_form_already_exposes_full_record():
+    # Recipient/Sales Category/product lines/Cartons/Packs/Pieces/Notes/
+    # correction-reason were already present before this round (see
+    # correctSalesCategory/correctRecipientFieldWrap/correctLineList/
+    # correctNotes/correctReason) — this proves the "complete record" gap
+    # was specifically the missing Dispatch Number, not these fields.
+    idx = DISPATCH_HTML.index('id="correctPanel"')
+    end = DISPATCH_HTML.index("id=\"deletePanel\"", idx)
+    body = DISPATCH_HTML[idx:end]
+    for marker in ("correctSalesCategory", "correctRecipientFieldWrap", "correctCustomerSearch",
+                   "correctLineList", "correctAddProductSelect", "correctNotes", "correctReason"):
+        assert marker in body
+
+
+def test_manager_can_correct_one_dispatch_line_without_deleting_the_record(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-LINE-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 5, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    assert _issued_base_qty(client, pid, "2026-08-01") == 500
+
+    res = client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "wrong cartons entered", "notes": None,
+        "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    # Old contribution gone, corrected one counted exactly once — not kept
+    # AND added, not doubled, not left as a second hidden record.
+    assert _issued_base_qty(client, pid, "2026-08-01") == 300
+    still = client.get(f"/api/dispatches/{d['id']}").get_json()
+    assert still["id"] == d["id"]
+    assert len(still["lines"]) == 1
+    all_dispatches = client.get("/api/dispatches?limit=200").get_json()["results"]
+    assert sum(1 for r in all_dispatches if r["dispatch_number"] == "TUX-LINE-1") == 1
+
+
+def test_dispatch_date_correction_moves_issued_to_new_date(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-DATEMOVE-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    assert _issued_base_qty(client, pid, "2026-08-01") == 400
+
+    res = client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "entered on the wrong date", "notes": None, "date": "2026-08-03",
+        "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert _issued_base_qty(client, pid, "2026-08-01") == 0    # old date loses it
+    assert _issued_base_qty(client, pid, "2026-08-03") == 400  # new date gains it exactly once
+
+
+def test_dashboard_recipient_count_reflects_dispatch_after_line_correction(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-DASH-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    before = client.get("/api/dashboard?date=2026-08-01").get_json()
+
+    client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "fixing quantity", "notes": None,
+        "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    })
+    after = client.get("/api/dashboard?date=2026-08-01").get_json()
+    # Same single recipient either way — correcting a line's quantity must
+    # not create or lose a unique-recipient count.
+    assert before["unique_recipients_today"] == after["unique_recipients_today"] == 1
+
+
+# =====================================================================
+# SECTION — PRODUCTION FULL EDIT
+# =====================================================================
+
+def test_production_edit_form_contains_date_and_shift():
+    idx = PRODUCTION_HTML.index('id="correctPanel"')
+    end = PRODUCTION_HTML.index('id="correctLineList"', idx)
+    body = PRODUCTION_HTML[idx:end]
+    assert 'id="correctDate"' in body
+    assert 'id="correctShift"' in body
+
+
+def test_production_edit_save_sends_date_and_shift():
+    idx = PRODUCTION_HTML.index("correctSaveBtn').addEventListener('click'")
+    end = PRODUCTION_HTML.index("});", idx) + 3
+    body = PRODUCTION_HTML[idx:end]
+    assert "date: document.getElementById('correctDate').value" in body
+    assert "shift: document.getElementById('correctShift').value" in body
+
+
+def test_manager_can_change_production_date(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    row_old = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
+    assert row_old["production"]["base_qty"] == 300
+
+    res = client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "entered on the wrong date", "notes": None, "date": "2026-08-05",
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    row_old_after = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
+    row_new = client.get(f"/api/daily-figures/{pid}?date=2026-08-05&shift=Day").get_json()
+    assert row_old_after["production"]["base_qty"] == 0   # old date loses it
+    assert row_new["production"]["base_qty"] == 300        # new date gains it exactly once
+
+    updated = client.get(f"/api/production/{prod['id']}").get_json()
+    assert updated["id"] == prod["id"]
+    assert updated["date"] == "2026-08-05"
+
+
+def test_super_admin_can_change_production_date(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    res = client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-06",
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert client.get(f"/api/production/{prod['id']}").get_json()["date"] == "2026-08-06"
+
+
+def test_production_date_correction_preserves_exact_quantity(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 7, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-07",
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 7, "packs": 0, "pieces": 0}],
+    })
+    row = client.get(f"/api/daily-figures/{pid}?date=2026-08-07&shift=Day").get_json()
+    assert row["production"]["base_qty"] == 700  # exact — no float drift, no double count
+
+
+def test_production_date_correction_carries_following_opening_forward(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    client.post("/api/daily-figures", json={
+        "product_id": pid, "date": "2026-08-01", "shift": "Day",
+        "opening": {"cartons": 10, "packs": 0, "pieces": 0},
+    })
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 5, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    row1_before = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
+    closing_before = row1_before["closing"]["base_qty"]
+    assert closing_before == 1500  # 1000 opening + 500 production
+
+    client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-02",
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 5, "packs": 0, "pieces": 0}],
+    })
+    row1_after = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
+    assert row1_after["closing"]["base_qty"] == 1000  # production no longer contributes here
+    row2 = client.get(f"/api/daily-figures/{pid}?date=2026-08-02&shift=Day").get_json()
+    assert row2["opening"]["base_qty"] == row1_after["closing"]["base_qty"]  # carry-forward intact
+    assert row2["closing"]["base_qty"] == row2["opening"]["base_qty"] + row2["production"]["base_qty"] + row2["return_"]["base_qty"] - row2["issued"]["base_qty"]
+
+
+def test_production_date_correction_does_not_create_duplicate_record(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-09",
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    all_prod = client.get("/api/production?limit=200").get_json()["results"]
+    assert sum(1 for r in all_prod if r["id"] == prod["id"]) == 1
+
+
+def test_operator_cannot_correct_finalized_production_date_they_do_not_own(client, setup, login_as):
+    # prod is created here under the super_admin session `setup` leaves
+    # active, so the Operator logged in below owns none of it.
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    login_as("tux_prod_date_op", "password123", "operator")
+    res = client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "x", "notes": None, "date": "2026-08-02",
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 403  # not the owner — Operator ownership check still applies
+
+
+def test_shift_correction_rejected_for_non_production_source(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-SHIFT-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    # Not reachable via the dispatch route (it never sends "shift"), but
+    # the service itself must still refuse it if ever called that way —
+    # belt-and-braces against a future route wiring mistake.
+    from webapp.services.record_correction_service import correct_record, RecordCorrectionError
+    import pytest as _pytest
+    from webapp.models.user import User
+    actor = User.query.filter_by(username="root").first()
+    with _pytest.raises(RecordCorrectionError):
+        correct_record(
+            "dispatch", d["id"], lines=[{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+            notes=None, reason="x", actor=actor, shift="Night",
+        )
+
+
+# =====================================================================
+# SECTION — RETURNS FULL EDIT
+# =====================================================================
+
+def test_returns_edit_form_contains_date_recipient_and_signer():
+    idx = RETURNS_HTML.index('id="correctPanel"')
+    end = RETURNS_HTML.index('id="correctLineList"', idx)
+    body = RETURNS_HTML[idx:end]
+    assert 'id="correctDate"' in body
+    assert 'id="correctReturnedBySearch"' in body
+    assert 'id="correctSignedByName"' in body
+
+
+def test_returns_edit_save_sends_date_recipient_and_signer():
+    idx = RETURNS_HTML.index("correctSaveBtn').addEventListener('click'")
+    end = RETURNS_HTML.index("});", idx) + 3
+    body = RETURNS_HTML[idx:end]
+    assert "date: document.getElementById('correctDate').value" in body
+    assert "customer_id: correctSelectedCustomer" in body
+    assert "signed_by_name: document.getElementById('correctSignedByName').value" in body
+
+
+def test_manager_can_change_return_date(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid, cartons=2).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 200
+
+    res = client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "wrong date entered", "notes": None, "date": "2026-08-04",
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 0
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-04&shift=Day").get_json()["return_"]["base_qty"] == 200
+    updated = client.get(f"/api/returns/{created['id']}").get_json()
+    assert updated["id"] == created["id"]
+    assert updated["date"] == "2026-08-04"
+
+
+def test_super_admin_can_change_return_date(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid, cartons=1).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    res = client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-08",
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert client.get(f"/api/returns/{created['id']}").get_json()["date"] == "2026-08-08"
+
+
+def test_return_day_only_rule_still_enforced_after_date_correction(client, setup, super_admin):
+    # Returns has no shift column at all — correcting the date must never
+    # introduce one; the record stays a Day-only workflow throughout.
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid, cartons=1).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-10",
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    updated = client.get(f"/api/returns/{created['id']}").get_json()
+    assert "shift" not in updated
+
+
+def test_returns_date_correction_carries_following_opening_forward(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    client.post("/api/daily-figures", json={
+        "product_id": pid, "date": "2026-08-01", "shift": "Day",
+        "opening": {"cartons": 10, "packs": 0, "pieces": 0},
+    })
+    created = _create_return(client, pid, cartons=3).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    row1_before = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
+    assert row1_before["closing"]["base_qty"] == 1300  # 1000 opening + 300 returns
+
+    client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-02",
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
+    })
+    row1_after = client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()
+    assert row1_after["closing"]["base_qty"] == 1000
+    row2 = client.get(f"/api/daily-figures/{pid}?date=2026-08-02&shift=Day").get_json()
+    assert row2["opening"]["base_qty"] == row1_after["closing"]["base_qty"]
+    assert row2["closing"]["base_qty"] == row2["opening"]["base_qty"] + row2["production"]["base_qty"] + row2["return_"]["base_qty"] - row2["issued"]["base_qty"]
+
+
+def test_returns_date_correction_does_not_create_duplicate_record(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid, cartons=1).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "wrong date", "notes": None, "date": "2026-08-11",
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    all_returns = client.get("/api/returns?limit=200").get_json()["results"]
+    assert sum(1 for r in all_returns if r["id"] == created["id"]) == 1
+
+
+def test_manager_can_change_return_signer_via_correction(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    res = client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "signer was wrong", "notes": None, "signed_by_name": "Corrected Signer",
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert client.get(f"/api/returns/{created['id']}").get_json()["signed_by_name"] == "Corrected Signer"
+
+
+def test_manager_can_change_returned_by_recipient_via_correction(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    created = _create_return(client, pid, returned_by_name="Truck 9").get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    res = client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "wrong recipient recorded", "notes": None, "customer_id": setup["customer"]["id"],
+        "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    updated = client.get(f"/api/returns/{created['id']}").get_json()
+    assert updated["returned_by_customer_id"] == setup["customer"]["id"]
+    assert updated["returned_by_name"] == "TUX Recipient"
+
+
+def test_returned_by_correction_rejected_for_non_returns_source(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    from webapp.services.record_correction_service import correct_record, RecordCorrectionError
+    import pytest as _pytest
+    from webapp.models.user import User
+    actor = User.query.filter_by(username="root").first()
+    with _pytest.raises(RecordCorrectionError):
+        correct_record(
+            "production", prod["id"], lines=[{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+            notes=None, reason="x", actor=actor, returned_by_name="nope",
+        )
+
+
+# =====================================================================
+# SECTION — CUSTOMER FULL EDIT (Rename -> Edit)
+# =====================================================================
+
+def test_admin_html_rename_button_is_gone():
+    assert "data-rename-customer" not in ADMIN_HTML
+    # Sales-category rename (a separate, untouched feature) legitimately
+    # keeps its own "Rename" button further down the page — scope this
+    # check to the customers panel specifically, which sits entirely
+    # before panel-categories in the markup.
+    customers_panel_markup = ADMIN_HTML.split('id="panel-categories"')[0]
+    assert ">Rename<" not in customers_panel_markup
+
+
+def test_admin_html_customer_rename_prompt_flow_removed():
+    # The old flow prompted for a name only; it must be fully gone, not
+    # just relabeled — the replacement is a real multi-field panel.
+    assert 'Rename "${current ? current.name : \'\'}" to:' not in ADMIN_HTML
+
+
+def test_admin_html_has_edit_customer_action():
+    assert "data-edit-customer" in ADMIN_HTML
+    assert 'data-edit-customer="${c.id}">Edit<' in ADMIN_HTML
+
+
+def test_admin_html_customer_edit_panel_has_all_four_fields():
+    idx = ADMIN_HTML.index('id="customerEditPanel"')
+    end = ADMIN_HTML.index("</div>\n    </div>", idx)
+    body = ADMIN_HTML[idx:end]
+    assert 'id="editCustomerName"' in body
+    assert 'id="editCustomerCategory"' in body
+    assert 'id="editCustomerSalesCategory"' in body
+    assert 'id="editCustomerStatus"' in body
+
+
+def test_admin_html_open_customer_edit_prefills_current_values():
+    idx = ADMIN_HTML.index("function openCustomerEdit(id){")
+    end = ADMIN_HTML.index("\n}\n", idx)
+    body = ADMIN_HTML[idx:end]
+    assert "editCustomerName').value = current.name" in body
+    assert "editCustomerCategory').value = current.category" in body
+    assert "editCustomerSalesCategory').value = current.sales_category_id" in body
+    assert "editCustomerStatus').value = String(!!current.active)" in body
+
+
+def test_admin_html_edit_customer_save_checks_role_explicitly():
+    idx = ADMIN_HTML.index("editCustomerSaveBtn').addEventListener('click'")
+    end = ADMIN_HTML.index("});", idx) + 3
+    body = ADMIN_HTML[idx:end]
+    assert "currentUserRole !== 'super_admin'" in body
+
+
+def test_super_admin_can_open_and_save_full_customer_edit(client, setup):
+    cust_id = setup["customer"]["id"]
+    res = client.patch(f"/api/admin/customers/{cust_id}", json={
+        "name": "ABC Supermarket", "category": "customer", "active": True,
+    })
+    assert res.status_code == 200
+    updated = res.get_json()
+    assert updated["name"] == "ABC Supermarket"
+    assert updated["id"] == cust_id
+
+
+def test_super_admin_can_edit_customer_sales_category(client, setup):
+    cust_id = setup["customer"]["id"]
+    new_cat = client.post("/api/admin/sales-categories", json={"name": "Standard Sales"}).get_json()
+    res = client.patch(f"/api/admin/customers/{cust_id}", json={"sales_category_id": new_cat["id"]})
+    assert res.status_code == 200
+    assert res.get_json()["sales_category_id"] == new_cat["id"]
+
+
+def test_super_admin_can_edit_customer_category_field(client, setup):
+    cust_id = setup["customer"]["id"]
+    res = client.patch(f"/api/admin/customers/{cust_id}", json={"category": "salesperson"})
+    assert res.status_code == 200
+    assert res.get_json()["category"] == "salesperson"
+
+
+def test_super_admin_can_edit_customer_status(client, setup):
+    cust_id = setup["customer"]["id"]
+    res = client.patch(f"/api/admin/customers/{cust_id}", json={"active": False})
+    assert res.status_code == 200
+    assert res.get_json()["active"] is False
+
+
+def test_customer_edit_preserves_id_and_dispatch_links(client, setup):
+    cust_id = setup["customer"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-CUSTEDIT-1", "date": "2026-08-01", "customer_id": cust_id,
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.patch(f"/api/admin/customers/{cust_id}", json={
+        "name": "ABC Supermarket", "category": "customer", "active": True,
+    })
+    still = client.get(f"/api/dispatches/{d['id']}").get_json()
+    assert still["customer_id"] == cust_id
+    assert still["customer_name"] == "ABC Supermarket"
+
+
+def test_customer_edit_duplicate_validation_still_enforced(client, setup):
+    _make_customer(client, setup["category"]["id"], "Full Edit Duplicate Target")
+    res = client.patch(f"/api/admin/customers/{setup['customer']['id']}", json={"name": "Full Edit Duplicate Target"})
+    assert res.status_code == 409
+    assert res.get_json()["warning"] == "similar_customers_exist"
+
+
+def test_customer_edit_does_not_partially_save_on_validation_failure(client, setup):
+    cust_id = setup["customer"]["id"]
+    before = next(c for c in client.get("/api/admin/customers").get_json() if c["id"] == cust_id)
+    res = client.patch(f"/api/admin/customers/{cust_id}", json={
+        "category": "salesperson", "sales_category_id": 9999999,
+    })
+    assert res.status_code == 400
+    after = next(c for c in client.get("/api/admin/customers").get_json() if c["id"] == cust_id)
+    assert after["category"] == before["category"]  # category change was NOT partially applied
+
+
+def test_customer_edit_audit_captures_before_after_actor(client, setup, app):
+    cust_id = setup["customer"]["id"]
+    client.patch(f"/api/admin/customers/{cust_id}", json={"category": "salesperson", "active": False})
+    with app.app_context():
+        from webapp.models.audit_log import AuditLog
+        entry = AuditLog.query.filter_by(action="update", entity_type="customer", entity_id=str(cust_id)).order_by(AuditLog.id.desc()).first()
+        assert entry is not None
+        before = json.loads(entry.before_json)
+        after = json.loads(entry.after_json)
+        assert before["id"] == cust_id
+        assert after["category"] == "salesperson"
+        assert after["active"] is False
+        assert entry.user_id is not None
+        assert entry.created_at is not None
+
+
+def test_manager_cannot_edit_customer_name_but_can_edit_other_full_edit_fields(client, setup, login_as):
+    login_as("tux_custedit_mgr", "password123", "manager")
+    cust_id = setup["customer"]["id"]
+    denied = client.patch(f"/api/admin/customers/{cust_id}", json={"name": "Manager Full Edit Attempt"})
+    assert denied.status_code == 403
+    allowed = client.patch(f"/api/admin/customers/{cust_id}", json={"category": "salesperson", "active": False})
+    assert allowed.status_code == 200
+
+
+def test_operator_cannot_edit_customer(client, setup, login_as):
+    login_as("tux_custedit_op", "password123", "operator")
+    res = client.patch(f"/api/admin/customers/{setup['customer']['id']}", json={"category": "salesperson"})
+    assert res.status_code == 403
+
+
+def test_viewer_cannot_edit_customer(client, setup, login_as):
+    login_as("tux_custedit_viewer", "password123", "viewer")
+    res = client.patch(f"/api/admin/customers/{setup['customer']['id']}", json={"category": "salesperson"})
+    assert res.status_code == 403
+
+
+def test_customer_metadata_edit_does_not_affect_stock(client, setup):
+    pid = setup["product"]["id"]
+    cust_id = setup["customer"]["id"]
+    client.post("/api/daily-figures", json={
+        "product_id": pid, "date": "2026-08-01", "shift": "Day",
+        "opening": {"cartons": 10, "packs": 0, "pieces": 0},
+    })
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-CUSTSTOCK-1", "date": "2026-08-01", "customer_id": cust_id,
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    before_issued = _issued_base_qty(client, pid, "2026-08-01")
+
+    client.patch(f"/api/admin/customers/{cust_id}", json={
+        "name": "ABC Supermarket", "category": "salesperson", "active": True,
+    })
+
+    after_issued = _issued_base_qty(client, pid, "2026-08-01")
+    assert before_issued == after_issued == 300
+
+
+# =====================================================================
+# SECTION — OPERATOR EDIT ON FINALIZED RECORDS THEY OWN
+# (final role-matrix correction: the Operator Edit button must not
+#  disappear merely because the record they entered is now finalized —
+#  server-enforced by an ownership check in each /correct route, never
+#  only by hiding the button.)
+# =====================================================================
+
+def test_operator_can_edit_finalized_dispatch_they_created(client, setup, login_as):
+    login_as("tux_op_finedit_disp", "password123", "operator")
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-OPFIN-D1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 5, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    assert _issued_base_qty(client, setup["product"]["id"], "2026-08-01") == 500
+
+    res = client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "fixing my own mistake", "notes": "corrected",
+        "lines": [{"id": d["lines"][0]["id"], "product_id": setup["product"]["id"], "cartons": 3, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    # Old contribution gone, corrected one counted exactly once.
+    assert _issued_base_qty(client, setup["product"]["id"], "2026-08-01") == 300
+    updated = client.get(f"/api/dispatches/{d['id']}").get_json()
+    assert updated["id"] == d["id"]  # same record, not a duplicate
+    assert len(updated["lines"]) == 1
+    all_dispatches = client.get("/api/dispatches?limit=200").get_json()["results"]
+    assert sum(1 for r in all_dispatches if r["dispatch_number"] == "TUX-OPFIN-D1") == 1
+
+
+def test_operator_can_edit_finalized_return_they_created(client, setup, login_as):
+    login_as("tux_op_finedit_ret", "password123", "operator")
+    created = _create_return(client, setup["product"]["id"], cartons=4).get_json()
+    client.post(f"/api/returns/{created['id']}/finalize")
+    assert client.get(f"/api/daily-figures/{setup['product']['id']}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 400
+
+    res = client.post(f"/api/returns/{created['id']}/correct", json={
+        "reason": "fixing my own mistake", "notes": None,
+        "lines": [{"id": created["lines"][0]["id"], "product_id": setup["product"]["id"], "cartons": 2, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert client.get(f"/api/daily-figures/{setup['product']['id']}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 200
+    updated = client.get(f"/api/returns/{created['id']}").get_json()
+    assert updated["id"] == created["id"]
+    assert len(updated["lines"]) == 1
+    all_returns = client.get("/api/returns?limit=200").get_json()["results"]
+    assert sum(1 for r in all_returns if r["id"] == created["id"]) == 1
+
+
+def test_operator_can_edit_finalized_production_they_created(client, setup, login_as):
+    login_as("tux_op_finedit_prod", "password123", "operator")
+    pid = setup["product"]["id"]
+    prod = client.post("/api/production", json={
+        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 6, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/production/{prod['id']}/finalize")
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["production"]["base_qty"] == 600
+
+    res = client.post(f"/api/production/{prod['id']}/correct", json={
+        "reason": "fixing my own mistake", "notes": None,
+        "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["production"]["base_qty"] == 400
+    updated = client.get(f"/api/production/{prod['id']}").get_json()
+    assert updated["id"] == prod["id"]
+    assert len(updated["lines"]) == 1
+    all_prod = client.get("/api/production?limit=200").get_json()["results"]
+    assert sum(1 for r in all_prod if r["id"] == prod["id"]) == 1
+
+
+def test_operator_finalized_dispatch_date_correction_moves_contribution_once(client, setup, login_as):
+    login_as("tux_op_finedit_datemove", "password123", "operator")
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-OPFIN-DATE1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    assert _issued_base_qty(client, pid, "2026-08-01") == 400
+
+    res = client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "entered on the wrong date", "notes": None, "date": "2026-08-03",
+        "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    assert _issued_base_qty(client, pid, "2026-08-01") == 0
+    assert _issued_base_qty(client, pid, "2026-08-03") == 400
+
+
+def test_operator_cannot_delete_finalized_record_they_own(client, setup, login_as):
+    login_as("tux_op_finedit_nodelete", "password123", "operator")
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-OPFIN-NODEL", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    res = client.delete(f"/api/dispatches/{d['id']}", json={"reason": "x", "confirm": True})
+    assert res.status_code == 403  # Delete stays Manager/Super Admin only — Operator edit access never implies delete access
+
+
+def test_operator_finalized_edit_is_audited(client, setup, login_as, app):
+    login_as("tux_op_finedit_audit", "password123", "operator")
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-OPFIN-AUDIT1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "operator self-correction", "notes": None,
+        "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    })
+    with app.app_context():
+        from webapp.models.audit_log import AuditLog
+        entry = AuditLog.query.filter_by(action="correct_record", entity_type="dispatch", entity_id=str(d["id"])).first()
+        assert entry is not None
+        assert entry.username == "tux_op_finedit_audit"
+        before = json.loads(entry.before_json)
+        after = json.loads(entry.after_json)
+        assert before["actor_role"] == "operator"
+        assert after["reason"] == "operator self-correction"
+        assert entry.created_at is not None
+
+
+def test_manager_still_sees_full_button_set_after_operator_change(client, setup, super_admin):
+    pid = setup["product"]["id"]
+    d = client.post("/api/dispatches", json={
+        "dispatch_number": "TUX-MGRSTILL-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "sales_category_id": setup["category"]["id"],
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+    }).get_json()
+    client.post(f"/api/dispatches/{d['id']}/finalize")
+    # Manager/Super Admin still correct anything, ownership never applies to them.
+    res = client.post(f"/api/dispatches/{d['id']}/correct", json={
+        "reason": "manager correction unaffected", "notes": None,
+        "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+    })
+    assert res.status_code == 200
+    res_delete = client.delete(f"/api/dispatches/{d['id']}", json={"reason": "x", "confirm": True})
+    assert res_delete.status_code == 200
 
 
 # =====================================================================

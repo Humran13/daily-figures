@@ -86,7 +86,8 @@ def get_record(source_type, record_id):
 
 
 def correct_record(source_type, record_id, *, lines, notes, reason, actor, expected_updated_at=None,
-                    date=None, customer_id=None, new_customer_name=None, sales_category_id=None):
+                    date=None, customer_id=None, new_customer_name=None, sales_category_id=None,
+                    shift=None, returned_by_customer_id=None, returned_by_name=None, signed_by_name=None):
     """
     lines: a list of {id, product_id, cartons, packs, pieces, line_notes}
       dicts describing the FULL corrected line set —
@@ -108,13 +109,20 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
       enough on its own for the old date to lose its contribution and the
       new date to gain it exactly once — no manual ledger patching.
     customer_id / new_customer_name / sales_category_id: optional recipient
-      correction — DISPATCH ONLY (Returns/Production have no recipient
-      concept in this app yet); a caller for those source types must leave
-      all three None, which is always true today since only the dispatch
-      correction route ever passes them. Delegates to
-      dispatch_service.update_recipient() for the exact same
-      resolve/validate/snapshot logic the main create/edit paths use —
-      never a second, competing implementation.
+      correction — DISPATCH ONLY. Delegates to dispatch_service.update_recipient()
+      for the exact same resolve/validate/snapshot logic the main create/
+      edit paths use — never a second, competing implementation.
+    returned_by_customer_id / returned_by_name / signed_by_name: optional
+      "returned by" / signer correction — RETURNS ONLY. Delegates to
+      returns_service.update_header() (the same header-update function the
+      draft-editing endpoints already use) — reachable here because the
+      record has already been reopened to draft status above when it was
+      finalized, so update_header()'s own draft-only guard is always
+      satisfied by this point.
+    shift: optional Day/Night correction — PRODUCTION ONLY. Also delegates
+      to production_service.update_header() for the same reason.
+    A caller must leave the fields that don't apply to its source_type at
+    their default of None — enforced below, not just by convention.
 
     Returns (record, summary) where summary has "added_lines",
     "removed_lines", and "changed_lines" — exactly what the audit entry
@@ -130,6 +138,11 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
     changing_recipient = customer_id is not None or new_customer_name is not None or sales_category_id is not None
     if changing_recipient and source_type != "dispatch":
         raise RecordCorrectionError(f"recipient correction is not supported for source type: {source_type}")
+    changing_returned_by = returned_by_customer_id is not None or returned_by_name is not None or signed_by_name is not None
+    if changing_returned_by and source_type != "returns":
+        raise RecordCorrectionError(f"returned-by/signer correction is not supported for source type: {source_type}")
+    if shift is not None and source_type != "production":
+        raise RecordCorrectionError(f"shift correction is not supported for source type: {source_type}")
 
     cfg = _REGISTRY[source_type]
     record = db.session.get(cfg["model"], record_id)
@@ -152,17 +165,38 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
     if was_finalized:
         cfg["reopen"](record, actor, f"Correction: {reason}")
 
-    if date is not None:
-        record.date = date
-
-    if changing_recipient:
+    # Header fields (date + whatever else applies to this source_type) —
+    # Returns/Production delegate entirely to their existing update_header()
+    # (the same function the draft-editing endpoints already use; reachable
+    # here because the reopen above already guarantees draft status), so
+    # notes/remarks is applied there too rather than via the generic
+    # setattr below. Dispatch has no equivalent generic update_header(), so
+    # it keeps its existing direct-field-plus-update_recipient() path.
+    if source_type == "returns":
         try:
-            dispatch_service.update_recipient(
-                record, customer_id=customer_id, new_customer_name=new_customer_name,
-                sales_category_id=sales_category_id, user=actor,
+            returns_service.update_header(
+                record, date=date, returned_by_customer_id=returned_by_customer_id,
+                returned_by_name=returned_by_name, signed_by_name=signed_by_name,
+                remarks=notes, user=actor,
             )
-        except dispatch_service.DispatchError as e:
+        except returns_service.ReturnError as e:
             raise error_cls(str(e)) from e
+    elif source_type == "production":
+        try:
+            production_service.update_header(record, date=date, shift=shift, remarks=notes, user=actor)
+        except production_service.ProductionError as e:
+            raise error_cls(str(e)) from e
+    else:
+        if date is not None:
+            record.date = date
+        if changing_recipient:
+            try:
+                dispatch_service.update_recipient(
+                    record, customer_id=customer_id, new_customer_name=new_customer_name,
+                    sales_category_id=sales_category_id, user=actor,
+                )
+            except dispatch_service.DispatchError as e:
+                raise error_cls(str(e)) from e
 
     existing_by_id = {line.id: line for line in record.lines}
     keep_ids = set()
@@ -208,7 +242,10 @@ def correct_record(source_type, record_id, *, lines, notes, reason, actor, expec
             })
             record.lines.remove(line)
 
-    if notes is not None:
+    # Returns/Production already applied notes/remarks via update_header()
+    # above — only Dispatch (no update_header() of its own) still needs the
+    # generic setattr here.
+    if source_type == "dispatch" and notes is not None:
         setattr(record, cfg["notes_field"], notes)
     record.updated_by = actor.id
     db.session.flush()

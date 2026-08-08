@@ -378,18 +378,31 @@ def delete_production(production_id):
 
 
 @production_bp.route("/<int:production_id>/correct", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("production")
 def correct(production_id):
     """Final pre-deployment correction — "Correct Record": see
-    webapp/services/record_correction_service.py."""
+    webapp/services/record_correction_service.py.
+
+    Manager/Super Admin may correct any production entry, draft or
+    finalized. An Operator may correct one too — but only a production
+    entry they themselves created, never someone else's — see
+    dispatches.py's correct() for the full rationale (identical rule,
+    same ownership check shape).
+    """
     user = current_user()
+    existing = record_correction_service.get_record("production", production_id)
+    if existing is None:
+        return jsonify({"error": "not found"}), 404
+    if user.role == ROLE_OPERATOR and existing.created_by != user.id:
+        return jsonify({"error": "forbidden"}), 403
     d = request.get_json(force=True) or {}
     try:
         record, summary = record_correction_service.correct_record(
             "production", production_id,
             lines=d.get("lines"), notes=d.get("notes"), reason=d.get("reason"),
             actor=user, expected_updated_at=d.get("expected_updated_at"),
+            date=d.get("date"), shift=d.get("shift"),
         )
     except RecordCorrectionConflict as e:
         db.session.rollback()

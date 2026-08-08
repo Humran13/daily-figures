@@ -413,18 +413,33 @@ def delete_return(return_id):
 
 
 @returns_bp.route("/<int:return_id>/correct", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("returns")
 def correct(return_id):
     """Final pre-deployment correction — "Correct Record": see
-    webapp/services/record_correction_service.py."""
+    webapp/services/record_correction_service.py.
+
+    Manager/Super Admin may correct any return, draft or finalized. An
+    Operator may correct one too — but only a return they themselves
+    created, never someone else's — see dispatches.py's correct() for the
+    full rationale (identical rule, same ownership check shape).
+    """
     user = current_user()
+    existing = record_correction_service.get_record("returns", return_id)
+    if existing is None:
+        return jsonify({"error": "not found"}), 404
+    if user.role == ROLE_OPERATOR and existing.created_by != user.id:
+        return jsonify({"error": "forbidden"}), 403
     d = request.get_json(force=True) or {}
     try:
         record, summary = record_correction_service.correct_record(
             "returns", return_id,
             lines=d.get("lines"), notes=d.get("notes"), reason=d.get("reason"),
             actor=user, expected_updated_at=d.get("expected_updated_at"),
+            date=d.get("date"),
+            returned_by_customer_id=int(d["customer_id"]) if d.get("customer_id") else None,
+            returned_by_name=d.get("returned_by_name"),
+            signed_by_name=d.get("signed_by_name"),
         )
     except RecordCorrectionConflict as e:
         db.session.rollback()

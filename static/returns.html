@@ -188,10 +188,32 @@
       <div class="msg" id="detailMsg"></div>
       <div class="nav-row no-print" id="detailActions"></div>
 
-      <!-- Correct Record — final pre-deployment correction. See
+      <!-- Preview — strictly read-only full-record view. See
            static/dispatch.html's identical panel for the full rationale. -->
+      <div class="card hidden no-print" id="previewPanel">
+        <h3 style="margin-top:0;">Preview</h3>
+        <div id="previewBody"></div>
+        <div class="nav-row">
+          <button class="btn btn-ghost" id="previewCloseBtn">Close preview</button>
+        </div>
+      </div>
+
+      <!-- Correct Record — final pre-deployment correction. See
+           static/dispatch.html's identical panel for the full rationale.
+           Return Date/Returned By/Name & Sign mirror the same fields the
+           New Return form already collects (see #rDate/#rReturnedBySearch/
+           #rSignedByName above), just with a correct-prefixed id/handler
+           set so both forms can coexist on this page. -->
       <div class="card hidden no-print" id="correctPanel">
         <h3 style="margin-top:0;">Correct record</h3>
+        <div class="field"><label>Return Date</label><input type="date" id="correctDate"></div>
+        <div class="field" style="position:relative;">
+          <label>Returned By <span style="font-weight:400;">(customer, truck, or field representative)</span></label>
+          <input id="correctReturnedBySearch" placeholder="Type to search customers, or type a free-text name…" autocomplete="off">
+          <div class="autocomplete-list hidden" id="correctReturnedByResults"></div>
+          <div class="hint" id="correctReturnedByHint"></div>
+        </div>
+        <div class="field"><label>Name &amp; Sign <span style="font-weight:400;">(digital signature)</span></label><input id="correctSignedByName" placeholder="Typed name standing in for a signature"></div>
         <div id="correctLineList"></div>
         <div class="row">
           <div style="flex:1;"><label>Add a product</label>
@@ -772,15 +794,20 @@ async function openDetail(id){
   const buttons = [];
   const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
   const isViewer = currentUser && currentUser.role === 'viewer';
-  const ownsDraft = currentUser && data.created_by === currentUser.id;
-  const canEditDraft = data.status === 'draft' && (isElevated || ownsDraft);
+  const isOperator = currentUser && currentUser.role === 'operator';
+  const ownsRecord = currentUser && data.created_by === currentUser.id;
+  const canEditDraft = data.status === 'draft' && (isElevated || ownsRecord);
+  // Finalized Edit — Manager/Super Admin on any record; an Operator only
+  // on a record they themselves created (server-enforced by the
+  // /correct route's own ownership check).
+  const canEditFinalized = data.status !== 'draft' && data.status !== 'void' && (isElevated || (isOperator && ownsRecord));
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
   if(!isViewer) buttons.push(`<button class="btn btn-ghost" data-action="preview">Preview</button>`);
   if(data.status === 'draft'){
     if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
-  } else if(isElevated && data.status !== 'void'){
+  } else if(canEditFinalized){
     buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
   }
   if(isElevated && data.status !== 'void'){
@@ -789,6 +816,7 @@ async function openDetail(id){
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
+  document.getElementById('previewPanel').classList.add('hidden');
   document.getElementById('correctPanel').classList.add('hidden');
   document.getElementById('deletePanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
@@ -803,12 +831,7 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'preview'){
-        document.getElementById('correctPanel').classList.add('hidden');
-        document.getElementById('deletePanel').classList.add('hidden');
-        document.getElementById('detailHeader').scrollIntoView({behavior:'smooth'});
-        return;
-      }
+      if(action === 'preview'){ openPreviewPanel(data); return; }
       if(action === 'edit-draft'){ openEditDraft(data); return; }
       if(action === 'correct'){ openCorrectPanel(data); return; }
       if(action === 'delete'){ openDeletePanel(data); return; }
@@ -817,15 +840,36 @@ async function openDetail(id){
 }
 document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab('list'));
 
+// ---------- Preview (strictly read-only) ----------
+function openPreviewPanel(data){
+  document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
+  document.getElementById('previewBody').innerHTML =
+    document.getElementById('detailHeader').innerHTML + document.getElementById('detailLines').innerHTML;
+  document.getElementById('previewPanel').classList.remove('hidden');
+  document.getElementById('previewPanel').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('previewCloseBtn').addEventListener('click', ()=>{
+  document.getElementById('previewPanel').classList.add('hidden');
+});
+
 // ---------- Correct Record ----------
 let correctLines = [];
+let correctSelectedCustomer = null; // {id, name} — mirrors the New Return form's selectedCustomer
 
 function openCorrectPanel(data){
+  document.getElementById('previewPanel').classList.add('hidden');
   correctLines = data.lines.map(l => ({
     id: l.id, product_id: l.product_id, product_name: l.product_name,
     rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
     cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes,
   }));
+  document.getElementById('correctDate').value = data.date;
+  correctSelectedCustomer = data.returned_by_customer_id ? {id: data.returned_by_customer_id, name: data.returned_by_name} : null;
+  document.getElementById('correctReturnedBySearch').value = data.returned_by_name || '';
+  document.getElementById('correctReturnedByHint').textContent = correctSelectedCustomer ? 'Matched to an existing customer' : '';
+  document.getElementById('correctReturnedByResults').classList.add('hidden');
+  document.getElementById('correctSignedByName').value = data.signed_by_name || '';
   document.getElementById('correctNotes').value = data.remarks || '';
   document.getElementById('correctReason').value = '';
   document.getElementById('correctMsg').textContent = '';
@@ -836,6 +880,44 @@ function openCorrectPanel(data){
   document.getElementById('correctPanel').classList.remove('hidden');
   document.getElementById('correctPanel').scrollIntoView({behavior:'smooth'});
 }
+
+// Mirrors the New Return form's #rReturnedBySearch handler exactly (see
+// above) — same customer-lookup endpoint, same free-text fallback.
+let correctReturnedBySearchTimer;
+document.getElementById('correctReturnedBySearch').addEventListener('input', (e)=>{
+  correctSelectedCustomer = null;
+  document.getElementById('correctReturnedByHint').textContent = '';
+  clearTimeout(correctReturnedBySearchTimer);
+  const q = e.target.value.trim();
+  if(!q){ document.getElementById('correctReturnedByResults').classList.add('hidden'); return; }
+  correctReturnedBySearchTimer = setTimeout(async ()=>{
+    const {data} = await api(`/api/admin/customers?q=${encodeURIComponent(q)}`);
+    const results = document.getElementById('correctReturnedByResults');
+    const items = Array.isArray(data) ? data : [];
+    results.innerHTML = items.map(c=>`<div class="autocomplete-item" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${escapeHtml(c.name)}</div>`).join('')
+      + `<div class="autocomplete-item" data-free="1" style="font-weight:700;color:var(--teal-dark);">Use "${escapeHtml(q)}" as free text (no customer match)</div>`;
+    results.classList.remove('hidden');
+    results.querySelectorAll('[data-id]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        correctSelectedCustomer = {id: parseInt(el.dataset.id,10), name: el.dataset.name};
+        document.getElementById('correctReturnedBySearch').value = el.dataset.name;
+        document.getElementById('correctReturnedByHint').textContent = 'Matched to an existing customer';
+        results.classList.add('hidden');
+      });
+    });
+    const freeEl = results.querySelector('[data-free]');
+    if(freeEl) freeEl.addEventListener('click', ()=>{
+      correctSelectedCustomer = null;
+      document.getElementById('correctReturnedByHint').textContent = 'Recorded as free text (not linked to a customer record)';
+      results.classList.add('hidden');
+    });
+  }, 200);
+});
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('#correctReturnedBySearch') && !e.target.closest('#correctReturnedByResults')){
+    document.getElementById('correctReturnedByResults').classList.add('hidden');
+  }
+});
 
 function renderCorrectLines(){
   const container = document.getElementById('correctLineList');
@@ -890,9 +972,14 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
   if(!reason){ msg.textContent = 'A correction reason is required.'; msg.className = 'msg err'; return; }
   if(correctLines.length === 0){ msg.textContent = 'At least one product line is required.'; msg.className = 'msg err'; return; }
 
+  const freeTextName = correctSelectedCustomer ? null : (document.getElementById('correctReturnedBySearch').value.trim() || null);
   const body = {
     reason, notes: document.getElementById('correctNotes').value,
     expected_updated_at: currentDetail.updated_at,
+    date: document.getElementById('correctDate').value || undefined,
+    customer_id: correctSelectedCustomer ? correctSelectedCustomer.id : null,
+    returned_by_name: freeTextName,
+    signed_by_name: document.getElementById('correctSignedByName').value || null,
     lines: correctLines.map(l => ({id: l.id, product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes})),
   };
   const r = await api(`/api/returns/${currentDetail.id}/correct`, {method:'POST', body: JSON.stringify(body)});
@@ -907,6 +994,7 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
 
 // ---------- Delete (permanent hard delete) ----------
 function openDeletePanel(data){
+  document.getElementById('previewPanel').classList.add('hidden');
   const productsSummary = data.lines.map(l => `${l.product_name} (${l.quantity_label})`).join(', ');
   document.getElementById('deleteSummary').innerHTML =
     `<strong>Return #${data.id}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.returned_by_name || '—')}<br>` +

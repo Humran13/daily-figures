@@ -576,7 +576,7 @@ def duplicate(dispatch_id):
 
 
 @dispatches_bp.route("/<int:dispatch_id>/correct", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("dispatch")
 def correct(dispatch_id):
     """
@@ -584,8 +584,22 @@ def correct(dispatch_id):
     dispatch in place (same id, full audit trail) rather than reopening it
     manually, editing, and refinalizing by hand, or Duplicate (a separate
     new record). See webapp/services/record_correction_service.py.
+
+    Manager/Super Admin may correct any dispatch, draft or finalized. An
+    Operator may correct one too — but only a dispatch they themselves
+    created (the normal operational information they entered), never
+    someone else's — mirrors the exact same ownership rule the draft-only
+    editing endpoints already use via can_edit(), just no longer limited
+    to draft status. Checked here in the route, not in the service, per
+    this codebase's convention of keeping permission checks out of
+    service-layer functions.
     """
     user = current_user()
+    record = record_correction_service.get_record("dispatch", dispatch_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+    if user.role == ROLE_OPERATOR and record.created_by != user.id:
+        return jsonify({"error": "forbidden"}), 403
     d = request.get_json(force=True) or {}
     try:
         dispatch, summary = record_correction_service.correct_record(
