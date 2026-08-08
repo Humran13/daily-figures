@@ -137,3 +137,21 @@ def void_production(production_record, user, reason):
     production_record.voided_at = _utcnow()
     production_record.void_reason = reason
     production_record.updated_by = user.id
+
+
+def delete_production(production_record, reason):
+    """
+    Permanent hard delete — Manager/Super Administrator only (enforced by
+    the route's roles_required, not here). Mirrors
+    dispatch_service.delete_dispatch() exactly: physically removes the
+    ProductionRecord row; ProductionLine rows go with it via the ORM
+    cascade already declared on ProductionRecord.lines. No status is ever
+    set to any "deleted"/"void"/"cancelled" value — every live Production
+    calculation already reads ProductionRecord/ProductionLine straight
+    from the database, so removal alone corrects it, no manual stock
+    patching.
+    """
+    if not reason:
+        raise ProductionError("A reason is required to permanently delete a production entry")
+    db.session.delete(production_record)
+    db.session.flush()

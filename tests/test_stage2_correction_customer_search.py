@@ -80,7 +80,13 @@ def test_temporary_customer_name_is_searchable(client, setup):
     assert found.get_json()["total"] == 1
 
 
-def test_historical_snapshot_name_is_searchable_after_customer_renamed(client, setup):
+def test_current_name_is_searchable_after_customer_renamed_snapshot_backfilled(client, setup):
+    """Targeted UX round — a plain rename (unlike a merge) bulk-updates
+    every existing Dispatch's customer_name_snapshot to the new name (see
+    customer_service.rename_customer()), so History/reports show the
+    corrected name everywhere immediately, and the stale old name is no
+    longer discoverable at all — it was a typo/correction, not two
+    genuinely distinct identities being kept historically separate."""
     pid = setup["product"]["id"]
     cust = client.post("/api/admin/customers", json={
         "name": "Old Name Inc", "sales_category_id": setup["category"]["id"],
@@ -90,10 +96,11 @@ def test_historical_snapshot_name_is_searchable_after_customer_renamed(client, s
     rename = client.patch(f"/api/admin/customers/{cust['id']}", json={"name": "New Name LLC"})
     assert rename.status_code == 200
 
-    # Findable both by the name recorded at the time (snapshot)...
-    by_snapshot = client.get("/api/dispatches?customer_name=Old Name")
-    assert by_snapshot.get_json()["total"] == 1
-    # ...and by the customer's current live name.
+    # The stale old name is no longer searchable — the snapshot was corrected.
+    by_old_name = client.get("/api/dispatches?customer_name=Old Name")
+    assert by_old_name.get_json()["total"] == 0
+    # The new name is searchable — both because the snapshot itself was
+    # backfilled AND because it matches the customer's current live name.
     by_current = client.get("/api/dispatches?customer_name=New Name")
     assert by_current.get_json()["total"] == 1
 

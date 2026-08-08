@@ -1042,19 +1042,19 @@ async function openDetail(id){
     if(isElevated || ownsDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit Draft</button>`);
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
+  // Standard History action set (Manager/Super Admin): Reopen, Edit,
+  // Delete, Print — Void and Duplicate are not offered here.
   if(isElevated){
     if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="void">Void</button>`);
     // Correct Record: amends and refinalizes the original in one step.
     // Reopen (above) is kept for anyone who deliberately wants the record
     // left open instead — the two are not the same action.
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Correct record</button>`);
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
     // Permanent delete — never void/cancel/soft-delete. Draft or
     // finalized (both may be genuinely wrong); not offered on an already-
     // void record, which is out of this action's scope.
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete Dispatch</button>`);
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
   }
-  buttons.push(`<button class="btn btn-ghost" data-action="duplicate">Duplicate</button>`);
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
@@ -1073,18 +1073,11 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'reopen' || action === 'void'){
+      if(action === 'reopen'){
         const reason = prompt(`Reason to ${action} this dispatch:`);
         if(!reason) return;
         const r = await api(`/api/dispatches/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
-        if(r.status===200){ toast(action==='reopen' ? 'Reopened.' : 'Voided.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
-        return;
-      }
-      if(action === 'duplicate'){
-        const number = prompt('New dispatch number for the copy:');
-        if(!number) return;
-        const r = await api(`/api/dispatches/${data.id}/duplicate`, {method:'POST', body: JSON.stringify({dispatch_number: number})});
-        if(r.status===201){ toast('Duplicated as a new draft.'); openDetail(r.data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+        if(r.status===200){ toast('Reopened.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
       if(action === 'correct'){ openCorrectPanel(data); return; }

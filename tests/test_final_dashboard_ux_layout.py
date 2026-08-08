@@ -156,16 +156,24 @@ def test_modal_is_accessible_dialog():
 
 
 def test_multiple_sections_reuse_the_same_open_modal_function():
-    # Per-Product Daily Figures, Top Products, Recent Dispatches, Drafts,
-    # and Corrections all go through the one shared renderPreviewSection()
-    # helper — and Category/Recipient both go through the one shared
+    # Top Products, Recent Dispatches, Drafts, and Corrections all go
+    # through the one shared renderPreviewSection() helper — and
+    # Category/Recipient both go through the one shared
     # renderGroupedIssued() helper — each of which calls openModal() in
-    # exactly one place. Never seven separate modal implementations: the
-    # reuse is at the renderer level, not the call-site level.
-    assert DASHBOARD_HTML.count("openModal(") >= 3  # definition + the two shared renderers' call sites
+    # exactly one place. Per-Product Daily Figures (targeted UX round) has
+    # its own dedicated renderDailyFiguresToday(), since its rows must be
+    # wrapped in a real <table> shell (horizontal-scroll fix) rather than
+    # joined into a plain <div> — but it still follows the exact same
+    # "preview N + View all" shape and calls the SAME openModal(), so this
+    # remains "never N separate modal implementations", just one renderer
+    # short of fully generic reuse for the one section with a genuinely
+    # different markup shape.
+    assert DASHBOARD_HTML.count("openModal(") >= 3  # definition + the shared renderers' call sites
 
     render_preview_call_sites = len(re.findall(r"renderPreviewSection\(document\.getElementById", DASHBOARD_HTML))
-    assert render_preview_call_sites >= 5  # dailyFigures, topProducts, recentDispatches, draftList, correctionsList
+    assert render_preview_call_sites >= 4  # topProducts, recentDispatches, draftList, correctionsList
+    assert "function renderDailyFiguresToday(" in DASHBOARD_HTML
+    assert "openModal('Per-product Daily Figures'" in DASHBOARD_HTML
 
     render_grouped_call_sites = len(re.findall(r"renderGroupedIssued\(document\.getElementById", DASHBOARD_HTML))
     assert render_grouped_call_sites == 2  # byCategory, byRecipient

@@ -64,6 +64,27 @@ def build_line(product_id, cartons, packs, pieces, line_notes=None, at=None):
     }
 
 
+def _resolve_signed_by_name(signed_by_name, user):
+    """
+    "Name and sign" digital stand-in — server-authoritative, never a
+    client-trusted value for an Operator. An Operator's signer identity is
+    always their own authenticated username, no matter what the request
+    body contains (a forged/edited frontend request could send any string
+    otherwise) — the ONLY way an Operator's own return shows a different
+    signer is by a Manager/Super Administrator later correcting it via the
+    existing correction workflow, which this function has no say over.
+
+    Manager/Super Administrator may sign as themselves (the default when
+    nothing is supplied) or explicitly override to record another
+    authorized person, exactly as the existing business workflow already
+    allows for who receives/verifies a return.
+    """
+    from webapp.models.user import ROLE_OPERATOR
+    if user.role == ROLE_OPERATOR:
+        return user.username
+    return (signed_by_name or "").strip() or user.username
+
+
 def _resolve_returned_by(customer_id, returned_by_name):
     """
     Returned by is optional free text (a truck/route/field rep may not be a
@@ -92,7 +113,7 @@ def create_return(*, date, returned_by_customer_id=None, returned_by_name=None, 
         date=date,
         returned_by_customer_id=customer_id,
         returned_by_name_snapshot=name_snapshot,
-        signed_by_name=(signed_by_name or "").strip() or None,
+        signed_by_name=_resolve_signed_by_name(signed_by_name, user),
         # Defaults to whoever is entering the return — reuses the existing
         # session/user identity exactly like created_by/finalized_by
         # elsewhere, rather than needing a separate user-picker (the
@@ -127,7 +148,7 @@ def update_header(return_record, *, date=None, returned_by_customer_id=None, ret
         return_record.returned_by_customer_id = customer_id
         return_record.returned_by_name_snapshot = name_snapshot
     if signed_by_name is not None:
-        return_record.signed_by_name = signed_by_name.strip() or None
+        return_record.signed_by_name = _resolve_signed_by_name(signed_by_name, user)
     if received_by is not None:
         return_record.received_by = received_by
     if verified_by is not None:
@@ -176,3 +197,20 @@ def void_return(return_record, user, reason):
     return_record.voided_at = _utcnow()
     return_record.void_reason = reason
     return_record.updated_by = user.id
+
+
+def delete_return(return_record, reason):
+    """
+    Permanent hard delete — Manager/Super Administrator only (enforced by
+    the route's roles_required, not here). Mirrors
+    dispatch_service.delete_dispatch() exactly: physically removes the
+    ReturnRecord row; ReturnLine rows go with it via the ORM cascade
+    already declared on ReturnRecord.lines. No status is ever set to any
+    "deleted"/"void"/"cancelled" value — every live Returns-contribution
+    calculation already reads ReturnRecord/ReturnLine straight from the
+    database, so removal alone corrects it, no manual stock patching.
+    """
+    if not reason:
+        raise ReturnError("A reason is required to permanently delete a return")
+    db.session.delete(return_record)
+    db.session.flush()

@@ -102,6 +102,42 @@ def create_temporary_customer(*, name, sales_category_id, user, contact_info=Non
     return customer
 
 
+def rename_customer(customer, new_name, user):
+    """
+    Renames a customer IN PLACE — same id, same row, never a new customer
+    record. Unlike merge_customers() (which deliberately preserves each
+    historical dispatch's customer_name_snapshot exactly as it was
+    recorded, since a merge combines two genuinely distinct identities), a
+    plain rename is still the SAME recipient with corrected/updated text,
+    so every existing Dispatch/ReturnRecord snapshot for this customer_id
+    is bulk-updated to the new name too — otherwise old history would keep
+    showing the stale name forever (Dispatch.to_dict()/ReturnRecord.to_dict()
+    both prefer the snapshot over the live name).
+
+    Caller is responsible for the duplicate-name check (find_similar_customers())
+    and the audit entry — this function only performs the rename + backfill.
+    """
+    new_name = (new_name or "").strip()
+    if not new_name:
+        raise CustomerServiceError("name cannot be empty")
+    if new_name == customer.name:
+        return {"dispatches_updated": 0, "returns_updated": 0}
+
+    customer.name = new_name
+    db.session.flush()
+
+    from webapp.models.dispatch import Dispatch
+    from webapp.models.return_record import ReturnRecord
+    dispatch_count = Dispatch.query.filter_by(customer_id=customer.id).update(
+        {"customer_name_snapshot": new_name}, synchronize_session=False,
+    )
+    returns_count = ReturnRecord.query.filter_by(returned_by_customer_id=customer.id).update(
+        {"returned_by_name_snapshot": new_name}, synchronize_session=False,
+    )
+    db.session.flush()
+    return {"dispatches_updated": dispatch_count, "returns_updated": returns_count}
+
+
 def reassign_category(customer, new_sales_category_id, user):
     category = db.session.get(SalesCategory, new_sales_category_id) if new_sales_category_id else None
     if new_sales_category_id and category is None:

@@ -375,7 +375,7 @@ function attachZeroClearBehavior(input){
 // every write remains independently, fully gated server-side regardless
 // (see stock_service.upsert_daily_figure()'s own role/permission checks,
 // unchanged by this redesign).
-function renderCurrentView(){
+async function renderCurrentView(){
   if(currentUser && currentUser.role === 'operator'){
     document.getElementById('progressWrap').classList.add('hidden');
     document.getElementById('entryCard').classList.add('hidden');
@@ -386,6 +386,28 @@ function renderCurrentView(){
   } else {
     document.getElementById('operatorTable').classList.add('hidden');
     document.getElementById('progressWrap').classList.remove('hidden');
+    // Daily Figures re-review correction — a Manager/Super Admin landing
+    // fresh on a Date+Shift whose review was already submitted must go
+    // straight to the review screen (which has its own "Reopen this
+    // submitted review" action), not be forced through the per-product
+    // wizard first. Walking the wizard on an already-submitted period is
+    // exactly how "This review has already been submitted — reopen it
+    // first to make changes." used to surface as a dead-end mid-wizard,
+    // before the reviewer ever reached the Reopen button. Only checked on
+    // a FRESH view (currentIdx===0, set by the date/shift change
+    // listeners and boot()) — internal navigation (Return to this
+    // product, Back to products, Save & Advance) calls renderEntryCard()
+    // directly and is never affected.
+    const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
+    if(isElevated && currentIdx === 0){
+      const date = document.getElementById('dateInput').value;
+      const shift = document.getElementById('shiftInput').value;
+      const summary = await apiGet(`/api/daily-review?date=${date}&shift=${shift}`);
+      if(summary && summary.session && summary.session.status === 'submitted'){
+        showReviewScreen(date, shift);
+        return;
+      }
+    }
     renderEntryCard();
   }
 }

@@ -452,6 +452,15 @@
 </div>
 
 <script>
+// Set once in init() after /api/session confirms the caller is
+// super_admin (this whole page is already gated to that role server-side
+// — see webapp/routes/pages.py's admin_page()). Kept here anyway so
+// specific destructive/sensitive actions (customer rename) can check it
+// explicitly rather than leaning solely on "this page happened to load",
+// matching the same explicit-check discipline the backend route itself
+// uses (see admin_customers.py's update_customer(), the actual gate).
+let currentUserRole = null;
+
 async function api(path, opts){
   const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
   const data = await res.json().catch(()=>({}));
@@ -780,12 +789,36 @@ async function loadCustomers(){
       <td>${escapeHtml(c.sales_category_name || '—')}</td>
       <td><span class="pill ${c.active?'pill-active':'pill-inactive'}">${c.active?'Active':'Inactive'}</span></td>
       <td>
+        <button class="btn-ghost" data-rename-customer="${c.id}">Rename</button>
         <button class="btn-ghost" data-toggle-customer="${c.id}" data-next="${!c.active}">${c.active?'Deactivate':'Activate'}</button>
         <button class="btn-ghost" data-merge-customer="${c.id}">Merge into…</button>
       </td>
     </tr>`).join('');
   document.getElementById('customersTable').innerHTML = rows || '<tr><td colspan="5" class="small">No customers yet.</td></tr>';
 
+  document.querySelectorAll('[data-rename-customer]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      // Customer rename correction — Super Administrator only, checked
+      // explicitly here rather than relying only on this whole page
+      // being Super-Admin-gated. The real enforcement is still
+      // server-side (update_customer() returns 403 for anyone else
+      // regardless of this check) — this only avoids showing a rename
+      // flow that would just fail.
+      if(currentUserRole !== 'super_admin'){ alert('Only a Super Administrator may rename a customer.'); return; }
+      const id = btn.dataset.renameCustomer;
+      const current = customersCache.find(c=>String(c.id)===id);
+      const newName = prompt(`Rename "${current ? current.name : ''}" to:`, current ? current.name : '');
+      if(!newName || !newName.trim() || newName.trim() === (current && current.name)) return;
+      let res = await api(`/api/admin/customers/${id}`, {method:'PATCH', body: JSON.stringify({name: newName.trim()})});
+      if(res.status === 409 && res.data.warning === 'similar_customers_exist'){
+        const proceed = confirm(`Similar existing recipient(s): ${res.data.matches.map(m=>m.name).join(', ')}. Rename anyway?`);
+        if(!proceed) return;
+        res = await api(`/api/admin/customers/${id}`, {method:'PATCH', body: JSON.stringify({name: newName.trim(), confirm_not_duplicate: true})});
+      }
+      if(res.status !== 200){ alert(res.data.error || 'Rename failed'); return; }
+      loadCustomers();
+    });
+  });
   document.querySelectorAll('[data-toggle-customer]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const id = btn.dataset.toggleCustomer;
@@ -1386,6 +1419,7 @@ document.getElementById('cutoverActivateBtn').addEventListener('click', async ()
     document.getElementById('gate').classList.remove('hidden');
     return;
   }
+  currentUserRole = data.user.role;
   document.getElementById('adminBody').classList.remove('hidden');
   await applyFeatureFlags();
   await loadSalesCategoriesAdmin();

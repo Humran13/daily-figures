@@ -370,6 +370,48 @@ def void(return_id):
     return jsonify(record.to_dict())
 
 
+@returns_bp.route("/<int:return_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("returns")
+def delete_return(return_id):
+    """
+    Permanent hard delete — not void, not a status change. Manager/Super
+    Administrator only. Mirrors dispatches.py's delete_dispatch() route
+    exactly — see webapp/services/returns_service.py's delete_return()
+    docstring for why removal alone is enough to correct every live
+    calculation.
+    """
+    user = current_user()
+    record = db.session.get(ReturnRecord, return_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    reason = (d.get("reason") or "").strip()
+    if not reason:
+        return _error("A reason is required to permanently delete a return")
+    if not d.get("confirm"):
+        return _error("Explicit confirmation is required to permanently delete a return")
+
+    snapshot = {
+        **record.to_dict(),
+        "operation": "permanent_delete_return",
+        "deletion_reason": reason,
+        "previous_status": record.status,
+    }
+
+    try:
+        product_usage_service.remove_usage("returns", record.id)
+        svc.delete_return(record, reason)
+    except ReturnError as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "permanent_delete_return", "return", entity_id=return_id, before=snapshot, after=None)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted_id": return_id})
+
+
 @returns_bp.route("/<int:return_id>/correct", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
 @feature_required("returns")

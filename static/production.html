@@ -205,6 +205,21 @@
           <button class="btn btn-ghost" id="correctCancelBtn">Cancel</button>
         </div>
       </div>
+
+      <!-- Delete — permanent hard delete, Manager/Super Administrator only.
+           Not void, not a status change. See static/dispatch.html's
+           identical panel for the full rationale. -->
+      <div class="card hidden no-print" id="deletePanel">
+        <h3 style="margin-top:0;color:var(--red);">Delete this Production entry permanently?</h3>
+        <p class="hint" id="deleteSummary" style="margin-bottom:12px;"></p>
+        <p class="hint" style="color:var(--red);margin-bottom:12px;">This will permanently remove this Production entry and its product quantities. Stock figures will be recalculated.</p>
+        <div><label>Deletion reason (required)</label><textarea id="deleteReason" rows="2" placeholder="Why is this production entry being deleted?"></textarea></div>
+        <div class="msg" id="deleteMsg"></div>
+        <div class="nav-row">
+          <button class="btn btn-danger" id="deleteConfirmBtn">Delete Production Entry</button>
+          <button class="btn btn-ghost" id="deleteCancelBtn">Cancel</button>
+        </div>
+      </div>
     </div>
   </main>
 </div>
@@ -578,20 +593,24 @@ async function openDetail(id){
     </div>
   `).join('');
 
+  // Standard History action set (Manager/Super Admin): Reopen, Edit,
+  // Delete, Print — Void and Duplicate are not offered here.
   const actions = document.getElementById('detailActions');
   const buttons = [];
+  const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
-  if(currentUser && ['super_admin','manager'].includes(currentUser.role)){
+  if(isElevated){
     if(data.status === 'finalized') buttons.push(`<button class="btn btn-ghost" data-action="reopen">Reopen</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="void">Void</button>`);
-    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Correct record</button>`);
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+    if(data.status !== 'void') buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
   }
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
   document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
   msg.textContent = '';
 
@@ -604,14 +623,15 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'reopen' || action === 'void'){
+      if(action === 'reopen'){
         const reason = prompt(`Reason to ${action} this production entry:`);
         if(!reason) return;
         const r = await api(`/api/production/${data.id}/${action}`, {method:'POST', body: JSON.stringify({reason})});
-        if(r.status===200){ toast(action==='reopen' ? 'Reopened.' : 'Voided.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
+        if(r.status===200){ toast('Reopened.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
       if(action === 'correct'){ openCorrectPanel(data); return; }
+      if(action === 'delete'){ openDeletePanel(data); return; }
     });
   });
 }
@@ -703,6 +723,36 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
   toast('Correction saved.');
   document.getElementById('correctPanel').classList.add('hidden');
   openDetail(currentDetail.id);
+});
+
+// ---------- Delete (permanent hard delete) ----------
+function openDeletePanel(data){
+  const productsSummary = data.lines.map(l => `${l.product_name} (${l.quantity_label})`).join(', ');
+  document.getElementById('deleteSummary').innerHTML =
+    `<strong>Production #${data.id}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.shift)}<br>` +
+    `${escapeHtml(productsSummary)}<br>Status: ${escapeHtml(data.status)}`;
+  document.getElementById('deleteReason').value = '';
+  document.getElementById('deleteMsg').textContent = '';
+  document.getElementById('deletePanel').classList.remove('hidden');
+  document.getElementById('deletePanel').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('deleteCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('deletePanel').classList.add('hidden');
+});
+document.getElementById('deleteConfirmBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('deleteMsg');
+  const reason = document.getElementById('deleteReason').value.trim();
+  if(!reason){ msg.textContent = 'A deletion reason is required.'; msg.className = 'msg err'; return; }
+  if(!confirm('Delete this Production entry permanently? This cannot be undone.')) return;
+
+  const r = await api(`/api/production/${currentDetail.id}`, {method:'DELETE', body: JSON.stringify({reason, confirm: true})});
+  if(r.status !== 200){
+    msg.textContent = r.data.error || 'Could not delete production entry.'; msg.className = 'msg err';
+    return;
+  }
+  toast('Production entry deleted.');
+  document.getElementById('deletePanel').classList.add('hidden');
+  switchTab('list');
 });
 
 // ---------- boot ----------

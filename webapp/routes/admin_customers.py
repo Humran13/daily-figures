@@ -98,13 +98,42 @@ def update_customer(customer_id):
     if customer is None:
         return jsonify({"error": "not found"}), 404
     d = request.get_json(force=True) or {}
+
+    # Customer rename correction — renaming is Super Administrator only.
+    # Every OTHER field this endpoint already lets Manager edit (category,
+    # active, contact_info, notes, sales_category_id reassignment) is
+    # untouched by this — only an attempt to touch "name" itself is
+    # blocked here, enforced server-side regardless of what the frontend
+    # shows (admin.html is already Super-Admin-only at the page level, but
+    # that is never the real gate — this route is).
+    if "name" in d and current_user().role != ROLE_SUPER_ADMIN:
+        return jsonify({"error": "only a Super Administrator may rename a customer"}), 403
+
     before = customer.to_dict()
 
     if "name" in d:
         new_name = d["name"].strip()
         if not new_name:
             return jsonify({"error": "name cannot be empty"}), 400
-        customer.name = new_name
+        if new_name != customer.name:
+            # Reuses the exact same duplicate-detection the create flow
+            # already uses — a rename must not accidentally collide with
+            # an existing recipient any more than creating one would.
+            if not d.get("confirm_not_duplicate"):
+                similar = find_similar_customers(new_name, exclude_id=customer.id)
+                if similar:
+                    return jsonify({
+                        "warning": "similar_customers_exist",
+                        "matches": [c.to_dict() for c in similar],
+                        "hint": "resend with confirm_not_duplicate: true to rename anyway",
+                    }), 409
+            previous_name = customer.name
+            svc.rename_customer(customer, new_name, current_user())
+            record_audit(
+                current_user(), "rename", "customer", entity_id=customer.id,
+                before={"customer_id": customer.id, "previous_name": previous_name},
+                after={"customer_id": customer.id, "new_name": new_name},
+            )
     if "category" in d:
         if d["category"] not in CATEGORIES:
             return jsonify({"error": f"category must be one of {CATEGORIES}"}), 400

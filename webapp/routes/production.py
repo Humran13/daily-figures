@@ -335,6 +335,48 @@ def void(production_id):
     return jsonify(record.to_dict())
 
 
+@production_bp.route("/<int:production_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("production")
+def delete_production(production_id):
+    """
+    Permanent hard delete — not void, not a status change. Manager/Super
+    Administrator only. Mirrors dispatches.py's delete_dispatch() route
+    exactly — see webapp/services/production_service.py's
+    delete_production() docstring for why removal alone is enough to
+    correct every live calculation.
+    """
+    user = current_user()
+    record = db.session.get(ProductionRecord, production_id)
+    if record is None:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    reason = (d.get("reason") or "").strip()
+    if not reason:
+        return _error("A reason is required to permanently delete a production entry")
+    if not d.get("confirm"):
+        return _error("Explicit confirmation is required to permanently delete a production entry")
+
+    snapshot = {
+        **record.to_dict(),
+        "operation": "permanent_delete_production",
+        "deletion_reason": reason,
+        "previous_status": record.status,
+    }
+
+    try:
+        product_usage_service.remove_usage("production", record.id)
+        svc.delete_production(record, reason)
+    except ProductionError as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "permanent_delete_production", "production", entity_id=production_id, before=snapshot, after=None)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted_id": production_id})
+
+
 @production_bp.route("/<int:production_id>/correct", methods=["POST"])
 @roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
 @feature_required("production")
