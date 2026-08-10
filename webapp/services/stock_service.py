@@ -33,6 +33,7 @@ from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, STATUS_FINALIZED, Dis
 from webapp.models.production_record import ProductionLine, ProductionRecord
 from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.models.sales_category import SalesCategory
+from webapp.services import returns_service
 from webapp.services.customer_service import resolve_canonical, resolve_customer_ids_for_filter
 from webapp.services.packaging import PackagingError, from_base_units, normalize, to_base_units
 from webapp.services.quantity_format import qty_label
@@ -305,12 +306,15 @@ def _any_finalized_activity_at_or_before(product_id, date, shift):
 
     # Returns has no shift column — a finalized Return always attributes
     # to that date's Day period (see return_base_qty()), so it counts as
-    # "at or before" whenever its date is <= the boundary date.
+    # "at or before" whenever its date is <= the boundary date. Uses the
+    # same stock-posting eligibility rule as the aggregate queries below
+    # (Metro Sales non-Monday returns never disqualify an otherwise-blank
+    # period from auto-anchoring, since they contribute nothing to stock).
     returns_exists = db.session.query(
         db.session.query(ReturnLine.id)
         .join(ReturnRecord, ReturnRecord.id == ReturnLine.return_id)
         .filter(
-            ReturnRecord.status == STATUS_FINALIZED,
+            returns_service.stock_posting_return_filter(),
             ReturnLine.product_id == product_id,
             ReturnRecord.date <= date,
         )
@@ -418,11 +422,22 @@ def issued_base_qty(product_id, date, shift):
 
 
 def returns_finalized_base_qty(product_id, date):
+    """
+    THE choke point every Daily Figures/Dashboard/Reports Returns total
+    ultimately flows through (return_base_qty() below, date_range_summary(),
+    the whole carry-forward chain in get_prior_closing_base_qty()) — so
+    applying returns_service.stock_posting_return_filter() here alone is
+    enough to make the Metro Sales Monday-only stock-posting rule apply
+    everywhere consistently, with no second implementation anywhere else.
+    A normal (non-Metro-Sales) finalized return is completely unaffected —
+    the filter reduces to exactly the old `status == FINALIZED` check for
+    it.
+    """
     total = (
         db.session.query(db.func.coalesce(db.func.sum(ReturnLine.base_unit_qty), 0))
         .join(ReturnRecord, ReturnRecord.id == ReturnLine.return_id)
         .filter(
-            ReturnRecord.status == STATUS_FINALIZED,
+            returns_service.stock_posting_return_filter(),
             ReturnRecord.date == date,
             ReturnLine.product_id == product_id,
         )
@@ -913,13 +928,17 @@ def returns_finalized_base_qty_range(product_id, date_from, date_to):
     """
     Whole-range total, shift-agnostic — ReturnRecord has no shift column at
     all (see return_base_qty()'s docstring on why), so unlike Issued/
-    Production there is nothing to filter by here.
+    Production there is nothing to filter by here. Same Metro Sales
+    Monday-only stock-posting rule as returns_finalized_base_qty() above,
+    via the identical central filter — this is the choke point
+    date_range_summary() (Dashboard/Reports) and the carry-forward chain
+    both go through for a multi-day span.
     """
     total = (
         db.session.query(db.func.coalesce(db.func.sum(ReturnLine.base_unit_qty), 0))
         .join(ReturnRecord, ReturnRecord.id == ReturnLine.return_id)
         .filter(
-            ReturnRecord.status == STATUS_FINALIZED,
+            returns_service.stock_posting_return_filter(),
             ReturnRecord.date >= date_from,
             ReturnRecord.date <= date_to,
             ReturnLine.product_id == product_id,

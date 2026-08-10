@@ -7,17 +7,112 @@ finalize/reopen/void shape. The differences are deliberate: no dispatch
 number, no invoice, no sales category, and no shift — Returns is a
 day-only workflow, so there is nothing here for a shift field to do.
 """
+from datetime import date as _date
 from datetime import datetime, timezone
 
 from webapp.extensions import db
 from webapp.models.customer import Customer
 from webapp.models.product import Product
 from webapp.models.return_record import STATUS_DRAFT, STATUS_FINALIZED, STATUS_VOID, ReturnLine, ReturnRecord
+from webapp.models.sales_category import SalesCategory
 from webapp.services.packaging import PackagingError, normalize, to_base_units
 
 
 class ReturnError(ValueError):
     """Raised for user-facing validation problems (mapped to HTTP 400/409 by routes)."""
+
+
+# ---------------------------------------------------------------------
+# Metro Sales business rule — Metro Sales (currently Dakar/Derrick)
+# physically returns goods to store stock only on Monday, even though a
+# Return may be recorded digitally on any day of the week. THE single
+# authoritative rule lives here: is_return_stock_posting_eligible() for
+# any code that already has one ReturnRecord in hand, and
+# stock_posting_return_filter() (a SQLAlchemy expression built from the
+# exact same two constants below) for the bulk aggregate queries in
+# stock_service.py/stock_ledger_service.py that can't reasonably load
+# every row into Python. No other module may re-derive "is this Metro
+# Sales" or "is this Monday" independently — see METRO_SALES_CATEGORY_NAME
+# and STOCK_POSTING_WEEKDAY.
+# ---------------------------------------------------------------------
+
+# The fixed, canonical Sales Category name seeded by migration
+# 012e556ab7ad (see SALES_CATEGORIES there) — identification goes through
+# this stable Customer.sales_category_id -> SalesCategory relationship,
+# never through a recipient's own display name (Customer.name), which can
+# be freely renamed without changing which sales channel it belongs to.
+METRO_SALES_CATEGORY_NAME = "Metro Sales"
+
+# Python's date.weekday(): Monday=0 .. Sunday=6. ReturnRecord.date is a
+# plain "YYYY-MM-DD" calendar-date string (see return_record.py) with no
+# time-of-day or timezone component to begin with, so weekday() on it is
+# already the Africa/Kampala (EAT, UTC+3, no DST) business date — there is
+# no separate conversion step.
+STOCK_POSTING_WEEKDAY = 0
+
+
+def is_metro_sales_return(return_record):
+    """
+    True when this return's recipient belongs to the canonical Metro
+    Sales sales category (Customer.sales_category_id -> SalesCategory.name
+    == "Metro Sales") — never by matching the recipient's display name.
+    A return with no linked customer (free-text "returned by", e.g. a
+    truck route with no formal recipient record) is never Metro Sales.
+    """
+    customer = return_record.returned_by_customer
+    return (
+        customer is not None
+        and customer.sales_category is not None
+        and customer.sales_category.name == METRO_SALES_CATEGORY_NAME
+    )
+
+
+def is_return_stock_posting_eligible(return_record):
+    """
+    THE single authoritative rule for whether a Return currently
+    contributes to Daily Figures / stock — every stock-producing surface
+    must go through this (or, for bulk SQL aggregation over many rows,
+    stock_posting_return_filter() below, which encodes the exact same two
+    rules and is the only other place this logic may be expressed).
+
+    A normal (non-Metro-Sales) finalized return always posts, exactly as
+    before this rule existed. A Metro Sales return posts only when BOTH
+    finalized AND its own Return Date (never created_at/updated_at/today —
+    the actual business date the recipient reported) falls on a Monday,
+    the day Metro Sales's vehicle/team physically transfers goods back
+    into store stock. Every other day, the return is a fully real,
+    fully visible History record that simply contributes zero to stock
+    until/unless it is later corrected onto a Monday.
+    """
+    if return_record.status != STATUS_FINALIZED:
+        return False
+    if not is_metro_sales_return(return_record):
+        return True
+    return _date.fromisoformat(return_record.date).weekday() == STOCK_POSTING_WEEKDAY
+
+
+def stock_posting_return_filter():
+    """
+    The exact SQL-level restatement of is_return_stock_posting_eligible(),
+    for AND-ing into any query whose FROM/JOIN already includes
+    ReturnRecord (correlated on ReturnRecord.returned_by_customer_id) —
+    used by stock_service.py's bulk Returns aggregate queries so the
+    Monday/Metro-Sales rule is expressed in exactly one place even for
+    SQL-side aggregation, never re-derived per query.
+    """
+    is_metro = (
+        db.session.query(Customer.id)
+        .join(SalesCategory, SalesCategory.id == Customer.sales_category_id)
+        .filter(
+            Customer.id == ReturnRecord.returned_by_customer_id,
+            SalesCategory.name == METRO_SALES_CATEGORY_NAME,
+        )
+        .exists()
+    )
+    # SQLite strftime('%w', date) — '0'=Sunday .. '6'=Saturday, so Monday
+    # (STOCK_POSTING_WEEKDAY=0 in Python's Mon=0..Sun=6 terms) is '1'.
+    is_monday = db.func.strftime("%w", ReturnRecord.date) == "1"
+    return db.and_(ReturnRecord.status == STATUS_FINALIZED, db.or_(~is_metro, is_monday))
 
 
 def _utcnow():

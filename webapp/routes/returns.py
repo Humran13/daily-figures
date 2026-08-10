@@ -22,6 +22,20 @@ def _error(e, status=400):
     return jsonify({"error": str(e)}), status
 
 
+def _serialize_return(record, include_lines=True):
+    """
+    record.to_dict() plus the two Metro Sales stock-posting flags — computed
+    here (never inside the model, which would need its own copy of the
+    Monday/Metro rule) via the one central svc.is_return_stock_posting_
+    eligible()/svc.is_metro_sales_return() functions, so the frontend can
+    show the right read-only indicator without deciding the rule itself.
+    """
+    d = record.to_dict(include_lines=include_lines)
+    d["stock_posting_eligible"] = svc.is_return_stock_posting_eligible(record)
+    d["is_metro_sales_return"] = svc.is_metro_sales_return(record)
+    return d
+
+
 def _filtered_return_query(args):
     """Same shape as dispatches.py's _filtered_dispatch_query — an EXISTS
     subquery (not a join) for product_id, so a return with several lines
@@ -83,7 +97,7 @@ def list_returns():
     offset = int(request.args.get("offset", 0))
     total = query.count()
     rows = query.offset(offset).limit(limit).all()
-    return jsonify({"total": total, "results": [r.to_dict(include_lines=False) for r in rows]})
+    return jsonify({"total": total, "results": [_serialize_return(r, include_lines=False) for r in rows]})
 
 
 @returns_bp.route("/export.<fmt>", methods=["GET"])
@@ -96,13 +110,19 @@ def export_returns(fmt):
     columns = [
         ("date", "Date"), ("returned_by", "Returned By"), ("received_by", "Received By"),
         ("verified_by", "Verified By"), ("signed_by_name", "Name & Sign"), ("status", "Status"),
-        ("product_name", "Product"), ("quantity", "Quantity"), ("remarks", "Remarks"),
+        ("product_name", "Product"), ("quantity", "Quantity"),
+        ("posted_to_stock", "Posted to Stock"), ("remarks", "Remarks"),
     ]
     rows = []
     for r in records:
         returned_by = r.returned_by_name_snapshot or (r.returned_by_customer.name if r.returned_by_customer else "")
         received_by_user = db.session.get(User, r.received_by) if r.received_by else None
         verified_by_user = db.session.get(User, r.verified_by) if r.verified_by else None
+        # Every row is still exported — this is the same "record activity"
+        # export it always was — Posted to Stock just makes the Metro
+        # Sales Monday-only distinction visible (svc.is_return_stock_
+        # posting_eligible() is THE central rule, never re-derived here).
+        posted_to_stock = "Yes" if svc.is_return_stock_posting_eligible(r) else "No"
         for line in r.lines:
             rows.append({
                 "date": r.date, "returned_by": returned_by,
@@ -111,6 +131,7 @@ def export_returns(fmt):
                 "signed_by_name": r.signed_by_name or "",
                 "status": r.status, "product_name": line.product.name if line.product else "",
                 "quantity": qty_label(line.cartons, line.packs, line.pieces, line.packaging_rule),
+                "posted_to_stock": posted_to_stock,
                 "remarks": r.remarks or "",
             })
 
@@ -134,7 +155,7 @@ def get_return(return_id):
     record = db.session.get(ReturnRecord, return_id)
     if record is None:
         return jsonify({"error": "not found"}), 404
-    return jsonify(record.to_dict())
+    return jsonify(_serialize_return(record))
 
 
 @returns_bp.route("", methods=["POST"])

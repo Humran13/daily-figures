@@ -78,7 +78,7 @@ from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, SHIFTS, STATUS_FINALI
 from webapp.models.product import Product
 from webapp.models.production_record import STATUS_FINALIZED as PRODUCTION_FINALIZED, ProductionLine, ProductionRecord
 from webapp.models.return_record import STATUS_FINALIZED as RETURNS_FINALIZED, ReturnLine, ReturnRecord
-from webapp.services import daily_entry_status_service, daily_review_service, stock_service as svc
+from webapp.services import daily_entry_status_service, daily_review_service, returns_service, stock_service as svc
 
 
 class LedgerError(ValueError):
@@ -193,14 +193,25 @@ def _returns_lines(product_id, date, shift):
     lines = []
     total = 0
     for line, record in rows:
-        included = record.status == RETURNS_FINALIZED
+        # Same central rule stock_service.py's aggregate queries use (see
+        # returns_service.is_return_stock_posting_eligible()) — a
+        # Metro Sales return finalized on a non-Monday date is excluded
+        # here too, so this diagnostic never disagrees with the actual
+        # Daily Figures/Closing Stock it's supposed to reconcile against.
+        included = returns_service.is_return_stock_posting_eligible(record)
         if included:
             total += line.base_unit_qty
+        if record.status != RETURNS_FINALIZED:
+            reason = f"{_record_status_label(record, 'remarks')} - excluded, never affects stock"
+        elif not included:
+            reason = "finalized Metro Sales return, non-Monday - excluded, posts to stock Monday only"
+        else:
+            reason = "finalized - counted"
         lines.append({
             "record_id": record.id, "line_id": line.id, "base_unit_qty": line.base_unit_qty,
             "status": _record_status_label(record, "remarks"),
             "included": included,
-            "reason": "finalized - counted" if included else f"{_record_status_label(record, 'remarks')} - excluded, never affects stock",
+            "reason": reason,
         })
     return total, lines, None
 

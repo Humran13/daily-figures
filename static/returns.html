@@ -646,6 +646,21 @@ function statusPill(status){
   return `<span class="pill pill-${status}">${status}</span>`;
 }
 
+// Metro Sales stock-posting indicator — purely a presentation mapping of
+// the two backend-computed flags (is_metro_sales_return/
+// stock_posting_eligible, from svc.is_metro_sales_return()/svc.
+// is_return_stock_posting_eligible() — the one authoritative rule). The
+// frontend never decides Monday/Metro-Sales itself, only how to label
+// what the backend already decided. Not a new status — Draft/Finalized/
+// Void are unchanged; this is an additional read-only badge shown only
+// for a finalized Metro Sales return.
+function metroStockBadge(r){
+  if(!r.is_metro_sales_return || r.status !== 'finalized') return '';
+  return r.stock_posting_eligible
+    ? `<span class="pill" style="background:#E4F3EC;color:#166653;">Posted to stock</span>`
+    : `<span class="pill" style="background:#FCEfd7;color:#8a5a12;">Recorded — posts to stock Monday only</span>`;
+}
+
 function currentFilterParams(){
   const params = new URLSearchParams();
   const map = {
@@ -722,7 +737,7 @@ async function loadList(){
           <div class="row-item" data-open="${r.id}">
             <div class="top">
               <span class="num">Return #${r.id}</span>
-              ${statusPill(r.status)}
+              ${statusPill(r.status)}${metroStockBadge(r)}
             </div>
             <div class="meta">${escapeHtml(r.returned_by_name||'—')}${r.signed_by_name ? ' · signed '+escapeHtml(r.signed_by_name) : ''}</div>
           </div>`).join('')}
@@ -770,7 +785,7 @@ async function openDetail(id){
   document.getElementById('detailHeader').innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <span class="num" style="font-family:var(--mono);font-weight:700;">Return #${data.id}</span>
-      ${statusPill(data.status)}
+      <span>${statusPill(data.status)}${metroStockBadge(data)}</span>
     </div>
     <div class="hint">${data.date}</div>
     <div style="margin-top:8px;"><strong>${escapeHtml(data.returned_by_name||'—')}</strong></div>
