@@ -896,6 +896,24 @@ def create_adjustment(*, product, date, shift, delta_base_qty, reason, user):
     return adjustment
 
 
+def delete_adjustment(adjustment, reason):
+    """
+    Permanent hard delete — Manager/Super Administrator only (enforced by
+    the route's roles_required, not here). Mirrors dispatch_service.
+    delete_dispatch()/returns_service.delete_return()/production_service.
+    delete_production() exactly: physically removes the StockAdjustment
+    row. No status is ever set to any "voided"/"cancelled" value — every
+    live Issued calculation (adjustment_total_base_qty(), issued_detail())
+    already reads StockAdjustment straight from the database, so removal
+    alone corrects Issued/Closing exactly once — no manual stock patching,
+    no compensating fake adjustment.
+    """
+    if not reason:
+        raise StockError("A reason is required to permanently delete a stock adjustment")
+    db.session.delete(adjustment)
+    db.session.flush()
+
+
 def dispatch_issued_base_qty_range(product_id, date_from, date_to):
     total = (
         db.session.query(db.func.coalesce(db.func.sum(DispatchLine.base_unit_qty), 0))

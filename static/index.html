@@ -150,6 +150,13 @@
   .modal-close{ float:right; background:none; color:var(--ink-soft); font-size:20px; padding:0 4px; }
   .contrib-row{ display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; }
   .contrib-row .meta{ color:var(--ink-soft); font-size:11px; }
+  .contrib-row .del{ background:none; color:var(--red); font-size:11px; text-decoration:underline; padding:0; margin-top:4px; }
+  .field textarea{ width:100%; padding:11px 10px; border:1.5px solid var(--line); border-radius:8px; font-size:15px; font-family:var(--sans); background:white; color:var(--ink); min-height:60px; resize:vertical; }
+  .msg{ font-size:12px; margin-top:8px; min-height:16px; }
+  .msg.err{ color:var(--red); }
+  .adjust-confirm-row{ display:flex; justify-content:space-between; padding:6px 0; font-size:13px; }
+  .adjust-confirm-row .k{ color:var(--ink-soft); }
+  .adjust-confirm-row .v{ font-weight:700; font-family:var(--mono); }
   .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
   .filters input{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; }
   .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
@@ -255,6 +262,53 @@
     <button class="modal-close" id="issuedModalClose">&times;</button>
     <h3 id="issuedModalTitle">Issued breakdown</h3>
     <div id="issuedModalBody"></div>
+  </div>
+</div>
+
+<!-- Adjust Issued — packaging-aware entry, never a raw base-unit prompt().
+     Two steps in one modal: the form (type + Cartons/Packs/Pieces via the
+     same qtyInputsHtml()/readQtyInputs() helpers Opening Stock already
+     uses — never a second quantity-entry implementation), then a
+     required Preview/confirm step before anything is saved. -->
+<div class="modal-backdrop hidden" id="adjustModal">
+  <div class="modal-sheet">
+    <button class="modal-close" id="adjustModalClose">&times;</button>
+    <h3 id="adjustModalTitle">Adjust Issued</h3>
+
+    <div id="adjustFormPanel">
+      <div class="field" style="margin-bottom:14px;">
+        <label>Adjustment Type</label>
+        <select id="adjustType">
+          <option value="increase">Increase Issued</option>
+          <option value="reduce">Reduce Issued</option>
+        </select>
+      </div>
+      <div id="adjustQtyInputs"></div>
+      <div class="field" style="margin-top:14px;">
+        <label>Reason (required)</label>
+        <textarea id="adjustReason" placeholder="Why is this adjustment needed?"></textarea>
+      </div>
+      <div class="msg" id="adjustMsg"></div>
+      <div class="nav-row">
+        <button class="btn btn-primary" id="adjustPreviewBtn">Preview</button>
+        <button class="btn btn-ghost" id="adjustCancelBtn">Cancel</button>
+      </div>
+    </div>
+
+    <div class="hidden" id="adjustConfirmPanel">
+      <div class="card">
+        <div class="adjust-confirm-row"><span class="k">Product</span><span class="v" id="confProduct"></span></div>
+        <div class="adjust-confirm-row"><span class="k">Adjustment</span><span class="v" id="confType"></span></div>
+        <div class="adjust-confirm-row"><span class="k">Quantity</span><span class="v" id="confQty"></span></div>
+        <div class="adjust-confirm-row"><span class="k">Base units</span><span class="v" id="confBase"></span></div>
+        <div class="adjust-confirm-row"><span class="k">Reason</span><span class="v" id="confReason" style="font-family:var(--sans);font-weight:600;text-align:right;"></span></div>
+      </div>
+      <div class="msg" id="adjustConfirmMsg"></div>
+      <div class="nav-row">
+        <button class="btn btn-primary" id="adjustConfirmSaveBtn">Confirm &amp; Save</button>
+        <button class="btn btn-ghost" id="adjustConfirmBackBtn">Back</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -964,10 +1018,18 @@ function showDone(date, shift){
 }
 
 // ---------- issued drill-down & adjustments ----------
+// The current product/date/shift the Issued breakdown modal is open
+// for — set once per openIssuedBreakdown() call, read by the per-row
+// Delete handler and by adjustIssued()/the confirm-save handler below so
+// none of them need their own copy of these three values.
+let issuedBreakdownContext = null;
+
 async function openIssuedBreakdown(product, date, shift){
+  issuedBreakdownContext = {product, date, shift};
   const detail = await apiGet(`/api/daily-figures/issued-detail?product_id=${product.id}&date=${date}&shift=${shift}`);
   document.getElementById('issuedModalTitle').textContent = `${product.name} — Issued, ${date} ${shift}`;
   const body = document.getElementById('issuedModalBody');
+  const isElevated = currentUser && ['super_admin','manager'].includes(currentUser.role);
   const dispatchRows = (detail.dispatches||[]).map(d => `
     <div class="contrib-row">
       <div>
@@ -976,36 +1038,147 @@ async function openIssuedBreakdown(product, date, shift){
       </div>
       <div class="qty-readout">${qtyLabel(d, product.packaging_rule)}</div>
     </div>`).join('');
-  const adjustmentRows = (detail.adjustments||[]).map(a => `
+  // Adjustment rows — formatted through the SAME centralized packaging-
+  // aware formatter the dispatch rows above use (fromBaseUnitsPreview()
+  // + qtyLabel()), never the raw delta_base_qty integer. A "+"/"-" prefix
+  // still signals direction (matching the sign convention documented on
+  // StockAdjustment.delta_base_qty), but the magnitude is always shown in
+  // the product's own book notation, never labelled "Ctns" while actually
+  // being unconverted base units.
+  const adjustmentRows = (detail.adjustments||[]).map(a => {
+    const split = fromBaseUnitsPreview(Math.abs(a.delta_base_qty), product.packaging_rule);
+    const sign = a.delta_base_qty > 0 ? '+' : '-';
+    return `
     <div class="contrib-row">
       <div>
         <div>Adjustment</div>
-        <div class="meta">${a.reason}</div>
+        <div class="meta">${escapeHtml(a.reason)}</div>
+        ${isElevated ? `<button class="del" data-delete-adjustment="${a.id}">Delete adjustment</button>` : ''}
       </div>
-      <div class="qty-readout">${a.delta_base_qty>0?'+':''}${a.delta_base_qty}</div>
-    </div>`).join('');
+      <div class="qty-readout">${sign}${qtyLabel(split, product.packaging_rule)}</div>
+    </div>`;
+  }).join('');
   body.innerHTML = (dispatchRows||'') + (adjustmentRows||'') ||
     '<p class="hint">No finalized dispatches or adjustments contribute to this total.</p>';
   document.getElementById('issuedModal').classList.remove('hidden');
+
+  body.querySelectorAll('[data-delete-adjustment]').forEach(btn=>{
+    btn.addEventListener('click', ()=>deleteAdjustment(parseInt(btn.dataset.deleteAdjustment, 10)));
+  });
 }
 document.getElementById('issuedModalClose').addEventListener('click', ()=>{
   document.getElementById('issuedModal').classList.add('hidden');
 });
 
-async function adjustIssued(product, date, shift){
-  const deltaStr = prompt('Adjustment amount in pieces (use a negative number to reduce Issued):');
-  if(deltaStr === null || deltaStr.trim()==='') return;
-  const delta = parseInt(deltaStr, 10);
-  if(isNaN(delta) || delta===0){ toast('Enter a non-zero whole number'); return; }
-  const reason = prompt('Reason for this adjustment (required, will be audited):');
-  if(!reason){ toast('A reason is required'); return; }
+// ---------- delete an erroneous adjustment (Manager/Super Admin only) ----------
+// Permanent hard delete — same pattern as Dispatch/Returns/Production
+// permanent delete elsewhere in this app: reason required, explicit
+// confirmation required, full audit snapshot taken server-side before
+// removal, and the row is simply gone afterwards — every live Issued
+// calculation already reads StockAdjustment straight from the database,
+// so removal alone corrects Issued/Closing exactly once. Never a
+// compensating fake adjustment.
+async function deleteAdjustment(adjustmentId){
+  const reason = prompt('Reason for permanently deleting this adjustment (required, will be audited):');
+  if(!reason || !reason.trim()) return;
+  if(!confirm('Delete this stock adjustment permanently? This cannot be undone.')) return;
 
-  const {status, data} = await apiPost('/api/daily-figures/adjustments', {
-    product_id: product.id, date, shift, delta_base_qty: delta, reason,
-  });
-  if(status===201){ toast('Adjustment recorded.'); renderEntryCard(); }
-  else { toast(data.error || 'Could not save adjustment'); }
+  const {status, data} = await apiDelete(`/api/daily-figures/adjustments/${adjustmentId}`, {reason: reason.trim(), confirm: true});
+  if(status !== 200){ toast(data.error || 'Could not delete adjustment'); return; }
+  toast('Adjustment deleted.');
+  document.getElementById('issuedModal').classList.add('hidden');
+  if(issuedBreakdownContext) renderEntryCard();
 }
+
+// ---------- adjust Issued — packaging-aware entry (never a raw base-unit prompt) ----------
+let adjustContext = null;
+
+function adjustIssued(product, date, shift){
+  adjustContext = {product, date, shift};
+  const rule = product.packaging_rule;
+  document.getElementById('adjustModalTitle').textContent = `Adjust Issued — ${product.name}`;
+  document.getElementById('adjustType').value = 'increase';
+  document.getElementById('adjustQtyInputs').innerHTML = qtyInputsHtml('adj', rule, {cartons:0, packs:0, pieces:0}, false);
+  document.getElementById('adjustQtyInputs').querySelectorAll('input').forEach(attachZeroClearBehavior);
+  document.getElementById('adjustReason').value = '';
+  document.getElementById('adjustMsg').textContent = '';
+  document.getElementById('adjustFormPanel').classList.remove('hidden');
+  document.getElementById('adjustConfirmPanel').classList.add('hidden');
+  document.getElementById('adjustModal').classList.remove('hidden');
+}
+document.getElementById('adjustModalClose').addEventListener('click', ()=>{
+  document.getElementById('adjustModal').classList.add('hidden');
+});
+document.getElementById('adjustCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('adjustModal').classList.add('hidden');
+});
+
+document.getElementById('adjustPreviewBtn').addEventListener('click', ()=>{
+  const msg = document.getElementById('adjustMsg');
+  const reason = document.getElementById('adjustReason').value.trim();
+  if(!reason){ msg.textContent = 'A reason is required.'; msg.className = 'msg err'; return; }
+  const rule = adjustContext.product.packaging_rule;
+  const qty = readQtyInputs('adj', rule);
+  // Packs must stay within this product's own tier (e.g. 0-5 for Napkins'
+  // 6-packs-per-carton rule) — never silently rolled over here the way
+  // build_line()/normalize() would for a Dispatch/Return/Production line;
+  // an adjustment has no such normalization step, so an out-of-range
+  // pack digit is rejected outright rather than quietly reinterpreted.
+  if(hasPackTier(rule) && qty.packs >= rule.cartons_to_packs){
+    msg.textContent = `Packs must be between 0 and ${rule.cartons_to_packs - 1} for this product.`;
+    msg.className = 'msg err';
+    return;
+  }
+  if(!hasPackTier(rule) && qty.pieces >= rule.carton_to_pieces){
+    msg.textContent = `Pieces must be between 0 and ${rule.carton_to_pieces - 1} for this product.`;
+    msg.className = 'msg err';
+    return;
+  }
+  if(hasPackTier(rule) && qty.pieces >= rule.packs_to_pieces){
+    msg.textContent = `Pieces must be between 0 and ${rule.packs_to_pieces - 1} for this product.`;
+    msg.className = 'msg err';
+    return;
+  }
+  const baseUnits = toBaseUnits(qty.cartons, qty.packs, qty.pieces, rule);
+  if(baseUnits === 0){ msg.textContent = 'Enter a non-zero quantity.'; msg.className = 'msg err'; return; }
+  msg.textContent = '';
+
+  const type = document.getElementById('adjustType').value; // 'increase' | 'reduce'
+  const signedBase = type === 'reduce' ? -baseUnits : baseUnits;
+
+  document.getElementById('confProduct').textContent = adjustContext.product.name;
+  document.getElementById('confType').textContent = type === 'reduce' ? 'Reduce Issued' : 'Increase Issued';
+  document.getElementById('confQty').textContent = qtyLabel(qty, rule);
+  document.getElementById('confBase').textContent = `${signedBase > 0 ? '+' : ''}${signedBase}`;
+  document.getElementById('confReason').textContent = reason;
+  document.getElementById('adjustConfirmPanel').dataset.signedBase = String(signedBase);
+  document.getElementById('adjustConfirmMsg').textContent = '';
+
+  document.getElementById('adjustFormPanel').classList.add('hidden');
+  document.getElementById('adjustConfirmPanel').classList.remove('hidden');
+});
+
+document.getElementById('adjustConfirmBackBtn').addEventListener('click', ()=>{
+  document.getElementById('adjustConfirmPanel').classList.add('hidden');
+  document.getElementById('adjustFormPanel').classList.remove('hidden');
+});
+
+document.getElementById('adjustConfirmSaveBtn').addEventListener('click', async ()=>{
+  const {product, date, shift} = adjustContext;
+  const reason = document.getElementById('adjustReason').value.trim();
+  const signedBase = parseInt(document.getElementById('adjustConfirmPanel').dataset.signedBase, 10);
+  const {status, data} = await apiPost('/api/daily-figures/adjustments', {
+    product_id: product.id, date, shift, delta_base_qty: signedBase, reason,
+  });
+  if(status===201){
+    toast('Adjustment recorded.');
+    document.getElementById('adjustModal').classList.add('hidden');
+    renderEntryCard();
+  } else {
+    const cmsg = document.getElementById('adjustConfirmMsg');
+    cmsg.textContent = data.error || 'Could not save adjustment'; cmsg.className = 'msg err';
+  }
+});
 
 // ---------- history ----------
 function historyFilterParams(){

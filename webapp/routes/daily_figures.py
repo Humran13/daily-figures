@@ -353,6 +353,48 @@ def create_adjustment():
     return jsonify(adjustment.to_dict()), 201
 
 
+@daily_figures_bp.route("/adjustments/<int:adjustment_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@feature_required("daily_figures")
+def delete_adjustment(adjustment_id):
+    """
+    Permanent hard delete — Manager/Super Administrator only. Lets a
+    Manager/Super Admin safely remove an erroneous StockAdjustment (e.g.
+    one created with the wrong units) without touching the database
+    directly. Mirrors dispatches.py's delete_dispatch() route exactly —
+    see webapp/services/stock_service.py's delete_adjustment() docstring
+    for why removal alone is enough to correct every live Issued/Closing
+    calculation.
+    """
+    user = current_user()
+    adjustment = db.session.get(StockAdjustment, adjustment_id)
+    if adjustment is None:
+        return jsonify({"error": "not found"}), 404
+
+    d = request.get_json(force=True) or {}
+    reason = (d.get("reason") or "").strip()
+    if not reason:
+        return _error("A reason is required to permanently delete a stock adjustment")
+    if not d.get("confirm"):
+        return _error("Explicit confirmation is required to permanently delete a stock adjustment")
+
+    snapshot = {
+        **adjustment.to_dict(),
+        "operation": "permanent_delete_stock_adjustment",
+        "deletion_reason": reason,
+    }
+
+    try:
+        svc.delete_adjustment(adjustment, reason)
+    except StockError as e:
+        db.session.rollback()
+        return _error(e)
+
+    record_audit(user, "permanent_delete_stock_adjustment", "stock_adjustment", entity_id=adjustment_id, before=snapshot, after=None)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted_id": adjustment_id})
+
+
 def _filtered_daily_figure_query(args):
     query = DailyFigure.query
     filters_applied = {}
