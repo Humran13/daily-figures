@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily Figures">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/app-shell.css">
 <title>Production — Daily Figures</title>
 <style>
@@ -664,7 +664,7 @@ async function loadList(){
               <span class="num">Production #${r.id}</span>
               ${statusPill(r.status)}
             </div>
-            <div class="meta">${r.shift}</div>
+            <div class="meta">${r.shift} · Entered ${escapeHtml(r.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -707,6 +707,7 @@ async function openDetail(id){
       ${statusPill(data.status)}
     </div>
     <div class="hint">${data.date} · ${data.shift}</div>
+    <div class="hint">Time Entered: ${escapeHtml(data.created_at_label || '—')}</div>
     ${data.remarks ? `<div class="hint" style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(data.remarks)}</div>` : ''}
     ${data.void_reason ? `<div class="hint" style="color:var(--red);margin-top:6px;">Voided: ${escapeHtml(data.void_reason)}</div>` : ''}
   `;

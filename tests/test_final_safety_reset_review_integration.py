@@ -331,8 +331,17 @@ def test_final_submission_blocked_until_reset_products_reviewed_again(client, se
         "date": date_str, "shift": shift, "product_id": pid_a, "reason": "restart A", "mode": "figures_only",
     })
 
+    # Reset wipes product A's review row entirely (review_state ->
+    # "not_reviewed" via absence, not staleness) — a genuinely unreviewed
+    # product, not a hard blocker, so this is now the "confirm to submit
+    # anyway" 409 rather than an unconditional 400 (see the final UX/
+    # reporting package's Manager/Super Admin unreviewed-submit
+    # confirmation). It still isn't submitted without that confirmation.
     blocked = client.post("/api/daily-review/submit", json={"date": date_str, "shift": shift})
-    assert blocked.status_code == 400
+    assert blocked.status_code == 409
+    assert blocked.get_json()["requires_confirmation"] is True
+    still_unsubmitted = client.get(f"/api/daily-review?date={date_str}&shift={shift}").get_json()
+    assert still_unsubmitted["session"]["status"] == "in_progress"
 
     _save_opening(client, pid_a, date_str, shift, 6)
     _mark_reviewed(client, pid_a, date_str, shift)

@@ -41,6 +41,23 @@ class ReviewConflict(ValueError):
     """A concurrency/ownership conflict — mapped to HTTP 409 by routes."""
 
 
+class ReviewConfirmationRequired(ValueError):
+    """
+    Raised by submit_review() when nothing hard-blocks submission but at
+    least one product is still genuinely unreviewed — mapped to HTTP 409
+    by routes, carrying `unreviewed_count` so the frontend can show
+    "N products have not been reviewed. Submit anyway?" and, if the
+    Manager/Super Admin confirms, resend the same submit call with
+    force=True. Never raised at all when force=True was already passed,
+    and never raised for a genuine hard blocker (see build_summary()'s
+    `blocking_count` vs `unreviewed_count` split) — that always raises
+    plain ReviewError instead, which force can never bypass.
+    """
+    def __init__(self, unreviewed_count):
+        self.unreviewed_count = unreviewed_count
+        super().__init__(f"{unreviewed_count} product(s) have not been reviewed. Submit anyway?")
+
+
 def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -250,6 +267,7 @@ def build_summary(date, shift):
     reviewed_count = 0
     skipped_count = 0
     blocking_count = 0
+    unreviewed_count = 0
     for product in products:
         review_row = states_by_product.get(product.id)
         review_state = review_row.state if review_row else "not_reviewed"
@@ -281,9 +299,23 @@ def build_summary(date, shift):
         counted_as_reviewed = (
             review_state in REVIEW_PRODUCT_STATES_COUNTED_AS_REVIEWED and not stale and not missing_reason
         )
-        blocks = not counted_as_reviewed or locked_by_other or bool(validation_error)
+        # Final Manager/Super Admin submission-flow correction — "blocks"
+        # is now reserved for genuine integrity hazards that can NEVER be
+        # bypassed: another user's live lock, a missing packaging rule, an
+        # edit saved without its required correction reason, or a source/
+        # DailyFigure record that changed since it was reviewed. A product
+        # that is simply "not_reviewed" or "skipped" — nothing else wrong
+        # with it — is no longer counted here; see `unreviewed` below,
+        # which Manager/Super Admin MAY explicitly submit past (with
+        # confirmation) via submit_review(..., force=True). This never
+        # weakens the hard blockers themselves — those still refuse
+        # submission unconditionally, force or not.
+        blocks = locked_by_other or bool(validation_error) or missing_reason or stale
+        unreviewed = (not counted_as_reviewed) and not blocks
         if blocks:
             blocking_count += 1
+        elif unreviewed:
+            unreviewed_count += 1
         if counted_as_reviewed:
             reviewed_count += 1
         if review_state == REVIEW_PRODUCT_STATE_SKIPPED:
@@ -304,6 +336,7 @@ def build_summary(date, shift):
             "locked_by": entry_status["locked_by"],
             "validation_error": validation_error,
             "blocks_submission": blocks,
+            "unreviewed": unreviewed,
             "view": view,
         })
 
@@ -315,18 +348,33 @@ def build_summary(date, shift):
         "reviewed_count": reviewed_count,
         "skipped_count": skipped_count,
         "blocking_count": blocking_count,
+        "unreviewed_count": unreviewed_count,
         "can_submit": (
             session is not None and session.status != REVIEW_STATUS_SUBMITTED and blocking_count == 0 and len(products) > 0
         ),
     }
 
 
-def submit_review(date, shift, user):
+def submit_review(date, shift, user, force=False):
     """Transactional: the ONLY action that marks the review submitted, and
     the only thing it writes is this session row's own status fields —
-    per-product review rows are never mutated here, so there is no
-    multi-row write to partially apply. Recomputes eligibility live
-    (never trusts a client-supplied "everything is fine" flag)."""
+    per-product review rows are never mutated here (an unreviewed product
+    stays exactly as unreviewed/skipped after a force=True submission as
+    it was before — never auto-marked reviewed, never given a fabricated
+    value, never turned into a correction or a new Opening anchor), so
+    there is no multi-row write to partially apply. Recomputes eligibility
+    live (never trusts a client-supplied "everything is fine" flag).
+
+    Two independent gates, in order:
+      1. blocking_count (locks/validation errors/missing correction
+         reasons/staleness-since-review) — always refused, force or not.
+      2. unreviewed_count (genuinely never-reviewed or skipped products,
+         nothing else wrong) — refused UNLESS force=True, in which case
+         the Manager/Super Administrator has already seen and explicitly
+         confirmed a "N products have not been reviewed. Submit anyway?"
+         prompt (see routes/daily_review.py's submit() and static/
+         index.html's submitBtn handler).
+    """
     _require_role(user)
     session = get_session(date, shift)
     if session is None:
@@ -337,6 +385,8 @@ def submit_review(date, shift, user):
     summary = build_summary(date, shift)
     if summary["blocking_count"] > 0:
         raise ReviewError(f"{summary['blocking_count']} product(s) still require review before submission.")
+    if summary["unreviewed_count"] > 0 and not force:
+        raise ReviewConfirmationRequired(summary["unreviewed_count"])
 
     before = session.to_dict()
     session.status = REVIEW_STATUS_SUBMITTED
@@ -347,7 +397,8 @@ def submit_review(date, shift, user):
 
     record_audit(
         user, "submit_review", "daily_review_session", entity_id=f"{date}|{shift}",
-        before=before, after=session.to_dict(),
+        before=before,
+        after={**session.to_dict(), "unreviewed_count_at_submit": summary["unreviewed_count"]},
     )
     return session
 

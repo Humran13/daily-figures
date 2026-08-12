@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily Figures">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/app-shell.css">
 <title>Dashboard — Daily Figures</title>
 <style>
@@ -223,12 +223,6 @@
         <div id="recentDispatches"></div>
       </div>
 
-      <!-- 9. Unfinalized Drafts -->
-      <div class="card">
-        <h2>Unfinalized drafts</h2>
-        <div id="draftList"></div>
-      </div>
-
       <!-- 10. Recent Corrections -->
       <div class="card">
         <h2>Recent corrections</h2>
@@ -428,13 +422,6 @@ async function loadDashboard(){
     viewAllPrefix: 'View all', modalTitle: 'Recent dispatches',
   });
 
-  // ---- 9. Unfinalized drafts ----
-  const drafts = (data.draft_dispatches && data.draft_dispatches.items) || [];
-  renderPreviewSection(document.getElementById('draftList'), drafts, draftRow, {
-    emptyMessage: 'Nothing waiting to be finalized.',
-    viewAllPrefix: 'View all', modalTitle: `Unfinalized drafts (${(data.draft_dispatches && data.draft_dispatches.count) || 0} total)`,
-  });
-
   // ---- 10. Recent corrections (adjustments + voids, merged and sorted) ----
   const corrections = [
     ...(data.recent_adjustments || []).map(a => ({kind: 'adjustment', item: a, when: a.created_at || ''})),
@@ -620,19 +607,6 @@ function dispatchRow(d){
       <div>
         <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
         <div class="meta">${d.date} · ${d.shift}</div>
-      </div>
-      ${statusPill(d.status)}
-    </a>`;
-}
-
-// ---------- 9. Unfinalized drafts row ----------
-
-function draftRow(d){
-  return `
-    <a class="row-link" href="/dispatch.html?open=${d.id}">
-      <div>
-        <div>#${escapeHtml(d.dispatch_number)} — ${escapeHtml(d.customer_name||'—')}</div>
-        <div class="meta">Dispatch · ${d.date} · Created by ${escapeHtml(d.created_by_username||'—')}</div>
       </div>
       ${statusPill(d.status)}
     </a>`;

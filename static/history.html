@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily Figures">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/app-shell.css">
 <title>History &amp; Exports — Daily Figures</title>
 <style>
@@ -439,7 +439,8 @@ async function loadDispatchHistory(){
             </div>
             <div class="meta">${d.shift} · <span class="issued-link" data-customer="${d.customer_id}">${escapeHtml(d.customer_name||'—')}</span>
               ${d.sales_category_name ? ` · <span class="issued-link" data-category="${d.sales_category_id}">${escapeHtml(d.sales_category_name)}</span>` : ' · <span class="hint">Uncategorized</span>'}
-              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}</div>
+              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}
+              · Entered ${escapeHtml(d.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -581,7 +582,7 @@ async function loadReturnsHistory(){
         ${g.items.map(r => `
           <div class="dispatch-row" data-open-return="${r.id}">
             <div class="top"><span class="num">Return #${r.id}</span>${statusPill(r.status)}</div>
-            <div class="meta">${escapeHtml(r.returned_by_name||'—')}</div>
+            <div class="meta">${escapeHtml(r.returned_by_name||'—')} · Entered ${escapeHtml(r.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -676,7 +677,7 @@ async function loadProductionHistory(){
         ${g.items.map(r => `
           <div class="dispatch-row" data-open-production="${r.id}">
             <div class="top"><span class="num">Production #${r.id}</span>${statusPill(r.status)}</div>
-            <div class="meta">${r.shift}</div>
+            <div class="meta">${r.shift} · Entered ${escapeHtml(r.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;

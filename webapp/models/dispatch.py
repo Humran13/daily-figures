@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from webapp.extensions import db
+from webapp.services.business_calendar import format_kampala_datetime
 
 STATUS_DRAFT = "draft"
 STATUS_FINALIZED = "finalized"
@@ -80,6 +81,16 @@ class Dispatch(db.Model):
             "duplicate_override_reason": self.duplicate_override_reason,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            # Read-only reporting metadata — the automatic entry time a
+            # Manager can use to spot an accidental duplicate entry (e.g.
+            # two dispatches "created" seconds apart). Africa/Kampala,
+            # formatted server-side (see business_calendar.
+            # format_kampala_datetime()'s own docstring for why — never
+            # the browser's local timezone). Never editable, never used
+            # in any stock calculation, and never touched by a later
+            # correction (created_at itself is only ever set once, at
+            # insert time — see the column's own default=).
+            "created_at_label": format_kampala_datetime(self.created_at),
             "updated_by": self.updated_by,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "finalized_by": self.finalized_by,

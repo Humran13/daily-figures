@@ -206,7 +206,10 @@ def test_save_and_next_and_skip_conditioned_on_is_fully_read_only():
     and reachable from the same isFullyReadOnly ? '' : (...) guard."""
     assert "${isFullyReadOnly ? '' : (isElevated" in INDEX_HTML
     assert '<button class="btn-skip" id="skipBtn">Skip for now' in INDEX_HTML
-    assert '<button class="btn-skip-review" id="skipReviewBtn">Skip for now' in INDEX_HTML
+    # Relabeled "Skip to Submit" by the final UX/reporting package (jumps
+    # straight to the Submit/Review screen) — see
+    # tests/test_final_correction_review_workflow.py for that behavior.
+    assert '<button class="btn-skip-review" id="skipReviewBtn">Skip to Submit<' in INDEX_HTML
     nav_row = re.search(r'<div class="nav-row">\s*\$\{isFullyReadOnly.*?</div>', INDEX_HTML, re.DOTALL).group(0)
     assert 'id="saveNextBtn">Save &amp; Next<' in nav_row
     assert 'id="nextProductBtn">Next Product<' in nav_row

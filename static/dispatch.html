@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily Figures">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/app-shell.css">
 <title>Dispatch — Daily Figures</title>
 <style>
@@ -962,7 +962,8 @@ async function loadList(){
             </div>
             <div class="meta">${d.shift} · <span class="issued-link" data-customer="${d.customer_id}">${escapeHtml(d.customer_name||'—')}</span>
               ${d.sales_category_name ? ` · <span class="issued-link" data-category="${d.sales_category_id}">${escapeHtml(d.sales_category_name)}</span>` : ' · <span class="hint">Uncategorized</span>'}
-              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}</div>
+              ${d.invoice_number ? ' · Inv '+escapeHtml(d.invoice_number) : ''}
+              · Entered ${escapeHtml(d.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -1047,6 +1048,7 @@ async function openDetail(id){
       ${statusPill(data.status)}
     </div>
     <div class="hint"><span class="issued-link" data-goto-date="${data.date}">${data.date}</span> · ${data.shift}</div>
+    <div class="hint">Time Entered: ${escapeHtml(data.created_at_label || '—')}</div>
     <div style="margin-top:8px;"><strong class="issued-link" data-goto-customer="${escapeHtml(data.customer_name||'')}">${escapeHtml(data.customer_name||'—')}</strong></div>
     <div class="hint">${data.sales_category_name ? `<span class="issued-link" data-goto-category="${data.sales_category_id}">${escapeHtml(data.sales_category_name)}</span>` : 'Uncategorized'}</div>
     ${data.invoice_number ? `<div class="hint">Invoice: ${escapeHtml(data.invoice_number)}</div>` : ''}

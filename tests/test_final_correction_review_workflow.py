@@ -98,7 +98,12 @@ def test_operator_still_uses_save_and_next_branch():
 
 
 def test_skip_for_now_is_rendered_as_a_real_button_for_review_workflow():
-    assert 'class="btn-skip-review" id="skipReviewBtn">Skip for now — return before submitting<' in INDEX_HTML
+    # Final UX/reporting package — relabeled "Skip to Submit" and now
+    # jumps directly to the Submit/Review screen (see
+    # skipAndAdvanceReview()) instead of merely advancing to the next
+    # product; still a real styled button, not the unstyled text-link
+    # look, exactly as before.
+    assert 'class="btn-skip-review" id="skipReviewBtn">Skip to Submit<' in INDEX_HTML
     idx = INDEX_HTML.index(".btn-skip-review{")
     css = INDEX_HTML[idx:idx + 300]
     assert "background:none" not in css  # a real button, not the unstyled text-link look
@@ -138,12 +143,19 @@ def test_skip_does_not_create_no_activity(client, setup):
 
 
 def test_skipped_product_shows_as_skipped_not_reviewed(client, setup):
+    # Final UX/reporting package — a plain skip with nothing else wrong is
+    # no longer a hard blocker (blocks_submission); it's the specific
+    # "unreviewed" case a Manager/Super Admin may submit past with
+    # confirmation. See test_unvisited_products_require_confirmation_
+    # to_submit / test_manager_can_force_submit_past_unreviewed_products
+    # for the submission-side behavior.
     pid = setup["product"]["id"]
     _mark_skipped(client, "2026-08-01", "Day", pid)
     data = _summary(client, "2026-08-01", "Day").get_json()
     row = next(r for r in data["products"] if r["product_id"] == pid)
     assert row["review_state"] == "skipped"
-    assert row["blocks_submission"] is True
+    assert row["blocks_submission"] is False
+    assert row["unreviewed"] is True
 
 
 # =====================================================================
@@ -206,21 +218,64 @@ def test_navigation_creates_no_source_book_records(client, setup):
 # Section 19 — completeness blocks submission
 # =====================================================================
 
-def test_unvisited_products_block_submission(client, setup):
+def test_unvisited_products_require_confirmation_to_submit(client, setup):
+    # Final UX/reporting package — an unvisited (never-reviewed) product
+    # is no longer a hard 400 block; it's a 409 "confirm and force"
+    # case, distinguishable from a genuine hard blocker via
+    # requires_confirmation. See test_manager_can_force_submit_past_
+    # unreviewed_products for the successful force=True path.
     pid = setup["product"]["id"]
     _mark_reviewed(client, "2026-08-01", "Day", pid)
     # other_product never visited at all.
     res = _submit(client, "2026-08-01", "Day")
-    assert res.status_code == 400
-    assert "still require review" in res.get_json()["error"]
+    assert res.status_code == 409
+    data = res.get_json()
+    assert data["requires_confirmation"] is True
+    assert data["unreviewed_count"] == 1
+    assert "have not been reviewed" in data["error"]
 
 
-def test_skipped_products_block_submission(client, setup):
+def test_skipped_products_require_confirmation_to_submit(client, setup):
     pid_a, pid_b = setup["product"]["id"], setup["other_product"]["id"]
     _mark_reviewed(client, "2026-08-01", "Day", pid_a)
     _mark_skipped(client, "2026-08-01", "Day", pid_b)
     res = _submit(client, "2026-08-01", "Day")
+    assert res.status_code == 409
+    assert res.get_json()["requires_confirmation"] is True
+
+
+def test_manager_can_force_submit_past_unreviewed_products(client, setup):
+    pid_a, pid_b = setup["product"]["id"], setup["other_product"]["id"]
+    _mark_reviewed(client, "2026-08-01", "Day", pid_a)
+    # pid_b left entirely unreviewed.
+    res = client.post("/api/daily-review/submit", json={"date": "2026-08-01", "shift": "Day", "force": True})
+    assert res.status_code == 200
+    data = _summary(client, "2026-08-01", "Day").get_json()
+    assert data["session"]["status"] == "submitted"
+    # The unreviewed product's own state is untouched — never silently
+    # marked reviewed, zeroed, or given a fabricated value.
+    row_b = next(r for r in data["products"] if r["product_id"] == pid_b)
+    assert row_b["review_state"] == "not_reviewed"
+
+
+def test_force_true_has_no_effect_when_nothing_is_unreviewed(client, setup):
+    pid_a, pid_b = setup["product"]["id"], setup["other_product"]["id"]
+    _mark_reviewed(client, "2026-08-01", "Day", pid_a)
+    _mark_reviewed(client, "2026-08-01", "Day", pid_b)
+    res = client.post("/api/daily-review/submit", json={"date": "2026-08-01", "shift": "Day", "force": True})
+    assert res.status_code == 200
+
+
+def test_hard_blocker_still_refuses_submission_even_with_force(client, login_as, setup):
+    # force=True only ever bypasses the soft "unreviewed" gate — a real
+    # validation error (or a lock/missing-reason/staleness) is never
+    # bypassable, with or without force.
+    no_rule_product = client.post("/api/admin/products", json={"name": "Review WF No Rule Force"}).get_json()
+    pid = setup["product"]["id"]
+    _mark_reviewed(client, "2026-08-01", "Day", pid)
+    res = client.post("/api/daily-review/submit", json={"date": "2026-08-01", "shift": "Day", "force": True})
     assert res.status_code == 400
+    assert "still require review" in res.get_json()["error"]
 
 
 def test_validation_error_blocks_submission(client, login_as, setup):
@@ -318,10 +373,13 @@ def test_page_refresh_equivalent_get_never_mutates(client, setup):
 
 
 def test_failed_submission_leaves_review_unsubmitted(client, setup):
+    # "Failed" here means the unconfirmed submit attempt (409, confirmation
+    # required) — it must leave the session exactly as unsubmitted as a
+    # hard-blocked (400) attempt would.
     pid = setup["product"]["id"]
     _mark_reviewed(client, "2026-08-01", "Day", pid)  # other_product left unreviewed
     res = _submit(client, "2026-08-01", "Day")
-    assert res.status_code == 400
+    assert res.status_code == 409
     data = _summary(client, "2026-08-01", "Day").get_json()
     assert data["session"]["status"] == "in_progress"
 

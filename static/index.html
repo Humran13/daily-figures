@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily Figures">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/app-shell.css">
 <title>Daily Figures</title>
 <style>
@@ -43,8 +43,25 @@
   .product-name{ font-size:22px; font-weight:800; letter-spacing:-.01em; margin:0 0 2px; }
   .product-sub{ font-size:12px; color:var(--ink-soft); margin:0 0 18px; }
   .stock-readout{ display:flex; justify-content:space-between; align-items:center; background:var(--paper-dim); border-radius:10px; padding:12px 14px; margin-bottom:18px; }
+  .stock-readout.mt{ margin-top:14px; }
   .stock-readout .lbl{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); }
   .stock-readout .val{ font-family:var(--mono); font-size:20px; font-weight:700; color:var(--ink); }
+  /* Tighter vertical rhythm on small phones (~430px and under) — same
+     values as the base rules above, just smaller, so the product name,
+     Opening Stock, quantity boxes, and Next/Skip buttons fit with less
+     scrolling between products. Desktop/tablet (anything wider) is
+     completely unaffected — only these overrides are scoped to the
+     media query, never the base rules themselves. */
+  @media (max-width:430px){
+    .card{ padding:14px 12px; margin-bottom:12px; }
+    .product-sub{ margin-bottom:10px; }
+    .stock-readout{ padding:9px 11px; margin-bottom:10px; }
+    .stock-readout.mt{ margin-top:10px; }
+    .stock-readout .val{ font-size:17px; }
+    .closing-readout{ margin-top:10px; padding:12px; }
+    .nav-row{ margin-top:10px; gap:8px; }
+    .qty-field input{ padding:9px 4px; }
+  }
   .num-field{ margin-bottom:14px; }
   .num-field label{ display:block; font-size:13px; font-weight:700; color:var(--ink); margin-bottom:6px; }
   .num-field .hint{ font-weight:400; color:var(--ink-soft); font-size:11px; }
@@ -632,19 +649,17 @@ async function renderEntryCard(){
         <span class="val qty-readout" id="openingReadout">${qtyLabel(view.opening, rule)}</span>
       </div>
       ${showOpeningInputs ? `<div style="margin-bottom:14px;">${qtyInputsHtml('opening', rule, view.opening, !canEditOpening)}</div>` : ''}
-      ${(showOpeningInputs && !view.opening_editable) ? `<p class="hint" style="margin:-8px 0 10px;">Correcting this becomes a new stock-balance anchor for every later date.</p>` : ''}
-
-      <div class="stock-readout" style="margin-top:14px;">
+      <div class="stock-readout mt">
         <span class="lbl">Returns <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
         <span class="val qty-readout">${qtyLabel(view.return_, rule)}</span>
       </div>
 
-      <div class="stock-readout" style="margin-top:14px;">
+      <div class="stock-readout mt">
         <span class="lbl">Production <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
         <span class="val qty-readout">${qtyLabel(view.production, rule)}</span>
       </div>
 
-      <div class="stock-readout" style="margin-top:14px;">
+      <div class="stock-readout mt">
         <span class="lbl">Issued <span class="hint" style="font-weight:400;text-transform:none;">(auto)</span></span>
         <span>
           <span class="val qty-readout">${qtyLabel(view.issued, rule)}</span>
@@ -668,7 +683,7 @@ async function renderEntryCard(){
       </div>
       ${canMarkNoActivity ? `<button class="btn-no-activity" id="noActivityBtn">No Activity Today</button>` : ''}
       ${isFullyReadOnly ? '' : (isElevated
-        ? `<button class="btn-skip-review" id="skipReviewBtn">Skip for now — return before submitting</button>`
+        ? `<button class="btn-skip-review" id="skipReviewBtn">Skip to Submit</button>`
         : `<button class="btn-skip" id="skipBtn">Skip for now — leave this product unreviewed and come back later</button>`)}
     </div>
   `;
@@ -893,11 +908,22 @@ async function saveAndAdvanceReview(product, date, shift, rule, view, showOpenin
   renderEntryCard();
 }
 
+// "Skip to Submit" — Manager/Super Admin review workflow only. Marks the
+// CURRENT product skipped (same /api/daily-review/mark-skipped call as
+// before — no stock movement, no zeros inserted, no fabricated review;
+// mirrors exactly what a plain "Skip" already did to this one product)
+// and then jumps straight to the Submit/Review screen instead of
+// advancing to the next unreviewed product — the whole point being to
+// avoid stepping through every remaining product with no activity.
+// Every OTHER still-unreviewed product is simply left as "not yet
+// reviewed", exactly as if the reviewer had never visited it — nothing
+// is skipped, zeroed, or marked reviewed on their behalf. Back/Next from
+// the review screen (or "Return to this product") still works normally
+// for a reviewer who wants to go through the rest individually.
 async function skipAndAdvanceReview(product, date, shift){
   const {status, data} = await apiPost('/api/daily-review/mark-skipped', {date, shift, product_id: product.id});
   if(status !== 200){ toast(data.error || 'Could not skip this product'); return; }
-  currentIdx++;
-  renderEntryCard();
+  showReviewScreen(date, shift);
 }
 
 async function showReviewScreen(date, shift){
@@ -969,6 +995,7 @@ async function showReviewScreen(date, shift){
         <button class="btn btn-ghost" id="reopenReviewBtn" style="width:100%;">Reopen this submitted review</button>
       ` : `
         ${summary.blocking_count > 0 ? `<p class="hint" style="color:var(--red);">${summary.blocking_count} product(s) still require review before submission.</p>` : ''}
+        ${summary.blocking_count === 0 && summary.unreviewed_count > 0 ? `<p class="hint">${summary.unreviewed_count} product(s) have not been reviewed — you can still submit; you'll be asked to confirm.</p>` : ''}
         <button class="btn btn-primary" id="submitReviewBtn" style="width:100%;" ${summary.blocking_count > 0 || summary.total === 0 ? 'disabled' : ''}>Submit Daily Figures Review</button>
       `}
       <button class="btn btn-ghost" id="reviewBackBtn" style="width:100%;margin-top:8px;">Back to products</button>
@@ -979,11 +1006,32 @@ async function showReviewScreen(date, shift){
   });
   document.getElementById('reviewBackBtn').addEventListener('click', ()=>{ currentIdx = 0; renderEntryCard(); });
 
+  // Manager/Super Admin may submit with unreviewed products still
+  // outstanding — never silently, always via an explicit "Submit
+  // anyway?" confirmation (Cancel returns to review, nothing is sent).
+  // Genuine hard blockers (locks/validation errors/missing correction
+  // reasons/staleness — summary.blocking_count) are never bypassable by
+  // this or any confirmation; the button itself stays disabled for those
+  // regardless. Unreviewed products are never auto-zeroed, auto-
+  // reviewed, or otherwise touched by submitting past them — see
+  // daily_review_service.submit_review()'s own docstring.
   const submitBtn = document.getElementById('submitReviewBtn');
   if(submitBtn) submitBtn.addEventListener('click', async ()=>{
     const msg = document.getElementById('reviewSubmitMsg');
     if(!confirm(`Submit the Daily Figures review for ${dateLabel} — ${shift}?`)) return;
-    const {status, data} = await apiPost('/api/daily-review/submit', {date, shift});
+    let force = false;
+    if(summary.unreviewed_count > 0){
+      if(!confirm(`${summary.unreviewed_count} product(s) have not been reviewed. Submit anyway?`)) return;
+      force = true;
+    }
+    let {status, data} = await apiPost('/api/daily-review/submit', {date, shift, force});
+    if(status === 409 && data.requires_confirmation){
+      // The count changed since this screen loaded (another reviewer's
+      // session, or a stale page) — ask again with the current number
+      // rather than silently forcing or silently failing.
+      if(!confirm(data.error)) return;
+      ({status, data} = await apiPost('/api/daily-review/submit', {date, shift, force: true}));
+    }
     if(status !== 200){ msg.textContent = data.error || 'Could not submit review.'; msg.className = 'msg err'; return; }
     toast('Daily Figures review submitted.');
     showReviewScreen(date, shift);

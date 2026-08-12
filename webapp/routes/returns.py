@@ -184,7 +184,7 @@ def create_return():
         )
     except (ReturnError, PackagingError) as e:
         db.session.rollback()
-        return _error(e)
+        return _error(e, 409 if "already exists for" in str(e) else 400)
 
     record_audit(user, "create", "return", entity_id=record.id, after=record.to_dict())
     db.session.commit()

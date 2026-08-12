@@ -6,7 +6,14 @@ pattern) proving:
 
 - The required section order (Quick Actions, Daily Activity, Per-Product
   Daily Figures, Top Issued Products, Sales Category, Recipient,
-  Attention, Recent Dispatches, Unfinalized Drafts, Recent Corrections).
+  Attention, Recent Dispatches, Recent Corrections). The "Unfinalized
+  Drafts" section (formerly between Recent Dispatches and Recent
+  Corrections) was removed as an obsolete UI-only summary — see
+  tests/test_final_ux_reporting_data_entry_package.py's own section for
+  the removal itself; backend support (`draft_dispatches` in GET /api/
+  dashboard, `_drafts_view()`) is deliberately left in place, unread by
+  any current UI, per "prefer leaving harmless backend compatibility in
+  place unless removing it is clearly safe."
 - The three-item preview rule and its "View all" escape hatch.
 - One reusable modal/drawer, not seven separate implementations.
 - Attention collapsed by default, with a critical-condition auto-expand.
@@ -39,7 +46,6 @@ SECTION_MARKERS = [
     'id="byRecipient"',
     'id="attentionCard"',
     'id="recentDispatches"',
-    'id="draftList"',
     'id="correctionsList"',
 ]
 
@@ -70,13 +76,18 @@ def test_recipient_follows_sales_category():
 
 def test_supporting_sections_appear_after_attention():
     assert DASHBOARD_HTML.index('id="attentionCard"') < DASHBOARD_HTML.index('id="recentDispatches"')
-    assert DASHBOARD_HTML.index('id="recentDispatches"') < DASHBOARD_HTML.index('id="draftList"')
-    assert DASHBOARD_HTML.index('id="draftList"') < DASHBOARD_HTML.index('id="correctionsList"')
+    assert DASHBOARD_HTML.index('id="recentDispatches"') < DASHBOARD_HTML.index('id="correctionsList"')
 
 
 def test_full_required_order_holds_end_to_end():
     positions = [DASHBOARD_HTML.index(marker) for marker in SECTION_MARKERS]
     assert positions == sorted(positions)
+
+
+def test_unfinalized_drafts_section_is_gone():
+    assert 'id="draftList"' not in DASHBOARD_HTML
+    assert 'draftRow' not in DASHBOARD_HTML
+    assert 'Unfinalized drafts' not in DASHBOARD_HTML
 
 
 # =====================================================================
@@ -156,7 +167,7 @@ def test_modal_is_accessible_dialog():
 
 
 def test_multiple_sections_reuse_the_same_open_modal_function():
-    # Top Products, Recent Dispatches, Drafts, and Corrections all go
+    # Top Products, Recent Dispatches, and Corrections all go
     # through the one shared renderPreviewSection() helper — and
     # Category/Recipient both go through the one shared
     # renderGroupedIssued() helper — each of which calls openModal() in
@@ -171,7 +182,7 @@ def test_multiple_sections_reuse_the_same_open_modal_function():
     assert DASHBOARD_HTML.count("openModal(") >= 3  # definition + the shared renderers' call sites
 
     render_preview_call_sites = len(re.findall(r"renderPreviewSection\(document\.getElementById", DASHBOARD_HTML))
-    assert render_preview_call_sites >= 4  # topProducts, recentDispatches, draftList, correctionsList
+    assert render_preview_call_sites >= 3  # topProducts, recentDispatches, correctionsList (draftList removed)
     assert "function renderDailyFiguresToday(" in DASHBOARD_HTML
     assert "openModal('Per-product Daily Figures'" in DASHBOARD_HTML
 

@@ -90,7 +90,12 @@ def submit():
         return err
     user = current_user()
     try:
-        svc.submit_review(date, shift, user)
+        svc.submit_review(date, shift, user, force=bool(d.get("force")))
+    except svc.ReviewConfirmationRequired as e:
+        db.session.rollback()
+        return jsonify({
+            "error": str(e), "requires_confirmation": True, "unreviewed_count": e.unreviewed_count,
+        }), 409
     except svc.ReviewError as e:
         db.session.rollback()
         return _error(e)

@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily Figures">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/app-shell.css">
 <title>Returns — Daily Figures</title>
 <style>
@@ -759,7 +759,7 @@ async function loadList(){
               <span class="num">Return #${r.id}</span>
               ${statusPill(r.status)}${metroStockBadge(r)}
             </div>
-            <div class="meta">${escapeHtml(r.returned_by_name||'—')}${r.signed_by_name ? ' · signed '+escapeHtml(r.signed_by_name) : ''}</div>
+            <div class="meta">${escapeHtml(r.returned_by_name||'—')}${r.signed_by_name ? ' · signed '+escapeHtml(r.signed_by_name) : ''} · Entered ${escapeHtml(r.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -808,6 +808,7 @@ async function openDetail(id){
       <span>${statusPill(data.status)}${metroStockBadge(data)}</span>
     </div>
     <div class="hint">${data.date}</div>
+    <div class="hint">Time Entered: ${escapeHtml(data.created_at_label || '—')}</div>
     <div style="margin-top:8px;"><strong>${escapeHtml(data.returned_by_name||'—')}</strong></div>
     ${data.signed_by_name ? `<div class="hint">Signed: ${escapeHtml(data.signed_by_name)}</div>` : ''}
     <div class="hint">Received by: ${escapeHtml(data.received_by_username||'—')}</div>

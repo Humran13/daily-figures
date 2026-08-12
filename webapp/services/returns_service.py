@@ -194,12 +194,65 @@ def _resolve_returned_by(customer_id, returned_by_name):
     return None, (returned_by_name or "").strip() or None
 
 
+def _find_active_duplicate_return(customer_id, date):
+    """
+    One active (draft or finalized — never void) Return per canonical
+    recipient per business date. Resolves merges in both directions via
+    customer_service's existing resolve_canonical()/
+    resolve_customer_ids_for_filter() — reused verbatim (never a second
+    merge-walking implementation) — so a Return recorded under a name
+    later merged away, or under the customer it was later merged into,
+    both still count as "the same recipient" for this check. Returns None
+    (no duplicate) for a customer_id of None — a free-text-only "returned
+    by" has no canonical relationship to check against, and inventing a
+    fragile name-based uniqueness rule for that case risks breaking
+    legitimate historical/free-text records; existing behavior for that
+    edge case is preserved unchanged.
+    """
+    if customer_id is None:
+        return None
+    customer = db.session.get(Customer, customer_id)
+    if customer is None:
+        return None
+    from webapp.services.customer_service import resolve_canonical, resolve_customer_ids_for_filter
+    canonical = resolve_canonical(customer)
+    candidate_ids = resolve_customer_ids_for_filter(canonical.id)
+    return (
+        ReturnRecord.query.filter(
+            ReturnRecord.date == date,
+            ReturnRecord.returned_by_customer_id.in_(candidate_ids),
+            ReturnRecord.status != STATUS_VOID,
+        ).first()
+    )
+
+
 def create_return(*, date, returned_by_customer_id=None, returned_by_name=None, signed_by_name=None,
                    received_by=None, verified_by=None, remarks, lines, user):
     if not lines:
         raise ReturnError("A return needs at least one product line")
 
     customer_id, name_snapshot = _resolve_returned_by(returned_by_customer_id, returned_by_name)
+
+    # One active Return per canonical recipient per business date — a
+    # second entry for the same recipient/date is very likely an
+    # accidental duplicate (this has already caused confusion for Metro
+    # Sales recipients like Dakar), so it's rejected rather than silently
+    # accepted as a second legitimate daily Return. Never merged, never
+    # summed — the error message points the caller at the existing record
+    # instead. A prior VOID record for the same recipient/date does NOT
+    # block a legitimate replacement (void is "inactive" throughout this
+    # app's existing status semantics — see e.g. dispatch_service.
+    # find_duplicate_number()'s identical STATUS_VOID exclusion for
+    # dispatch numbers). This is a server-side check — reached from every
+    # caller of create_return(), so a forged API call is rejected exactly
+    # like a normal one; the frontend has no separate/parallel check to
+    # keep in sync.
+    duplicate = _find_active_duplicate_return(customer_id, date)
+    if duplicate is not None:
+        raise ReturnError(
+            f"A Return for {name_snapshot} already exists for {date}. "
+            "Open the existing Return and edit/correct it instead."
+        )
 
     now = _utcnow()
     built_lines = [build_line(**line, at=now) for line in lines]

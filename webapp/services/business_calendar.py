@@ -26,3 +26,27 @@ def business_today():
 
 def is_same_business_day(date_str):
     return date_str == business_today()
+
+
+def format_kampala_datetime(dt):
+    """
+    Human-readable Africa/Kampala rendering of a naive-UTC datetime column
+    (e.g. Dispatch/ReturnRecord/ProductionRecord.created_at) for read-only
+    History/reporting display — "12 Aug 2026, 3:42 PM". Display formatting
+    only, never used for business-date comparisons (see
+    is_same_business_day() above) and never written back to any record.
+
+    Deliberately avoids the platform-dependent %-d/%-I strftime directives
+    (no leading-zero stripping) — those work on Linux/macOS but raise on
+    Windows' strftime, and this app's tests run on a Windows dev machine
+    even though the deployed container is Linux.
+
+    Returns None if `dt` is None — the caller decides the neutral
+    placeholder (e.g. "—") for a record with no usable timestamp.
+    """
+    if dt is None:
+        return None
+    local = dt.replace(tzinfo=timezone.utc).astimezone(KAMPALA_OFFSET)
+    hour12 = local.hour % 12 or 12
+    ampm = "AM" if local.hour < 12 else "PM"
+    return f"{local.day} {local.strftime('%b %Y')}, {hour12}:{local.strftime('%M')} {ampm}"

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from webapp.extensions import db
 from webapp.models.dispatch import SHIFTS  # Day/Night — the one shift vocabulary in the app
+from webapp.services.business_calendar import format_kampala_datetime
 
 STATUS_DRAFT = "draft"
 STATUS_FINALIZED = "finalized"
@@ -60,6 +61,10 @@ class ProductionRecord(db.Model):
             "status": self.status,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            # Read-only reporting metadata — see dispatch.py's identical
+            # field for the full rationale (automatic entry time, Africa/
+            # Kampala, never editable/stock-affecting/overwritten).
+            "created_at_label": format_kampala_datetime(self.created_at),
             "updated_by": self.updated_by,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "finalized_by": self.finalized_by,
