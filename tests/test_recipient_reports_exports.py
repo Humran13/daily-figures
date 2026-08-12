@@ -154,14 +154,18 @@ def test_recipient_totals_export_is_audited(client, setup, app):
         assert entry is not None
 
 
-def test_viewer_cannot_view_reports_or_manage_categories(client, setup, login_as):
-    """Stage 1: /api/reports/* backs the Dashboard's aggregate views and is
-    now super_admin/manager only — Viewer no longer sees Dashboard at all,
-    so it no longer has access to the data behind it either."""
+def test_viewer_can_view_reports_but_cannot_manage_categories(client, setup, login_as):
+    """Superseded by the Viewer Dashboard parity fix: GET /api/reports/
+    recipient-totals backs Dashboard's "Issued by Sales Category"/"Issued
+    by Recipient" cards, which Viewer's read-only dashboard is required to
+    show identically to Manager's — role restrictions apply to ACTIONS,
+    not to this read (see webapp/routes/reports.py's recipient_totals()
+    docstring). Viewer still cannot manage sales categories (a write, and
+    an admin one at that) — that half of the original rule is unchanged."""
     client.post("/api/logout")
     login_as("viewer1", "password123", "viewer")
     res = client.get("/api/reports/recipient-totals?date_from=2026-07-28&date_to=2026-07-28&group_by=category")
-    assert res.status_code == 403
+    assert res.status_code == 200
 
     forbidden = client.post("/api/admin/sales-categories", json={"name": "New Cat"})
     assert forbidden.status_code == 403

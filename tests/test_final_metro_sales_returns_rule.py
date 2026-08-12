@@ -486,12 +486,13 @@ def test_monday_metro_return_remains_in_returns_history(client, setup):
     assert any(row["id"] == r["id"] for row in listed)
 
 
-def test_preview_edit_print_work_for_metro_returns_in_markup():
-    # No new "void"/"cancelled"/"rejected" status was introduced, and the
-    # existing standardized action set (Preview/Edit/Delete/Print) is
-    # completely unchanged by this round.
-    assert 'data-action="preview">Preview<' in RETURNS_HTML
+def test_edit_void_delete_print_work_for_metro_returns_in_markup():
+    # No new "cancelled"/"rejected" status was introduced for Metro Sales
+    # specifically — void (a later round's standardized action, replacing
+    # the removed Preview button) is the same generic action every Returns
+    # record can reach; nothing about it is Metro-Sales-specific.
     assert 'data-action="correct">Edit<' in RETURNS_HTML
+    assert 'data-action="void">Void<' in RETURNS_HTML
     assert 'data-action="delete">Delete<' in RETURNS_HTML
     assert 'data-action="print">Print<' in RETURNS_HTML
 
@@ -505,15 +506,22 @@ def test_manager_super_admin_delete_continues_working_on_metro_return(client, se
 
 
 def test_operator_role_permissions_unchanged_for_metro_returns(client, setup, login_as):
+    # Uses today's business date (not a fixed Metro weekday) — the same-day
+    # Operator edit window (a later, separate round) requires it, and this
+    # test is only checking the Delete/Edit permission split, not the
+    # Metro Monday rule itself.
+    from webapp.services.business_calendar import business_today
+    today = business_today()
     pid = setup["product"]["id"]
     login_as("metro_op1", "password123", "operator")
-    r = _create_return(client, pid, setup["dakar"]["id"], WEDNESDAY, cartons=1).get_json()
+    r = _create_return(client, pid, setup["dakar"]["id"], today, cartons=1).get_json()
     _finalize(client, r["id"])
     # Operator cannot Delete, Metro or not — unchanged permission matrix.
     res = client.delete(f"/api/returns/{r['id']}", json={"reason": "x", "confirm": True})
     assert res.status_code == 403
-    # Operator CAN correct their own finalized return (unrelated round,
-    # unaffected by the Metro rule — a plain permission check).
+    # Operator CAN correct their own finalized return while still same-day
+    # (unrelated round, unaffected by the Metro rule — a plain permission
+    # check).
     res2 = client.post(f"/api/returns/{r['id']}/correct", json={
         "reason": "operator self-correction", "notes": None,
         "lines": [{"id": r["lines"][0]["id"], "product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],

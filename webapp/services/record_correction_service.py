@@ -29,9 +29,25 @@ from webapp.models.production_record import ProductionLine, ProductionRecord
 from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.services import dispatch_service, production_service, product_usage_service, returns_service
 from webapp.services.audit_service import record_audit
+from webapp.services.business_calendar import is_same_business_day
 
 STATUS_VOID = "void"
 STATUS_FINALIZED = "finalized"
+
+
+def operator_can_directly_edit(record, user):
+    """
+    Operator same-day edit/void window: an Operator may directly Edit or
+    Void a record only when they created it AND its own business Date
+    (never created_at/updated_at/today's server clock in any other zone)
+    is still today in Africa/Kampala — once that business date has
+    passed, direct mutation is refused; the Operator must use Request
+    Correction/Request Void instead (see correction_request_service.py),
+    which requires Manager/Super Admin approval before anything actually
+    changes. Manager/Super Admin are never subject to this check — they
+    call this only for Operator-role callers.
+    """
+    return record.created_by == user.id and is_same_business_day(record.date)
 
 # One small registry so this logic is written once and shared by all three
 # source books (which are otherwise near-identical modules with no common
@@ -85,7 +101,7 @@ def get_record(source_type, record_id):
     return db.session.get(_REGISTRY[source_type]["model"], record_id)
 
 
-def correct_record(source_type, record_id, *, lines, notes, reason, actor, expected_updated_at=None,
+def correct_record(source_type, record_id, *, lines, reason, actor, notes=None, expected_updated_at=None,
                     date=None, customer_id=None, new_customer_name=None, sales_category_id=None,
                     shift=None, returned_by_customer_id=None, returned_by_name=None, signed_by_name=None):
     """

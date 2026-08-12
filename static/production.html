@@ -187,20 +187,11 @@
       <div class="msg" id="detailMsg"></div>
       <div class="nav-row no-print" id="detailActions"></div>
 
-      <!-- Preview — strictly read-only full-record view. See
-           static/dispatch.html's identical panel for the full rationale. -->
-      <div class="card hidden no-print" id="previewPanel">
-        <h3 style="margin-top:0;">Preview</h3>
-        <div id="previewBody"></div>
-        <div class="nav-row">
-          <button class="btn btn-ghost" id="previewCloseBtn">Close preview</button>
-        </div>
-      </div>
-
-      <!-- Correct Record — final pre-deployment correction. See
+      <!-- Correct Record / Request Correction — dual-mode, see
            static/dispatch.html's identical panel for the full rationale. -->
       <div class="card hidden no-print" id="correctPanel">
-        <h3 style="margin-top:0;">Correct record</h3>
+        <h3 style="margin-top:0;" id="correctPanelTitle">Correct record</h3>
+        <p class="hint hidden" id="correctRequestHint" style="margin-top:-8px;margin-bottom:12px;">This record is no longer same-day — submitting here creates a request a Manager or Super Administrator must approve before anything changes.</p>
         <div class="field"><label>Production Date</label><input type="date" id="correctDate"></div>
         <div class="field"><label>Shift</label>
           <select id="correctShift"><option value="Day">Day</option><option value="Night">Night</option></select>
@@ -217,6 +208,34 @@
         <div class="nav-row">
           <button class="btn btn-primary" id="correctSaveBtn">Save correction</button>
           <button class="btn btn-ghost" id="correctCancelBtn">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Void — see static/dispatch.html's identical panel for the full
+           rationale. -->
+      <div class="card hidden no-print" id="voidPanel">
+        <h3 style="margin-top:0;">Void this Production entry?</h3>
+        <p class="hint" id="voidSummary" style="margin-bottom:12px;"></p>
+        <p class="hint" style="margin-bottom:12px;">Voiding preserves the record and its lines in History but removes its stock contribution. This is not permanent deletion.</p>
+        <div><label>Void reason (required)</label><textarea id="voidReason" rows="2" placeholder="Why is this production entry being voided?"></textarea></div>
+        <div class="msg" id="voidMsg"></div>
+        <div class="nav-row">
+          <button class="btn btn-primary" id="voidConfirmBtn">Void Production Entry</button>
+          <button class="btn btn-ghost" id="voidCancelBtn">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Request Void — see static/dispatch.html's identical panel for
+           the full rationale. -->
+      <div class="card hidden no-print" id="requestVoidPanel">
+        <h3 style="margin-top:0;">Request Void — this Production entry</h3>
+        <p class="hint" id="requestVoidSummary" style="margin-bottom:12px;"></p>
+        <p class="hint" style="margin-bottom:12px;">This record is no longer same-day — a Manager or Super Administrator must approve this request before the production entry is voided.</p>
+        <div><label>Reason (required)</label><textarea id="requestVoidReason" rows="2" placeholder="Why should this production entry be voided?"></textarea></div>
+        <div class="msg" id="requestVoidMsg"></div>
+        <div class="nav-row">
+          <button class="btn btn-primary" id="requestVoidConfirmBtn">Submit Request Void</button>
+          <button class="btn btn-ghost" id="requestVoidCancelBtn">Cancel</button>
         </div>
       </div>
 
@@ -241,6 +260,7 @@
 
 <script>
 let currentUser = null;
+let businessToday = null; // Africa/Kampala "today" from /api/session — see static/dispatch.html's identical variable
 let productsCache = [];
 let currentLines = [];
 let editingProductionId = null;
@@ -707,18 +727,33 @@ async function openDetail(id){
   const isOperator = currentUser && currentUser.role === 'operator';
   const ownsRecord = currentUser && data.created_by === currentUser.id;
   const canEditDraft = data.status === 'draft' && (isElevated || ownsRecord);
-  // Finalized Edit — Manager/Super Admin on any record; an Operator only
-  // on a record they themselves created (server-enforced by the
-  // /correct route's own ownership check).
-  const canEditFinalized = data.status !== 'draft' && data.status !== 'void' && (isElevated || (isOperator && ownsRecord));
+  // Operator same-day edit window — see static/dispatch.html's identical
+  // block for the full rationale.
+  const sameDayOwned = isOperator && ownsRecord && !!businessToday && data.date === businessToday;
+  const historicalOwned = isOperator && ownsRecord && !!businessToday && data.date !== businessToday;
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
-  if(!isViewer) buttons.push(`<button class="btn btn-ghost" data-action="preview">Preview</button>`);
   if(data.status === 'draft'){
     if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
-  } else if(canEditFinalized){
-    buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+  } else if(data.status !== 'void'){
+    if(isElevated || sameDayOwned){
+      buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+    } else if(historicalOwned){
+      buttons.push(`<button class="btn btn-ghost" data-action="request-correct">Request Correction</button>`);
+    }
+  }
+  // Void — offered on any non-void status (draft or finalized); the
+  // backend has always allowed voiding a draft directly (production_
+  // service.void_production() has no finalized-only guard), so this must
+  // not artificially hide the button just because the record is still a
+  // draft.
+  if(data.status !== 'void'){
+    if(isElevated || sameDayOwned){
+      buttons.push(`<button class="btn btn-ghost" data-action="void">Void</button>`);
+    } else if(historicalOwned){
+      buttons.push(`<button class="btn btn-ghost" data-action="request-void">Request Void</button>`);
+    }
   }
   if(isElevated && data.status !== 'void'){
     buttons.push(`<button class="btn btn-danger" data-action="delete">Delete</button>`);
@@ -726,8 +761,9 @@ async function openDetail(id){
   buttons.push(`<button class="btn btn-ghost" data-action="print">Print</button>`);
   actions.innerHTML = buttons.join('');
 
-  document.getElementById('previewPanel').classList.add('hidden');
   document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('voidPanel').classList.add('hidden');
+  document.getElementById('requestVoidPanel').classList.add('hidden');
   document.getElementById('deletePanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
   msg.textContent = '';
@@ -741,9 +777,11 @@ async function openDetail(id){
         if(r.status===200){ toast('Finalized.'); openDetail(data.id); } else { msg.textContent = r.data.error; msg.className='msg err'; }
         return;
       }
-      if(action === 'preview'){ openPreviewPanel(data); return; }
       if(action === 'edit-draft'){ openEditDraft(data); return; }
-      if(action === 'correct'){ openCorrectPanel(data); return; }
+      if(action === 'correct'){ openCorrectPanel(data, 'direct'); return; }
+      if(action === 'request-correct'){ openCorrectPanel(data, 'request'); return; }
+      if(action === 'void'){ openVoidPanel(data); return; }
+      if(action === 'request-void'){ openRequestVoidPanel(data); return; }
       if(action === 'delete'){ openDeletePanel(data); return; }
     });
   });
@@ -751,23 +789,18 @@ async function openDetail(id){
 document.getElementById('backToListBtn').addEventListener('click', ()=>switchTab('list'));
 
 // ---------- Preview (strictly read-only) ----------
-function openPreviewPanel(data){
-  document.getElementById('correctPanel').classList.add('hidden');
-  document.getElementById('deletePanel').classList.add('hidden');
-  document.getElementById('previewBody').innerHTML =
-    document.getElementById('detailHeader').innerHTML + document.getElementById('detailLines').innerHTML;
-  document.getElementById('previewPanel').classList.remove('hidden');
-  document.getElementById('previewPanel').scrollIntoView({behavior:'smooth'});
-}
-document.getElementById('previewCloseBtn').addEventListener('click', ()=>{
-  document.getElementById('previewPanel').classList.add('hidden');
-});
-
-// ---------- Correct Record ----------
+// ---------- Correct Record / Request Correction (dual-mode) ----------
 let correctLines = [];
+let correctMode = 'direct'; // 'direct' (POST .../correct) | 'request' (POST /api/correction-requests)
 
-function openCorrectPanel(data){
-  document.getElementById('previewPanel').classList.add('hidden');
+function openCorrectPanel(data, mode){
+  document.getElementById('voidPanel').classList.add('hidden');
+  document.getElementById('requestVoidPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
+  correctMode = mode || 'direct';
+  document.getElementById('correctPanelTitle').textContent = correctMode === 'request' ? 'Request Correction' : 'Correct record';
+  document.getElementById('correctRequestHint').classList.toggle('hidden', correctMode !== 'request');
+  document.getElementById('correctSaveBtn').textContent = correctMode === 'request' ? 'Submit correction request' : 'Save correction';
   correctLines = data.lines.map(l => ({
     id: l.id, product_id: l.product_id, product_name: l.product_name,
     rule: productsCache.find(p=>p.id===l.product_id)?.packaging_rule || null,
@@ -839,12 +872,28 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
   if(!reason){ msg.textContent = 'A correction reason is required.'; msg.className = 'msg err'; return; }
   if(correctLines.length === 0){ msg.textContent = 'At least one product line is required.'; msg.className = 'msg err'; return; }
 
+  const lines = correctLines.map(l => ({id: l.id, product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes}));
+  const notes = document.getElementById('correctNotes').value;
+  const date = document.getElementById('correctDate').value || undefined;
+  const shift = document.getElementById('correctShift').value;
+
+  if(correctMode === 'request'){
+    const r = await api('/api/correction-requests', {method:'POST', body: JSON.stringify({
+      record_type: 'production', record_id: currentDetail.id, action: 'correct', reason,
+      payload: {lines, notes, date, shift},
+    })});
+    if(r.status !== 201){
+      msg.textContent = r.data.error || 'Could not submit correction request.'; msg.className = 'msg err';
+      return;
+    }
+    toast('Correction request submitted for approval.');
+    document.getElementById('correctPanel').classList.add('hidden');
+    openDetail(currentDetail.id);
+    return;
+  }
+
   const body = {
-    reason, notes: document.getElementById('correctNotes').value,
-    expected_updated_at: currentDetail.updated_at,
-    date: document.getElementById('correctDate').value || undefined,
-    shift: document.getElementById('correctShift').value,
-    lines: correctLines.map(l => ({id: l.id, product_id: l.product_id, cartons: l.cartons, packs: l.packs, pieces: l.pieces, line_notes: l.line_notes})),
+    reason, notes, expected_updated_at: currentDetail.updated_at, date, shift, lines,
   };
   const r = await api(`/api/production/${currentDetail.id}/correct`, {method:'POST', body: JSON.stringify(body)});
   if(r.status !== 200){
@@ -856,9 +905,71 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
   openDetail(currentDetail.id);
 });
 
+// ---------- Void (preserves the record; excludes it from Issued) ----------
+function openVoidPanel(data){
+  document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('requestVoidPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
+  document.getElementById('voidSummary').innerHTML =
+    `<strong>Production #${data.id}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.shift)}`;
+  document.getElementById('voidReason').value = '';
+  document.getElementById('voidMsg').textContent = '';
+  document.getElementById('voidPanel').classList.remove('hidden');
+  document.getElementById('voidPanel').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('voidCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('voidPanel').classList.add('hidden');
+});
+document.getElementById('voidConfirmBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('voidMsg');
+  const reason = document.getElementById('voidReason').value.trim();
+  if(!reason){ msg.textContent = 'A void reason is required.'; msg.className = 'msg err'; return; }
+  const r = await api(`/api/production/${currentDetail.id}/void`, {method:'POST', body: JSON.stringify({reason})});
+  if(r.status !== 200){
+    msg.textContent = r.data.error || 'Could not void this production entry.'; msg.className = 'msg err';
+    return;
+  }
+  toast('Production entry voided.');
+  document.getElementById('voidPanel').classList.add('hidden');
+  openDetail(currentDetail.id);
+});
+
+// ---------- Request Void (historical Operator-owned record) ----------
+function openRequestVoidPanel(data){
+  document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('voidPanel').classList.add('hidden');
+  document.getElementById('deletePanel').classList.add('hidden');
+  document.getElementById('requestVoidSummary').innerHTML =
+    `<strong>Production #${data.id}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.shift)}`;
+  document.getElementById('requestVoidReason').value = '';
+  document.getElementById('requestVoidMsg').textContent = '';
+  document.getElementById('requestVoidPanel').classList.remove('hidden');
+  document.getElementById('requestVoidPanel').scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('requestVoidCancelBtn').addEventListener('click', ()=>{
+  document.getElementById('requestVoidPanel').classList.add('hidden');
+});
+document.getElementById('requestVoidConfirmBtn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('requestVoidMsg');
+  const reason = document.getElementById('requestVoidReason').value.trim();
+  if(!reason){ msg.textContent = 'A reason is required.'; msg.className = 'msg err'; return; }
+  const r = await api('/api/correction-requests', {method:'POST', body: JSON.stringify({
+    record_type: 'production', record_id: currentDetail.id, action: 'void', reason,
+  })});
+  if(r.status !== 201){
+    msg.textContent = r.data.error || 'Could not submit request.'; msg.className = 'msg err';
+    return;
+  }
+  toast('Void request submitted for approval.');
+  document.getElementById('requestVoidPanel').classList.add('hidden');
+  openDetail(currentDetail.id);
+});
+
 // ---------- Delete (permanent hard delete) ----------
 function openDeletePanel(data){
-  document.getElementById('previewPanel').classList.add('hidden');
+  document.getElementById('correctPanel').classList.add('hidden');
+  document.getElementById('voidPanel').classList.add('hidden');
+  document.getElementById('requestVoidPanel').classList.add('hidden');
   const productsSummary = data.lines.map(l => `${l.product_name} (${l.quantity_label})`).join(', ');
   document.getElementById('deleteSummary').innerHTML =
     `<strong>Production #${data.id}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.shift)}<br>` +
@@ -895,6 +1006,7 @@ document.getElementById('deleteConfirmBtn').addEventListener('click', async ()=>
     return;
   }
   currentUser = data.user;
+  businessToday = data.business_today || null;
   const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
   await applyFeatureFlags();
   document.getElementById('appShell').classList.remove('hidden');

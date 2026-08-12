@@ -25,6 +25,8 @@ import pathlib
 
 import pytest
 
+from webapp.services.business_calendar import business_today
+
 STATIC = pathlib.Path(__file__).resolve().parent.parent / "static"
 ADMIN_HTML = (STATIC / "admin.html").read_text(encoding="utf-8")
 DISPATCH_HTML = (STATIC / "dispatch.html").read_text(encoding="utf-8")
@@ -265,8 +267,18 @@ def test_returns_html_signer_field_defaults_and_locks_for_operator():
 
 # =====================================================================
 # SECTION 16 — STANDARD HISTORY ACTION BUTTONS
-# (Preview, Edit, Delete, Print — Reopen/Void/Duplicate/Edit Draft/
-#  Correct Record removed from the UI; their backend routes are untouched.)
+# Final matrix (superseding the Preview-era set from an earlier round):
+#   Manager/Super Admin:            Edit / Void / Delete / Print
+#   Operator, own same-day record:  Edit / Void / Print
+#   Operator, own historical record: Request Correction / Request Void / Print
+#   Operator, someone else's record: Print only
+#   Viewer:                          Print only
+# Preview is fully removed (it duplicated the always-visible read-only
+# detail view with no added value — no markup, no handler, no panel left
+# behind). Reopen/Duplicate remain off the UI; their backend routes are
+# untouched. Void is NEW this round — not a soft synonym for Delete: it
+# preserves the record and excludes it from Issued/Daily Figures, see the
+# dedicated Void backend test file for stock-effect coverage.
 # =====================================================================
 
 def _detail_actions_body(html, marker="const actions = document.getElementById('detailActions');"):
@@ -277,107 +289,103 @@ def _detail_actions_body(html, marker="const actions = document.getElementById('
 
 ALL_THREE_HTML = (DISPATCH_HTML, RETURNS_HTML, PRODUCTION_HTML)
 
-# The exact single-Edit-per-state branch every one of the three pages
-# shares verbatim (see static/dispatch.html's openDetail()) — Draft gets
-# the draft-editing workflow, everything else (Manager/Super Admin on any
-# record, an Operator only on their own — canEditFinalized) gets Correct
-# Record, and the two are mutually exclusive via if/else if, never both
-# pushed for the same record.
-_SINGLE_EDIT_BRANCH = (
-    "if(data.status === 'draft'){\n"
-    "    if(canEditDraft) buttons.push(`<button class=\"btn btn-ghost\" data-action=\"edit-draft\">Edit</button>`);\n"
-    "  } else if(canEditFinalized){\n"
-    "    buttons.push(`<button class=\"btn btn-ghost\" data-action=\"correct\">Edit</button>`);\n"
-    "  }"
-)
 _DELETE_BRANCH = (
     "if(isElevated && data.status !== 'void'){\n"
     "    buttons.push(`<button class=\"btn btn-danger\" data-action=\"delete\">Delete</button>`);\n"
     "  }"
 )
-_PREVIEW_LINE = "if(!isViewer) buttons.push(`<button class=\"btn btn-ghost\" data-action=\"preview\">Preview</button>`);"
 
 
-def test_dispatch_elevated_actions_are_preview_edit_delete_print():
+def test_dispatch_elevated_actions_are_edit_void_delete_print():
     body = _detail_actions_body(DISPATCH_HTML)
-    assert 'data-action="preview">Preview<' in body
     assert 'data-action="correct">Edit<' in body
+    assert 'data-action="void">Void<' in body
     assert 'data-action="delete">Delete<' in body
     assert 'data-action="reopen"' not in body
+    assert 'data-action="preview"' not in body
     tail = DISPATCH_HTML[DISPATCH_HTML.index(body):DISPATCH_HTML.index(body) + len(body) + 200]
     assert 'data-action="print">Print<' in tail
 
 
-def test_returns_elevated_actions_are_preview_edit_delete_print():
+def test_returns_elevated_actions_are_edit_void_delete_print():
     body = _detail_actions_body(RETURNS_HTML)
-    assert 'data-action="preview">Preview<' in body
     assert 'data-action="correct">Edit<' in body
+    assert 'data-action="void">Void<' in body
     assert 'data-action="delete">Delete<' in body
     assert 'data-action="reopen"' not in body
 
 
-def test_production_elevated_actions_are_preview_edit_delete_print():
+def test_production_elevated_actions_are_edit_void_delete_print():
     body = _detail_actions_body(PRODUCTION_HTML)
-    assert 'data-action="preview">Preview<' in body
     assert 'data-action="correct">Edit<' in body
+    assert 'data-action="void">Void<' in body
     assert 'data-action="delete">Delete<' in body
     assert 'data-action="reopen"' not in body
 
 
-def test_no_void_reopen_or_duplicate_button_on_any_history_page():
+def test_no_reopen_duplicate_or_preview_button_on_any_history_page():
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
-        assert 'data-action="void"' not in body
         assert 'data-action="duplicate"' not in body
         assert 'data-action="reopen"' not in body
-        assert ">Void<" not in body
+        assert 'data-action="preview"' not in body
         assert ">Duplicate<" not in body
         assert ">Reopen<" not in body
+        assert ">Preview<" not in body
 
 
-def test_no_edit_draft_or_correct_record_button_label_remains():
-    # The button itself is always labelled "Edit" now — "Edit Draft" (the
-    # old draft-only label) is gone; "Correct record" is a panel heading,
-    # never a top-level action-row button label, so it must not appear as
-    # one either.
+def test_no_stale_action_labels_remain():
+    # No old overlapping labels survive anywhere on the page: Preview,
+    # Reopen, Duplicate, Edit Draft (as a literal button label — "Edit" is
+    # now the only label used regardless of which underlying action
+    # edit-draft/correct/request-correct it maps to), or Correct Record
+    # (a panel heading only, never a top-level button label).
     for html in ALL_THREE_HTML:
+        assert ">Preview<" not in html
+        assert ">Reopen<" not in html
+        assert ">Duplicate<" not in html
         assert ">Edit Draft<" not in html
         assert 'data-action="edit-draft">Edit Draft<' not in html
+        assert 'id="previewPanel"' not in html
+        assert "openPreviewPanel" not in html
 
 
-def test_preview_is_offered_to_every_non_viewer_role_in_markup():
-    for html in ALL_THREE_HTML:
-        body = _detail_actions_body(html)
-        assert _PREVIEW_LINE in body
-
-
-def test_viewer_gated_out_of_preview_button():
-    # Preview is explicitly gated behind !isViewer — Viewer's existing
-    # read-only detail view already serves as its preview, so no new
-    # button is added for that role (not a permission change either way).
-    for html in ALL_THREE_HTML:
-        body = _detail_actions_body(html)
-        assert "!isViewer" in body
-
-
-def test_operator_button_set_includes_preview_edit_print_via_owned_draft():
+def test_operator_button_set_includes_edit_print_via_owned_draft():
     # canEditDraft = data.status === 'draft' && (isElevated || ownsRecord) —
-    # an Operator viewing a draft they own reaches Preview, Edit
-    # (edit-draft), and Print; Delete never appears for them (see below).
+    # an Operator viewing a draft they own reaches Edit (edit-draft) and
+    # Print. Delete never appears for them (Manager/Super Admin only,
+    # regardless of draft/finalized) — but Void CAN appear on their own
+    # same-day draft too (see test_operator_same_day_owned_draft_gets_
+    # direct_edit_and_void below): the backend has always allowed voiding
+    # a draft directly, so the button isn't restricted to finalized-only.
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
         assert "const canEditDraft = data.status === 'draft' && (isElevated || ownsRecord);" in body
-        assert _PREVIEW_LINE in body
         assert 'data-action="edit-draft">Edit<' in body
 
 
-def test_operator_button_set_includes_edit_on_finalized_record_they_own():
-    # canEditFinalized — Operator no longer loses Edit the moment a record
-    # they created is finalized; only ownership + non-draft/non-void gates
-    # it (Manager/Super Admin bypass ownership entirely via isElevated).
+def test_operator_same_day_owned_finalized_record_gets_direct_edit_and_void():
+    # sameDayOwned — an Operator's own record whose business date is still
+    # today (Africa/Kampala) — reaches the SAME direct Edit/Void actions
+    # Manager/Super Admin get, via the shared (isElevated || sameDayOwned)
+    # gate; never a separate/duplicated code path.
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
-        assert "const canEditFinalized = data.status !== 'draft' && data.status !== 'void' && (isElevated || (isOperator && ownsRecord));" in body
+        assert "if(isElevated || sameDayOwned){" in body
+        assert 'data-action="correct">Edit<' in body
+        assert 'data-action="void">Void<' in body
+
+
+def test_operator_historical_owned_finalized_record_gets_request_actions_only():
+    # historicalOwned — an Operator's own record whose business date has
+    # passed — loses the direct Edit/Void actions and instead sees Request
+    # Correction / Request Void, queued for Manager/Super Admin approval
+    # rather than a silent rewrite of history.
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert "} else if(historicalOwned){" in body
+        assert 'data-action="request-correct">Request Correction<' in body
+        assert 'data-action="request-void">Request Void<' in body
 
 
 def test_delete_is_reachable_only_through_isElevated_gate():
@@ -387,17 +395,40 @@ def test_delete_is_reachable_only_through_isElevated_gate():
 
 
 def test_single_edit_action_per_record_state_no_duplicates():
-    # Draft-edit and Correct-record are mutually exclusive branches of one
-    # if/else if — the old bug (both "Edit Draft" and elevated "Edit"
-    # showing simultaneously on a draft) can't reoccur while this
-    # structure holds.
+    # Draft-edit, direct Correct, and Request Correction are mutually
+    # exclusive branches of one if/else-if/else-if — never more than one
+    # Edit-family action pushed for the same record.
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
-        assert _SINGLE_EDIT_BRANCH in body
-        # Never two independent top-level "if(...) buttons.push(...Edit...)"
-        # statements — only the one shared if/else if above.
         assert body.count('data-action="edit-draft">Edit<') == 1
         assert body.count('data-action="correct">Edit<') == 1
+        assert body.count('data-action="request-correct">Request Correction<') == 1
+        idx_draft = body.index("if(data.status === 'draft'){")
+        idx_finalized = body.index("} else if(data.status !== 'void'){", idx_draft)
+        assert idx_finalized > idx_draft  # one shared if/else-if chain, not independent ifs
+
+
+_VOID_BLOCK = (
+    "  if(data.status !== 'void'){\n"
+    "    if(isElevated || sameDayOwned){\n"
+    "      buttons.push(`<button class=\"btn btn-ghost\" data-action=\"void\">Void</button>`);\n"
+    "    } else if(historicalOwned){\n"
+    "      buttons.push(`<button class=\"btn btn-ghost\" data-action=\"request-void\">Request Void</button>`);\n"
+    "    }\n"
+    "  }"
+)
+
+
+def test_void_is_reachable_on_any_non_void_status_including_draft():
+    # The backend has always allowed voiding a still-draft record directly
+    # (e.g. "customer cancelled before we ever finalized this") — the
+    # button must not artificially hide just because status is 'draft';
+    # only an already-void record excludes it.
+    for html in ALL_THREE_HTML:
+        body = _detail_actions_body(html)
+        assert _VOID_BLOCK in body
+        assert body.count('data-action="void">Void<') == 1
+        assert body.count('data-action="request-void">Request Void<') == 1
 
 
 def test_operator_cannot_correct_a_finalized_record_they_do_not_own(client, setup, login_as):
@@ -767,12 +798,11 @@ def test_delete_removes_no_unrelated_data_production(client, setup, super_admin)
 
 
 # =====================================================================
-# SECTION — PREVIEW SAFETY
-# (root cause of the "Preview does nothing" bug: the action only hid
-#  Edit/Delete panels and scrolled to content that was already visible —
-#  with nothing hidden, clicking it produced no visible change at all.
-#  Fixed by giving Preview its own dedicated panel that is hidden by
-#  default and only becomes visible on click.)
+# SECTION — CORRECT / VOID / REQUEST-VOID / DELETE PANEL SAFETY
+# (mutual exclusivity: opening any one of these four panels hides the
+#  other three, so a stale form is never left showing behind/above the
+#  one currently in use — the same class of bug Preview's removal fixed
+#  is now guarded against for its four replacements.)
 # =====================================================================
 
 def _js_function_body(html, start_marker):
@@ -781,80 +811,72 @@ def _js_function_body(html, start_marker):
     return html[idx:end]
 
 
-def test_preview_action_delegates_to_a_dedicated_handler():
+def test_opening_correct_panel_hides_void_request_void_and_delete_panels():
     for html in ALL_THREE_HTML:
-        idx = html.index("if(action === 'preview'){")
-        end = html.index("if(action ===", idx + 10)
-        body = html[idx:end]
-        assert "openPreviewPanel(data)" in body
-        assert "api(" not in body
+        body = _js_function_body(html, "function openCorrectPanel(data, mode){")
+        assert "voidPanel').classList.add('hidden')" in body
+        assert "requestVoidPanel').classList.add('hidden')" in body
+        assert "deletePanel').classList.add('hidden')" in body
 
 
-def test_open_preview_panel_makes_no_api_call():
-    # Preview must never call api() (the only path any of these pages use
-    # to reach the backend) — true by construction, not by convention, so
-    # it can never change status, stock, audit state, or create/finalize/
-    # reopen/duplicate anything.
+def test_opening_void_panel_hides_correct_request_void_and_delete_panels():
     for html in ALL_THREE_HTML:
-        body = _js_function_body(html, "function openPreviewPanel(data){")
-        assert "api(" not in body
+        body = _js_function_body(html, "function openVoidPanel(data){")
+        assert "correctPanel').classList.add('hidden')" in body
+        assert "requestVoidPanel').classList.add('hidden')" in body
+        assert "deletePanel').classList.add('hidden')" in body
 
 
-def test_preview_reveals_a_distinct_panel_with_full_record_detail():
-    # The fix: a dedicated #previewPanel, hidden by default, that only
-    # becomes visible when Preview is clicked — populated from the exact
-    # same read-only detailHeader/detailLines markup openDetail() already
-    # rendered (no second rendering engine, no re-fetch, no new data).
+def test_opening_request_void_panel_hides_correct_void_and_delete_panels():
     for html in ALL_THREE_HTML:
-        assert 'class="card hidden no-print" id="previewPanel"' in html
-        body = _js_function_body(html, "function openPreviewPanel(data){")
-        assert "previewBody" in body
-        assert "detailHeader" in body and "detailLines" in body
-        assert "previewPanel').classList.remove('hidden')" in body
+        body = _js_function_body(html, "function openRequestVoidPanel(data){")
+        assert "correctPanel').classList.add('hidden')" in body
+        assert "voidPanel').classList.add('hidden')" in body
+        assert "deletePanel').classList.add('hidden')" in body
 
 
-def test_preview_panel_has_no_editable_inputs():
+def test_opening_delete_panel_hides_correct_void_and_request_void_panels():
     for html in ALL_THREE_HTML:
-        idx = html.index('id="previewPanel"')
-        end = html.index('id="correctPanel"', idx)
-        panel_markup = html[idx:end]
-        assert "<input" not in panel_markup
-        assert "<select" not in panel_markup
-        assert "<textarea" not in panel_markup
+        body = _js_function_body(html, "function openDeletePanel(data){")
+        assert "correctPanel').classList.add('hidden')" in body
+        assert "voidPanel').classList.add('hidden')" in body
+        assert "requestVoidPanel').classList.add('hidden')" in body
 
 
-def test_preview_close_button_only_hides_panel_no_mutation():
+def test_void_and_request_void_actions_require_a_reason_before_calling_api():
     for html in ALL_THREE_HTML:
-        idx = html.index("previewCloseBtn').addEventListener('click'")
-        end = html.index("});", idx) + 3
-        body = html[idx:end]
-        assert "api(" not in body
-        assert "classList.add('hidden')" in body
+        for btn_id in ("voidConfirmBtn", "requestVoidConfirmBtn"):
+            idx = html.index(f"{btn_id}').addEventListener('click'")
+            end = html.index("});", idx) + 3
+            body = html[idx:end]
+            assert "if(!reason){" in body
+            assert body.index("if(!reason){") < body.index("api(")
 
 
-def test_opening_correct_or_delete_panel_hides_preview_panel():
-    # Mutual exclusivity — Preview must never be left showing stale
-    # read-only content behind/above an active Edit or Delete form.
+def test_void_button_never_appears_alongside_delete_button_label_confusion():
+    # Void and Delete are visually/semantically distinct actions offered
+    # together (Manager/Super Admin, same-day-owning Operator) — Void must
+    # never render with Delete's danger styling or vice versa.
     for html in ALL_THREE_HTML:
-        correct_body = _js_function_body(html, "function openCorrectPanel(data){")
-        assert "previewPanel').classList.add('hidden')" in correct_body
-        delete_body = _js_function_body(html, "function openDeletePanel(data){")
-        assert "previewPanel').classList.add('hidden')" in delete_body
+        body = _detail_actions_body(html)
+        assert 'data-action="void">Void</button>' in body
+        assert 'btn-ghost" data-action="void"' in body
+        assert 'btn-danger" data-action="delete"' in body
 
 
-def test_preview_button_works_end_to_end_for_every_role(client, setup, login_as):
+def test_correct_and_void_panels_end_to_end_never_touch_backend_on_open(client, setup, login_as):
     # Belt-and-braces backend proof alongside the markup checks above:
-    # Preview never issues a mutating request for any role, on either a
-    # draft or a finalized record — GET-ing the record (what Preview
-    # displays) never changes status/stock/audit state no matter who asks.
+    # merely opening a detail record (what every action button click
+    # starts from) never issues a mutating request for any role, on
+    # either a draft or a finalized record.
     d = client.post("/api/dispatches", json={
-        "dispatch_number": "TUX-PREV-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "dispatch_number": "TUX-DETAIL-1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
         "sales_category_id": setup["category"]["id"],
         "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/dispatches/{d['id']}/finalize")
 
-    for username, role in (("tux_prev_op", "operator"), ("tux_prev_mgr", "manager"), ("tux_prev_sa", "super_admin")):
+    for username, role in (("tux_detail_op", "operator"), ("tux_detail_mgr", "manager"), ("tux_detail_sa", "super_admin")):
         login_as(username, "password123", role)
         before = client.get(f"/api/dispatches/{d['id']}").get_json()
         after_get = client.get(f"/api/dispatches/{d['id']}").get_json()
@@ -914,7 +936,7 @@ def test_dispatch_edit_form_displays_dispatch_number_read_only():
 
 
 def test_dispatch_edit_form_populates_dispatch_number_from_record():
-    idx = DISPATCH_HTML.index("function openCorrectPanel(data){")
+    idx = DISPATCH_HTML.index("function openCorrectPanel(data, mode){")
     end = DISPATCH_HTML.index("\n}\n", idx)
     body = DISPATCH_HTML[idx:end]
     assert "correctDispatchNumber').value = data.dispatch_number" in body
@@ -1014,8 +1036,8 @@ def test_production_edit_save_sends_date_and_shift():
     idx = PRODUCTION_HTML.index("correctSaveBtn').addEventListener('click'")
     end = PRODUCTION_HTML.index("});", idx) + 3
     body = PRODUCTION_HTML[idx:end]
-    assert "date: document.getElementById('correctDate').value" in body
-    assert "shift: document.getElementById('correctShift').value" in body
+    assert "const date = document.getElementById('correctDate').value" in body
+    assert "const shift = document.getElementById('correctShift').value;" in body
 
 
 def test_manager_can_change_production_date(client, setup, super_admin):
@@ -1164,9 +1186,9 @@ def test_returns_edit_save_sends_date_recipient_and_signer():
     idx = RETURNS_HTML.index("correctSaveBtn').addEventListener('click'")
     end = RETURNS_HTML.index("});", idx) + 3
     body = RETURNS_HTML[idx:end]
-    assert "date: document.getElementById('correctDate').value" in body
-    assert "customer_id: correctSelectedCustomer" in body
-    assert "signed_by_name: document.getElementById('correctSignedByName').value" in body
+    assert "const date = document.getElementById('correctDate').value" in body
+    assert "const customer_id = correctSelectedCustomer" in body
+    assert "const signed_by_name = document.getElementById('correctSignedByName').value" in body
 
 
 def test_manager_can_change_return_date(client, setup, super_admin):
@@ -1477,14 +1499,20 @@ def test_customer_metadata_edit_does_not_affect_stock(client, setup):
 # =====================================================================
 
 def test_operator_can_edit_finalized_dispatch_they_created(client, setup, login_as):
+    # Final round correction: Operator finalized-edit access is now
+    # same-day only (see record_correction_service.operator_can_directly_
+    # edit()) — this test proves the still-allowed case (today); the
+    # newly-forbidden historical case is covered in
+    # test_final_operator_same_day_edit_window.py.
+    today = business_today()
     login_as("tux_op_finedit_disp", "password123", "operator")
     d = client.post("/api/dispatches", json={
-        "dispatch_number": "TUX-OPFIN-D1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "dispatch_number": "TUX-OPFIN-D1", "date": today, "customer_id": setup["customer"]["id"],
         "sales_category_id": setup["category"]["id"],
         "lines": [{"product_id": setup["product"]["id"], "cartons": 5, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/dispatches/{d['id']}/finalize")
-    assert _issued_base_qty(client, setup["product"]["id"], "2026-08-01") == 500
+    assert _issued_base_qty(client, setup["product"]["id"], today) == 500
 
     res = client.post(f"/api/dispatches/{d['id']}/correct", json={
         "reason": "fixing my own mistake", "notes": "corrected",
@@ -1492,7 +1520,7 @@ def test_operator_can_edit_finalized_dispatch_they_created(client, setup, login_
     })
     assert res.status_code == 200
     # Old contribution gone, corrected one counted exactly once.
-    assert _issued_base_qty(client, setup["product"]["id"], "2026-08-01") == 300
+    assert _issued_base_qty(client, setup["product"]["id"], today) == 300
     updated = client.get(f"/api/dispatches/{d['id']}").get_json()
     assert updated["id"] == d["id"]  # same record, not a duplicate
     assert len(updated["lines"]) == 1
@@ -1501,17 +1529,18 @@ def test_operator_can_edit_finalized_dispatch_they_created(client, setup, login_
 
 
 def test_operator_can_edit_finalized_return_they_created(client, setup, login_as):
+    today = business_today()
     login_as("tux_op_finedit_ret", "password123", "operator")
-    created = _create_return(client, setup["product"]["id"], cartons=4).get_json()
+    created = _create_return(client, setup["product"]["id"], cartons=4, date=today).get_json()
     client.post(f"/api/returns/{created['id']}/finalize")
-    assert client.get(f"/api/daily-figures/{setup['product']['id']}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 400
+    assert client.get(f"/api/daily-figures/{setup['product']['id']}?date={today}&shift=Day").get_json()["return_"]["base_qty"] == 400
 
     res = client.post(f"/api/returns/{created['id']}/correct", json={
         "reason": "fixing my own mistake", "notes": None,
         "lines": [{"id": created["lines"][0]["id"], "product_id": setup["product"]["id"], "cartons": 2, "packs": 0, "pieces": 0}],
     })
     assert res.status_code == 200
-    assert client.get(f"/api/daily-figures/{setup['product']['id']}?date=2026-08-01&shift=Day").get_json()["return_"]["base_qty"] == 200
+    assert client.get(f"/api/daily-figures/{setup['product']['id']}?date={today}&shift=Day").get_json()["return_"]["base_qty"] == 200
     updated = client.get(f"/api/returns/{created['id']}").get_json()
     assert updated["id"] == created["id"]
     assert len(updated["lines"]) == 1
@@ -1520,20 +1549,21 @@ def test_operator_can_edit_finalized_return_they_created(client, setup, login_as
 
 
 def test_operator_can_edit_finalized_production_they_created(client, setup, login_as):
+    today = business_today()
     login_as("tux_op_finedit_prod", "password123", "operator")
     pid = setup["product"]["id"]
     prod = client.post("/api/production", json={
-        "date": "2026-08-01", "shift": "Day", "lines": [{"product_id": pid, "cartons": 6, "packs": 0, "pieces": 0}],
+        "date": today, "shift": "Day", "lines": [{"product_id": pid, "cartons": 6, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/production/{prod['id']}/finalize")
-    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["production"]["base_qty"] == 600
+    assert client.get(f"/api/daily-figures/{pid}?date={today}&shift=Day").get_json()["production"]["base_qty"] == 600
 
     res = client.post(f"/api/production/{prod['id']}/correct", json={
         "reason": "fixing my own mistake", "notes": None,
         "lines": [{"id": prod["lines"][0]["id"], "product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
     })
     assert res.status_code == 200
-    assert client.get(f"/api/daily-figures/{pid}?date=2026-08-01&shift=Day").get_json()["production"]["base_qty"] == 400
+    assert client.get(f"/api/daily-figures/{pid}?date={today}&shift=Day").get_json()["production"]["base_qty"] == 400
     updated = client.get(f"/api/production/{prod['id']}").get_json()
     assert updated["id"] == prod["id"]
     assert len(updated["lines"]) == 1
@@ -1542,29 +1572,35 @@ def test_operator_can_edit_finalized_production_they_created(client, setup, logi
 
 
 def test_operator_finalized_dispatch_date_correction_moves_contribution_once(client, setup, login_as):
+    today = business_today()
+    other_day = "2026-08-03" if today != "2026-08-03" else "2026-08-04"
     login_as("tux_op_finedit_datemove", "password123", "operator")
     pid = setup["product"]["id"]
     d = client.post("/api/dispatches", json={
-        "dispatch_number": "TUX-OPFIN-DATE1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "dispatch_number": "TUX-OPFIN-DATE1", "date": today, "customer_id": setup["customer"]["id"],
         "sales_category_id": setup["category"]["id"],
         "lines": [{"product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/dispatches/{d['id']}/finalize")
-    assert _issued_base_qty(client, pid, "2026-08-01") == 400
+    assert _issued_base_qty(client, pid, today) == 400
 
+    # The record itself is still same-day at correction time — moving its
+    # date to a DIFFERENT (non-today) date is still a same-day EDIT (the
+    # record being edited is today's), so it stays allowed.
     res = client.post(f"/api/dispatches/{d['id']}/correct", json={
-        "reason": "entered on the wrong date", "notes": None, "date": "2026-08-03",
+        "reason": "entered on the wrong date", "notes": None, "date": other_day,
         "lines": [{"id": d["lines"][0]["id"], "product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
     })
     assert res.status_code == 200
-    assert _issued_base_qty(client, pid, "2026-08-01") == 0
-    assert _issued_base_qty(client, pid, "2026-08-03") == 400
+    assert _issued_base_qty(client, pid, today) == 0
+    assert _issued_base_qty(client, pid, other_day) == 400
 
 
 def test_operator_cannot_delete_finalized_record_they_own(client, setup, login_as):
+    today = business_today()
     login_as("tux_op_finedit_nodelete", "password123", "operator")
     d = client.post("/api/dispatches", json={
-        "dispatch_number": "TUX-OPFIN-NODEL", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "dispatch_number": "TUX-OPFIN-NODEL", "date": today, "customer_id": setup["customer"]["id"],
         "sales_category_id": setup["category"]["id"],
         "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
@@ -1574,10 +1610,11 @@ def test_operator_cannot_delete_finalized_record_they_own(client, setup, login_a
 
 
 def test_operator_finalized_edit_is_audited(client, setup, login_as, app):
+    today = business_today()
     login_as("tux_op_finedit_audit", "password123", "operator")
     pid = setup["product"]["id"]
     d = client.post("/api/dispatches", json={
-        "dispatch_number": "TUX-OPFIN-AUDIT1", "date": "2026-08-01", "customer_id": setup["customer"]["id"],
+        "dispatch_number": "TUX-OPFIN-AUDIT1", "date": today, "customer_id": setup["customer"]["id"],
         "sales_category_id": setup["category"]["id"],
         "lines": [{"product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
     }).get_json()

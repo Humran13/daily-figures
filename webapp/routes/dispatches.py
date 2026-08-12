@@ -471,13 +471,25 @@ def reopen(dispatch_id):
 
 
 @dispatches_bp.route("/<int:dispatch_id>/void", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("dispatch")
 def void(dispatch_id):
+    """
+    Manager/Super Admin may void any dispatch, any day. An Operator may
+    void one too — but only a dispatch they themselves created AND only
+    while its own business Date is still today in Africa/Kampala (see
+    record_correction_service.operator_can_directly_edit()) — once that
+    day has passed, direct void is refused and the Operator must submit a
+    Request Void instead (see correction_request_service.py), which
+    requires Manager/Super Admin approval before the record actually
+    changes.
+    """
     user = current_user()
     dispatch = db.session.get(Dispatch, dispatch_id)
     if dispatch is None:
         return jsonify({"error": "not found"}), 404
+    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(dispatch, user):
+        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Void instead"}), 403
 
     d = request.get_json(force=True) or {}
     before = dispatch.to_dict()
@@ -585,21 +597,23 @@ def correct(dispatch_id):
     manually, editing, and refinalizing by hand, or Duplicate (a separate
     new record). See webapp/services/record_correction_service.py.
 
-    Manager/Super Admin may correct any dispatch, draft or finalized. An
-    Operator may correct one too — but only a dispatch they themselves
-    created (the normal operational information they entered), never
-    someone else's — mirrors the exact same ownership rule the draft-only
-    editing endpoints already use via can_edit(), just no longer limited
-    to draft status. Checked here in the route, not in the service, per
-    this codebase's convention of keeping permission checks out of
+    Manager/Super Admin may correct any dispatch, draft or finalized, any
+    day. An Operator may correct one too — but only a dispatch they
+    themselves created AND only while its own business Date is still
+    today in Africa/Kampala (operator_can_directly_edit()) — once that
+    day has passed, direct correction is refused and the Operator must
+    submit a Request Correction instead (see correction_request_service.py),
+    which requires Manager/Super Admin approval before anything actually
+    changes. Checked here in the route, not in the service, per this
+    codebase's convention of keeping permission checks out of
     service-layer functions.
     """
     user = current_user()
     record = record_correction_service.get_record("dispatch", dispatch_id)
     if record is None:
         return jsonify({"error": "not found"}), 404
-    if user.role == ROLE_OPERATOR and record.created_by != user.id:
-        return jsonify({"error": "forbidden"}), 403
+    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(record, user):
+        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Correction instead"}), 403
     d = request.get_json(force=True) or {}
     try:
         dispatch, summary = record_correction_service.correct_record(

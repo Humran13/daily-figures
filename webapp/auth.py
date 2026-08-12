@@ -14,6 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from webapp.extensions import db
 from webapp.models.user import ROLES, User
 from webapp.services.audit_service import record_audit
+from webapp.services.business_calendar import business_today
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,14 @@ def check_session():
     if status == "superseded":
         body["session_superseded"] = True
         body["message"] = SESSION_SUPERSEDED_MESSAGE
+    # Operator same-day edit window — the one authoritative "today" every
+    # page's button-visibility check reads, so it always agrees with the
+    # server's own Africa/Kampala business date (record_correction_
+    # service.operator_can_directly_edit()) rather than the browser's own
+    # (possibly different) local/UTC clock. Purely a UX convenience — the
+    # server still enforces this on every mutating request regardless of
+    # what a client believes "today" is.
+    body["business_today"] = business_today()
     return jsonify(body)
 
 

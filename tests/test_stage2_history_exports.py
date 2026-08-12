@@ -171,10 +171,26 @@ def test_dispatch_row_click_navigates_to_dispatch_module_for_corrections():
 
 
 def test_history_page_contains_no_write_requests():
-    """This page must never issue a create/update/delete call — read-only
-    by construction for every role, not just Operator/Viewer."""
-    for verb in ("'POST'", "'PUT'", "'PATCH'", "'DELETE'", '"POST"', '"PUT"', '"PATCH"', '"DELETE"'):
+    """This page stays read-only for every create/update/delete verb on
+    every module it displays (Dispatch/Returns/Production/Daily Figures)
+    — for every role, not just Operator/Viewer.
+
+    One narrow, deliberate exception was added in a later round: the
+    Correction/Void Requests review tab (Manager/Super Admin only — see
+    the "Requests" tab and loadCorrectionRequests()/decideRequest() in
+    this file) issues exactly one POST, to approve/reject an already-
+    submitted request. That single call never mutates a Dispatch/Return/
+    Production record directly — it invokes the SAME correct_record()/
+    void_*() functions the Manager/Super Admin Edit/Void actions already
+    use elsewhere — so this page is still never a NEW write surface for
+    those records, only a review gate in front of an existing one. No
+    PUT/PATCH/DELETE of any kind is ever issued here, and no OTHER POST
+    is either."""
+    for verb in ("'PUT'", "'PATCH'", "'DELETE'", '"PUT"', '"PATCH"', '"DELETE"'):
         assert verb not in HISTORY_HTML, f"found a {verb} call in history.html — this page must stay read-only"
+    post_calls = re.findall(r"\{method\s*:\s*'POST'[^}]*\}", HISTORY_HTML)
+    assert len(post_calls) == 1
+    assert "/api/correction-requests/${id}/${decision}" in HISTORY_HTML
 
 
 def test_history_page_uses_the_shared_app_shell_nav():

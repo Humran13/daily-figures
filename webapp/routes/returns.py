@@ -369,13 +369,21 @@ def reopen(return_id):
 
 
 @returns_bp.route("/<int:return_id>/void", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR)
 @feature_required("returns")
 def void(return_id):
+    """
+    Manager/Super Admin may void any return, any day. An Operator may
+    void one too — but only a return they themselves created AND only
+    while its own business Date is still today in Africa/Kampala — see
+    dispatches.py's void() for the full rationale (identical rule).
+    """
     user = current_user()
     record = db.session.get(ReturnRecord, return_id)
     if record is None:
         return jsonify({"error": "not found"}), 404
+    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(record, user):
+        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Void instead"}), 403
 
     d = request.get_json(force=True) or {}
     before = record.to_dict()
@@ -440,17 +448,18 @@ def correct(return_id):
     """Final pre-deployment correction — "Correct Record": see
     webapp/services/record_correction_service.py.
 
-    Manager/Super Admin may correct any return, draft or finalized. An
-    Operator may correct one too — but only a return they themselves
-    created, never someone else's — see dispatches.py's correct() for the
-    full rationale (identical rule, same ownership check shape).
+    Manager/Super Admin may correct any return, draft or finalized, any
+    day. An Operator may correct one too — but only a return they
+    themselves created AND only while its own business Date is still
+    today in Africa/Kampala — see dispatches.py's correct() for the full
+    rationale (identical rule, same operator_can_directly_edit() check).
     """
     user = current_user()
     existing = record_correction_service.get_record("returns", return_id)
     if existing is None:
         return jsonify({"error": "not found"}), 404
-    if user.role == ROLE_OPERATOR and existing.created_by != user.id:
-        return jsonify({"error": "forbidden"}), 403
+    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(existing, user):
+        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Correction instead"}), 403
     d = request.get_json(force=True) or {}
     try:
         record, summary = record_correction_service.correct_record(

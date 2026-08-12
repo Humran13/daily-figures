@@ -11,7 +11,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from webapp.auth import current_user, roles_required, feature_required
 from webapp.extensions import db
-from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import branding_service, stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -102,7 +102,7 @@ def _recipient_totals_args():
 
 
 @reports_bp.route("/recipient-totals", methods=["GET"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_VIEWER)
 @feature_required("reporting")
 def recipient_totals():
     """
@@ -111,6 +111,17 @@ def recipient_totals():
     recipient', 'Dispatch count by category', 'Dispatch count by
     recipient' from the reporting requirements, all in one endpoint via
     ?group_by=category|recipient.
+
+    Viewer dashboard correction — this is read-only aggregate data (no
+    write, no export-to-file side effect), the same authoritative
+    svc.recipient_totals() Manager already reads with no per-role
+    filtering inside it. It was the one endpoint Dashboard's "Issued by
+    Sales Category"/"Issued by Recipient" cards depend on that Viewer
+    couldn't reach — the 403 was silently swallowed by the frontend's
+    `Array.isArray(data) ? data : []` fallback into what looked like a
+    legitimate empty state instead of an error. Role restrictions belong
+    on actions (still true for /recipient-totals/export.<fmt> below,
+    left Manager/Super Admin only), not on this plain read.
     """
     try:
         date_from, date_to, group_by = _recipient_totals_args()
