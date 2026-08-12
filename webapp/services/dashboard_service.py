@@ -24,6 +24,10 @@ from webapp.services import daily_review_service, product_usage_service, stock_s
 from webapp.services.quantity_format import qty_label
 
 RECENT_WINDOW_DAYS = 7
+# "Top Issued Products — Last 30 Days" — a second window over the exact
+# same _top_products() query as the 7-day card below (never a separate
+# competing calculation), added alongside it, never replacing it.
+TOP_PRODUCTS_30D_WINDOW_DAYS = 30
 
 
 def _days_ago(date_str, n):
@@ -367,6 +371,58 @@ def _daily_figures_today(date, stock_summary):
     return items
 
 
+def _top_products(date, window_days, limit=5):
+    """
+    Top Issued Products over the last `window_days` calendar days ending
+    on `date` (inclusive), by exact base-unit quantity — THE single
+    implementation both the 7-day and 30-day dashboard cards use (the
+    30-day card is just a second call with a different window_days, never
+    a separate/competing query). Only finalized dispatches contribute
+    (draft/void never do — the same STATUS_FINALIZED filter every other
+    Issued figure in this app uses); a deleted dispatch is physically
+    gone from the table, so it was never a filtering concern here either.
+    Sorted highest -> lowest in the DATABASE (ORDER BY total DESC) before
+    LIMIT is applied — never an unsorted slice sorted afterward — so the
+    preview and the full "View all" list (which reuses this exact same
+    list client-side, never a second fetch) are both already in the
+    correct order. Business dates throughout (Dispatch.date), never
+    created_at/updated_at.
+    """
+    window_start = _days_ago(date, window_days - 1)
+    rows = (
+        db.session.query(
+            DispatchLine.product_id,
+            db.func.sum(DispatchLine.base_unit_qty).label("total"),
+        )
+        .join(Dispatch, Dispatch.id == DispatchLine.dispatch_id)
+        .filter(
+            Dispatch.status == STATUS_FINALIZED,
+            Dispatch.date >= window_start,
+            Dispatch.date <= date,
+        )
+        .group_by(DispatchLine.product_id)
+        .order_by(db.desc("total"))
+        .limit(limit)
+        .all()
+    )
+    products_by_id = {p.id: p for p in Product.query.filter(
+        Product.id.in_([r.product_id for r in rows])
+    ).all()}
+    result = []
+    for r in rows:
+        product = products_by_id.get(r.product_id)
+        if product is None:
+            continue
+        rule = product.current_packaging_rule()
+        entry = {"product_id": r.product_id, "product_name": product.name, "base_qty": int(r.total),
+                 "packaging_rule": rule.to_dict() if rule else None}
+        if rule:
+            cartons, packs, pieces = svc.from_base_units(int(r.total), rule)
+            entry.update({"cartons": cartons, "packs": packs, "pieces": pieces})
+        result.append(entry)
+    return result
+
+
 def build_dashboard(date):
     stock_summary = svc.date_range_summary(date, date)
 
@@ -388,38 +444,8 @@ def build_dashboard(date):
         Dispatch.query.filter_by(date=date).order_by(Dispatch.created_at.desc()).limit(8).all()
     )
 
-    window_start = _days_ago(date, RECENT_WINDOW_DAYS - 1)
-    top_products_rows = (
-        db.session.query(
-            DispatchLine.product_id,
-            db.func.sum(DispatchLine.base_unit_qty).label("total"),
-        )
-        .join(Dispatch, Dispatch.id == DispatchLine.dispatch_id)
-        .filter(
-            Dispatch.status == STATUS_FINALIZED,
-            Dispatch.date >= window_start,
-            Dispatch.date <= date,
-        )
-        .group_by(DispatchLine.product_id)
-        .order_by(db.desc("total"))
-        .limit(5)
-        .all()
-    )
-    products_by_id = {p.id: p for p in Product.query.filter(
-        Product.id.in_([r.product_id for r in top_products_rows])
-    ).all()}
-    top_products = []
-    for r in top_products_rows:
-        product = products_by_id.get(r.product_id)
-        if product is None:
-            continue
-        rule = product.current_packaging_rule()
-        entry = {"product_id": r.product_id, "product_name": product.name, "base_qty": int(r.total),
-                 "packaging_rule": rule.to_dict() if rule else None}
-        if rule:
-            cartons, packs, pieces = svc.from_base_units(int(r.total), rule)
-            entry.update({"cartons": cartons, "packs": packs, "pieces": pieces})
-        top_products.append(entry)
+    top_products = _top_products(date, RECENT_WINDOW_DAYS)
+    top_products_30d = _top_products(date, TOP_PRODUCTS_30D_WINDOW_DAYS)
 
     active_customers = Customer.query.filter_by(active=True).count()
 
@@ -464,6 +490,8 @@ def build_dashboard(date):
         "recent_dispatches": [d.to_dict(include_lines=False) for d in recent_dispatches],
         "top_products": top_products,
         "top_products_window_days": RECENT_WINDOW_DAYS,
+        "top_products_30d": top_products_30d,
+        "top_products_30d_window_days": TOP_PRODUCTS_30D_WINDOW_DAYS,
         "active_customers": active_customers,
         "unique_recipients_today": unique_recipients_today,
         "draft_dispatches": {

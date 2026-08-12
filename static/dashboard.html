@@ -185,10 +185,18 @@
     </div>
 
     <div class="dash-grid">
-      <!-- 4. Top Issued Products -->
+      <!-- 4. Top Issued Products (7 days) -->
       <div class="card">
         <h2>Top issued products (last 7 days)</h2>
         <div id="topProducts"></div>
+      </div>
+
+      <!-- 4b. Top Issued Products (30 days) — same card, same
+           renderPreviewSection()/topProductRow() reuse as the 7-day card
+           above, just a different window from the backend. -->
+      <div class="card">
+        <h2>Top issued products (last 30 days)</h2>
+        <div id="topProducts30d"></div>
       </div>
 
       <!-- 5. Issued by Sales Category -->
@@ -393,11 +401,21 @@ async function loadDashboard(){
   document.getElementById('stockSummaryTitle').textContent = `Per-product Daily Figures — ${data.date || date}`;
   renderDailyFiguresToday(data.daily_figures_today || []);
 
-  // ---- 4. Top issued products ----
+  // ---- 4. Top issued products (7 days) ----
   const top = data.top_products || [];
   renderPreviewSection(document.getElementById('topProducts'), top, topProductRow, {
     emptyMessage: 'No finalized dispatches in this window.',
     viewAllPrefix: 'View all', modalTitle: 'Top issued products (last 7 days)',
+  });
+
+  // ---- 4b. Top issued products (30 days) — identical shape, same
+  // topProductRow() renderer, just data.top_products_30d instead of
+  // data.top_products. Already sorted highest -> lowest by the backend
+  // before this ever slices a preview from it.
+  const top30d = data.top_products_30d || [];
+  renderPreviewSection(document.getElementById('topProducts30d'), top30d, topProductRow, {
+    emptyMessage: 'No finalized dispatches in this window.',
+    viewAllPrefix: 'View all', modalTitle: 'Top issued products (last 30 days)',
   });
 
   // ---- 5 & 6. Issued by Sales Category / Recipient ----
