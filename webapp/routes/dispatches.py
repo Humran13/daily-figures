@@ -476,20 +476,18 @@ def reopen(dispatch_id):
 def void(dispatch_id):
     """
     Manager/Super Admin may void any dispatch, any day. An Operator may
-    void one too — but only a dispatch they themselves created AND only
-    while its own business Date is still today in Africa/Kampala (see
-    record_correction_service.operator_can_directly_edit()) — once that
-    day has passed, direct void is refused and the Operator must submit a
-    Request Void instead (see correction_request_service.py), which
-    requires Manager/Super Admin approval before the record actually
-    changes.
+    directly void their own dispatch too — deliberately UNCONDITIONAL on
+    record age (unlike Edit) — see record_correction_service.
+    operator_can_directly_void(). There is no "Request Void" at all; an
+    Operator's own record is always self-serve here, regardless of how
+    old it is.
     """
     user = current_user()
     dispatch = db.session.get(Dispatch, dispatch_id)
     if dispatch is None:
         return jsonify({"error": "not found"}), 404
-    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(dispatch, user):
-        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Void instead"}), 403
+    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_void(dispatch, user):
+        return jsonify({"error": "forbidden — you may only void your own record"}), 403
 
     d = request.get_json(force=True) or {}
     before = dispatch.to_dict()
@@ -598,22 +596,40 @@ def correct(dispatch_id):
     new record). See webapp/services/record_correction_service.py.
 
     Manager/Super Admin may correct any dispatch, draft or finalized, any
-    day. An Operator may correct one too — but only a dispatch they
-    themselves created AND only while its own business Date is still
-    today in Africa/Kampala (operator_can_directly_edit()) — once that
-    day has passed, direct correction is refused and the Operator must
-    submit a Request Correction instead (see correction_request_service.py),
-    which requires Manager/Super Admin approval before anything actually
-    changes. Checked here in the route, not in the service, per this
-    codebase's convention of keeping permission checks out of
-    service-layer functions.
+    day. An Operator may correct one too, via either of two paths:
+      1. Direct edit — their own dispatch, within the exact 24-hour
+         window from its created_at (operator_can_directly_edit()).
+      2. An active, unconsumed, unexpired approval grant for this exact
+         dispatch (operator_has_active_grant() / correction_request_
+         service.get_active_grant()) — started by a Manager/Super Admin
+         approving a Request Correction, consumed by the ONE successful
+         correction submission it permits (see consume_grant()'s
+         race-safe claim below, executed inside the same transaction as
+         the correction itself so a failed attempt never burns the
+         grant, but a genuine double-click/retry can never apply twice).
+    Outside both paths, direct correction is refused and the Operator
+    must submit a Request Correction instead.
     """
+    from webapp.services import correction_request_service
+
     user = current_user()
     record = record_correction_service.get_record("dispatch", dispatch_id)
     if record is None:
         return jsonify({"error": "not found"}), 404
+
+    grant = None
     if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(record, user):
-        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Correction instead"}), 403
+        grant = correction_request_service.get_active_grant("dispatch", dispatch_id, user)
+        if grant is None:
+            return jsonify({
+                "error": "forbidden — this record's 24-hour edit window has closed; submit a Request Correction instead",
+            }), 403
+        try:
+            correction_request_service.consume_grant(grant)
+        except correction_request_service.CorrectionRequestError as e:
+            db.session.rollback()
+            return _error(e, 409)
+
     d = request.get_json(force=True) or {}
     try:
         dispatch, summary = record_correction_service.correct_record(
@@ -624,6 +640,7 @@ def correct(dispatch_id):
             customer_id=int(d["customer_id"]) if d.get("customer_id") else None,
             new_customer_name=(d.get("new_customer_name") or "").strip() or None,
             sales_category_id=int(d["sales_category_id"]) if d.get("sales_category_id") else None,
+            via_request_id=grant.id if grant else None,
         )
     except RecordCorrectionConflict as e:
         db.session.rollback()

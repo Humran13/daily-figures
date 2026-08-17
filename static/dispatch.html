@@ -235,6 +235,7 @@
       <div class="card" id="detailHeader"></div>
       <div class="card" id="detailLines"></div>
       <div class="msg" id="detailMsg"></div>
+      <p class="hint hidden" id="requestStatusHint"></p>
       <div class="nav-row no-print" id="detailActions"></div>
 
       <!-- Correct Record / Request Correction — dual-mode: Manager/Super
@@ -247,7 +248,7 @@
            (request mode) — never a second, separately-built edit form. -->
       <div class="card hidden no-print" id="correctPanel">
         <h3 style="margin-top:0;" id="correctPanelTitle">Correct record</h3>
-        <p class="hint hidden" id="correctRequestHint" style="margin-top:-8px;margin-bottom:12px;">This record is no longer same-day — submitting here creates a request a Manager or Super Administrator must approve before anything changes.</p>
+        <p class="hint hidden" id="correctRequestHint" style="margin-top:-8px;margin-bottom:12px;">This record cannot be edited directly right now — submitting here creates a request a Manager or Super Administrator must approve before anything changes.</p>
         <!-- Dispatch Number is not currently safe/supported to change here
              (see dispatches.py's correct() route/record_correction_service —
              it isn't one of the corrected fields) — shown read-only so the
@@ -299,21 +300,6 @@
         </div>
       </div>
 
-      <!-- Request Void — an Operator's own now-historical record: submits
-           to Manager/Super Admin for approval rather than voiding
-           directly. Approving it calls the exact same void_dispatch(). -->
-      <div class="card hidden no-print" id="requestVoidPanel">
-        <h3 style="margin-top:0;">Request Void — this Dispatch</h3>
-        <p class="hint" id="requestVoidSummary" style="margin-bottom:12px;"></p>
-        <p class="hint" style="margin-bottom:12px;">This record is no longer same-day — a Manager or Super Administrator must approve this request before the dispatch is voided.</p>
-        <div><label>Reason (required)</label><textarea id="requestVoidReason" rows="2" placeholder="Why should this dispatch be voided?"></textarea></div>
-        <div class="msg" id="requestVoidMsg"></div>
-        <div class="nav-row">
-          <button class="btn btn-primary" id="requestVoidConfirmBtn">Submit Request Void</button>
-          <button class="btn btn-ghost" id="requestVoidCancelBtn">Cancel</button>
-        </div>
-      </div>
-
       <!-- Delete Dispatch — permanent hard delete, Manager/Super
            Administrator only. Not void, not a status change: on success
            the record is physically gone, so this panel closes back to
@@ -337,11 +323,10 @@
 
 <script>
 let currentUser = null;
-// Operator same-day edit window — the server's own Africa/Kampala
-// business date (set once at boot from /api/session's business_today),
-// never the browser's local/UTC clock. See openDetail()'s sameDayOwned/
-// historicalOwned.
-let businessToday = null;
+// Operator 24-hour direct Edit window — the server's own current instant
+// (set once at boot from /api/session's server_now), never the browser's
+// local/UTC clock. See openDetail()'s withinEditWindow/hasActiveGrant.
+let serverNow = null;
 let productsCache = [];
 let salesCategoriesCache = [];
 let currentLines = []; // [{product_id, product_name, rule, cartons, packs, pieces}]
@@ -1085,16 +1070,61 @@ async function openDetail(id){
   const isOperator = currentUser && currentUser.role === 'operator';
   const ownsRecord = currentUser && data.created_by === currentUser.id;
   const canEditDraft = data.status === 'draft' && (isElevated || ownsRecord);
-  // Operator same-day edit window — an Operator may directly Edit/Void
-  // only their own record, and only while its own business Date is still
-  // today in Africa/Kampala (businessToday, fetched once from /api/session
-  // — never the browser's own local/UTC clock). Once that day has passed,
-  // the same ownership still applies but the action becomes a Request
-  // (Manager/Super Admin approval required) instead of a direct mutation
-  // — server-enforced by the /correct and /void routes' own same-day
-  // check, never only by hiding a button.
-  const sameDayOwned = isOperator && ownsRecord && !!businessToday && data.date === businessToday;
-  const historicalOwned = isOperator && ownsRecord && !!businessToday && data.date !== businessToday;
+  // Full targeted Operator correction/void/requests package — the direct
+  // Edit window is now an EXACT 24 hours from the record's own
+  // created_at (never the business Date, never the browser clock; see
+  // record_correction_service.operator_can_directly_edit()). serverNow
+  // is the server's own current instant, fetched once from /api/session
+  // at page boot — a UX convenience only; the /correct route re-derives
+  // this itself server-side. Void is UNCONDITIONAL on age for an
+  // Operator's own record (operator_can_directly_void()) — there is no
+  // "Request Void" at all, ever.
+  const withinEditWindow = isOperator && ownsRecord && !!serverNow && !!data.created_at &&
+    (new Date(serverNow).getTime() < new Date(data.created_at + 'Z').getTime() + 24*60*60*1000);
+
+  // Past the 24-hour window, Edit reappears for exactly one more
+  // correction if a Manager/Super Admin approved a Request Correction —
+  // an active, unconsumed, unexpired one-time grant tied to this exact
+  // record (see correction_request_service.get_active_grant()). Checked
+  // only when it could possibly matter (owned, no longer within the
+  // window, not void) — never for Manager/Super Admin/Viewer/another
+  // Operator's record.
+  let hasActiveGrant = false;
+  const statusHint = document.getElementById('requestStatusHint');
+  statusHint.classList.add('hidden');
+  statusHint.textContent = '';
+  // A voided record is checked too, regardless of the 24h window — Part
+  // 1: an Operator's own voided record can still get a Request
+  // Correction (and, once approved, a one-time Edit grant) at any age;
+  // it just never gets the direct-Edit path (see the button matrix
+  // below and operator_can_directly_edit()'s own void exclusion).
+  if(isOperator && ownsRecord && (data.status === 'void' || !withinEditWindow)){
+    const {data: grantData} = await api(`/api/correction-requests/grant-status?record_type=dispatch&record_id=${data.id}`);
+    hasActiveGrant = !!(grantData && grantData.has_active_grant);
+
+    // Part 13: in-app state indication for the Operator's own request —
+    // the guaranteed fallback that works with no push opt-in at all. The
+    // Edit/Request Correction button above already reflects an active
+    // grant; this just narrates WHY, plus the two states the button
+    // alone can't show (Pending, Rejected).
+    const {data: myRequests} = await api(`/api/correction-requests?record_type=dispatch&record_id=${data.id}`);
+    const latest = (myRequests || [])[0];
+    if(latest){
+      if(latest.status === 'pending'){
+        statusHint.textContent = 'Your correction request is pending Manager/Super Administrator review.';
+        statusHint.classList.remove('hidden');
+      } else if(latest.status === 'approved' && hasActiveGrant){
+        statusHint.textContent = `Your correction request was approved — you can edit this record until ${latest.grant_expires_at_label}.`;
+        statusHint.classList.remove('hidden');
+      } else if(latest.status === 'rejected'){
+        statusHint.textContent = `Your correction request was rejected${latest.review_note ? ': ' + latest.review_note : '.'}`;
+        statusHint.classList.remove('hidden');
+      } else if(latest.status === 'expired'){
+        statusHint.textContent = 'Your approved edit grant expired unused. Submit a new Request Correction if still needed.';
+        statusHint.classList.remove('hidden');
+      }
+    }
+  }
   if(data.status === 'draft'){
     buttons.push(`<button class="btn btn-primary" data-action="finalize">Finalize</button>`);
   }
@@ -1111,18 +1141,31 @@ async function openDetail(id){
   //                whoever can edit this draft (elevated, or the
   //                Operator who owns it — any day; a draft isn't
   //                "historical finalized data" yet).
-  //   Finalized -> Manager/Super Admin (any day) or a same-day-owning
-  //                Operator get the direct Correct Record workflow; an
-  //                Operator on their own now-historical record gets
-  //                Request Correction instead (queued for Manager/Super
-  //                Admin approval — never a silent rewrite of history).
+  //   Finalized -> Manager/Super Admin (any day), an Operator still
+  //                within their 24-hour window, or an Operator with an
+  //                active approval grant get the direct Correct Record
+  //                workflow; an Operator on their own now-historical
+  //                record with no active grant gets Request Correction
+  //                instead (queued for Manager/Super Admin approval —
+  //                never a silent rewrite of history).
   // Never more than one Edit-family action at once for the same record.
   if(data.status === 'draft'){
     if(canEditDraft) buttons.push(`<button class="btn btn-ghost" data-action="edit-draft">Edit</button>`);
-  } else if(data.status !== 'void'){
-    if(isElevated || sameDayOwned){
+  } else if(data.status === 'void'){
+    // Section 1: a voided record is never directly editable by anyone,
+    // including Manager/Super Admin (isElevated is deliberately excluded
+    // here) — the ONLY way in is an approved, still-active one-time
+    // grant. Editing it never changes status away from void (see
+    // record_correction_service.correct_record()'s own void handling).
+    if(hasActiveGrant){
       buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
-    } else if(historicalOwned){
+    } else if(isOperator && ownsRecord){
+      buttons.push(`<button class="btn btn-ghost" data-action="request-correct">Request Correction</button>`);
+    }
+  } else {
+    if(isElevated || withinEditWindow || hasActiveGrant){
+      buttons.push(`<button class="btn btn-ghost" data-action="correct">Edit</button>`);
+    } else if(isOperator && ownsRecord){
       buttons.push(`<button class="btn btn-ghost" data-action="request-correct">Request Correction</button>`);
     }
   }
@@ -1131,14 +1174,12 @@ async function openDetail(id){
   // voiding a draft directly (e.g. "customer cancelled before we ever
   // finalized this"; see dispatch_service.void_dispatch(), which has no
   // finalized-only guard), so the button must not artificially hide for
-  // that case. Manager/Super Admin (any day) or a same-day-owning
-  // Operator void directly; an Operator on their own now-historical
-  // record gets Request Void instead.
+  // that case. Manager/Super Admin (any day) or the owning Operator (any
+  // age — deliberately unconditional, unlike Edit above) void directly.
+  // There is no "Request Void".
   if(data.status !== 'void'){
-    if(isElevated || sameDayOwned){
+    if(isElevated || (isOperator && ownsRecord)){
       buttons.push(`<button class="btn btn-ghost" data-action="void">Void</button>`);
-    } else if(historicalOwned){
-      buttons.push(`<button class="btn btn-ghost" data-action="request-void">Request Void</button>`);
     }
   }
   // Permanent delete — never void/cancel/soft-delete. Manager/Super Admin
@@ -1151,7 +1192,6 @@ async function openDetail(id){
 
   document.getElementById('correctPanel').classList.add('hidden');
   document.getElementById('voidPanel').classList.add('hidden');
-  document.getElementById('requestVoidPanel').classList.add('hidden');
   document.getElementById('deletePanel').classList.add('hidden');
   const msg = document.getElementById('detailMsg');
   msg.textContent = '';
@@ -1169,7 +1209,6 @@ async function openDetail(id){
       if(action === 'correct'){ openCorrectPanel(data, 'direct'); return; }
       if(action === 'request-correct'){ openCorrectPanel(data, 'request'); return; }
       if(action === 'void'){ openVoidPanel(data); return; }
-      if(action === 'request-void'){ openRequestVoidPanel(data); return; }
       if(action === 'delete'){ openDeletePanel(data); return; }
     });
   });
@@ -1184,7 +1223,6 @@ let correctMode = 'direct'; // 'direct' (POST .../correct) | 'request' (POST /ap
 
 function openCorrectPanel(data, mode){
   document.getElementById('voidPanel').classList.add('hidden');
-  document.getElementById('requestVoidPanel').classList.add('hidden');
   document.getElementById('deletePanel').classList.add('hidden');
   correctMode = mode || 'direct';
   document.getElementById('correctPanelTitle').textContent = correctMode === 'request' ? 'Request Correction' : 'Correct record';
@@ -1384,7 +1422,6 @@ document.getElementById('correctSaveBtn').addEventListener('click', async ()=>{
 // ---------- Void (preserves the record; excludes it from Issued) ----------
 function openVoidPanel(data){
   document.getElementById('correctPanel').classList.add('hidden');
-  document.getElementById('requestVoidPanel').classList.add('hidden');
   document.getElementById('deletePanel').classList.add('hidden');
   document.getElementById('voidSummary').innerHTML =
     `<strong>#${escapeHtml(data.dispatch_number)}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.customer_name || '—')}`;
@@ -1410,37 +1447,6 @@ document.getElementById('voidConfirmBtn').addEventListener('click', async ()=>{
   openDetail(currentDetail.id);
 });
 
-// ---------- Request Void (historical Operator-owned record) ----------
-function openRequestVoidPanel(data){
-  document.getElementById('correctPanel').classList.add('hidden');
-  document.getElementById('voidPanel').classList.add('hidden');
-  document.getElementById('deletePanel').classList.add('hidden');
-  document.getElementById('requestVoidSummary').innerHTML =
-    `<strong>#${escapeHtml(data.dispatch_number)}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.customer_name || '—')}`;
-  document.getElementById('requestVoidReason').value = '';
-  document.getElementById('requestVoidMsg').textContent = '';
-  document.getElementById('requestVoidPanel').classList.remove('hidden');
-  document.getElementById('requestVoidPanel').scrollIntoView({behavior:'smooth'});
-}
-document.getElementById('requestVoidCancelBtn').addEventListener('click', ()=>{
-  document.getElementById('requestVoidPanel').classList.add('hidden');
-});
-document.getElementById('requestVoidConfirmBtn').addEventListener('click', async ()=>{
-  const msg = document.getElementById('requestVoidMsg');
-  const reason = document.getElementById('requestVoidReason').value.trim();
-  if(!reason){ msg.textContent = 'A reason is required.'; msg.className = 'msg err'; return; }
-  const r = await api('/api/correction-requests', {method:'POST', body: JSON.stringify({
-    record_type: 'dispatch', record_id: currentDetail.id, action: 'void', reason,
-  })});
-  if(r.status !== 201){
-    msg.textContent = r.data.error || 'Could not submit request.'; msg.className = 'msg err';
-    return;
-  }
-  toast('Void request submitted for approval.');
-  document.getElementById('requestVoidPanel').classList.add('hidden');
-  openDetail(currentDetail.id);
-});
-
 // ---------- Delete Dispatch (permanent hard delete) ----------
 // Manager/Super Administrator only (server-enforced — the button itself
 // is only ever rendered for those roles in openDetail() above, but that
@@ -1450,7 +1456,6 @@ document.getElementById('requestVoidConfirmBtn').addEventListener('click', async
 function openDeletePanel(data){
   document.getElementById('correctPanel').classList.add('hidden');
   document.getElementById('voidPanel').classList.add('hidden');
-  document.getElementById('requestVoidPanel').classList.add('hidden');
   const productsSummary = data.lines.map(l => `${l.product_name} (${l.quantity_label})`).join(', ');
   document.getElementById('deleteSummary').innerHTML =
     `<strong>#${escapeHtml(data.dispatch_number)}</strong> · ${escapeHtml(data.date)} · ${escapeHtml(data.customer_name || '—')}<br>` +
@@ -1487,7 +1492,7 @@ document.getElementById('deleteConfirmBtn').addEventListener('click', async ()=>
     return;
   }
   currentUser = data.user;
-  businessToday = data.business_today || null;
+  serverNow = data.server_now || null;
   const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
   await applyFeatureFlags();
   document.getElementById('appShell').classList.remove('hidden');

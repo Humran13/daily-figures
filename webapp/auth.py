@@ -14,7 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from webapp.extensions import db
 from webapp.models.user import ROLES, User
 from webapp.services.audit_service import record_audit
-from webapp.services.business_calendar import business_today
+from webapp.services.business_calendar import business_today, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -146,14 +146,19 @@ def check_session():
     if status == "superseded":
         body["session_superseded"] = True
         body["message"] = SESSION_SUPERSEDED_MESSAGE
-    # Operator same-day edit window — the one authoritative "today" every
-    # page's button-visibility check reads, so it always agrees with the
-    # server's own Africa/Kampala business date (record_correction_
-    # service.operator_can_directly_edit()) rather than the browser's own
-    # (possibly different) local/UTC clock. Purely a UX convenience — the
-    # server still enforces this on every mutating request regardless of
-    # what a client believes "today" is.
+    # Operator same-day workflows (Daily Figures review, etc.) still read
+    # the Africa/Kampala business date.
     body["business_today"] = business_today()
+    # Full targeted Operator correction/void/requests package — the 24-
+    # hour direct Edit window (record.created_at + 24h) needs the actual
+    # current INSTANT, not just today's business date, for the frontend's
+    # button-matrix UX check (dispatch.html/returns.html/production.html's
+    # openDetail()) to agree with the server's own clock rather than the
+    # browser's own (possibly wrong) one. Purely a UX convenience,
+    # captured once per page boot — real enforcement is always server-
+    # side (record_correction_service.operator_can_directly_edit()),
+    # regardless of what a client believes "now" is.
+    body["server_now"] = utcnow().isoformat()
     return jsonify(body)
 
 

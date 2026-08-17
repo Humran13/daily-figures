@@ -325,7 +325,7 @@ def test_nav_hiding_is_client_convenience_not_the_only_gate():
 # =====================================================================
 
 def test_nav_link_marks_active_item_with_aria_current():
-    idx = APP_SHELL_JS.index("function navLink(item, activeKey)")
+    idx = APP_SHELL_JS.index("function navLink(item, activeKey, pendingCount)")
     body = APP_SHELL_JS[idx:APP_SHELL_JS.index("\n  }", idx)]
     assert "item.key === activeKey" in body
     assert "setAttribute('aria-current', 'page')" in body

@@ -233,7 +233,7 @@ def test_review_group_moves_to_its_own_full_width_row_on_mobile():
 
 
 def test_active_link_receives_aria_current_and_a_dedicated_class():
-    idx = APP_SHELL_JS.index("function navLink(item, activeKey)")
+    idx = APP_SHELL_JS.index("function navLink(item, activeKey, pendingCount)")
     body = APP_SHELL_JS[idx:APP_SHELL_JS.index("\n  }", idx)]
     assert "setAttribute('aria-current', 'page')" in body
     assert "classList.add('ash-active')" in body

@@ -4,11 +4,13 @@ Shift, one product or all), preview before confirm, transactional
 execute, and the hard guarantee that its default mode (figures_only)
 never touches source-derived Dispatch/Returns/Production totals.
 
-Final pre-deployment correction: permission widened from Super-
-Administrator-only to Manager-or-Super-Administrator (see
+Final pre-deployment correction: permission was briefly widened from
+Super-Administrator-only to Manager-or-Super-Administrator (see
 tests/test_final_correction_reset_modes.py for the two-mode
-figures_only/full behavior this correction introduced — full-source-book
-neutralization coverage lives there, not in this file).
+figures_only/full behavior that correction introduced — full-source-book
+neutralization coverage lives there, not in this file), then the Full
+targeted Operator correction/void/requests/notification package (Part
+18) tightened it back to Super-Administrator ONLY, permanently.
 """
 from pathlib import Path
 
@@ -51,16 +53,16 @@ def test_non_elevated_role_cannot_execute_reset(client, login_as, role):
     assert res.status_code == 403
 
 
-def test_manager_can_preview_reset(client, login_as):
+def test_manager_is_refused_preview_reset(client, login_as):
     login_as("reset_mgr_prev", "password123", "manager")
     res = client.post("/api/daily-reset/preview", json={"date": "2026-08-01", "shift": "Day"})
-    assert res.status_code == 200
+    assert res.status_code == 403
 
 
-def test_manager_can_execute_reset(client, login_as):
+def test_manager_is_refused_execute_reset(client, login_as):
     login_as("reset_mgr_exec", "password123", "manager")
     res = client.post("/api/daily-reset", json={"date": "2026-08-01", "shift": "Day", "reason": "manager cleanup"})
-    assert res.status_code == 200
+    assert res.status_code == 403
 
 
 # =====================================================================

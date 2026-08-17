@@ -23,31 +23,94 @@ silently overwriting their change (webapp's only real "version" signal
 for these records is `updated_at`, which every mutation already bumps
 via its column's `onupdate=`, so no new schema field is needed).
 """
+from datetime import timedelta
+
 from webapp.extensions import db
 from webapp.models.dispatch import Dispatch, DispatchLine
 from webapp.models.production_record import ProductionLine, ProductionRecord
 from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.services import dispatch_service, production_service, product_usage_service, returns_service
 from webapp.services.audit_service import record_audit
-from webapp.services.business_calendar import is_same_business_day
+from webapp.services.business_calendar import utcnow
 
 STATUS_VOID = "void"
 STATUS_FINALIZED = "finalized"
+STATUS_DRAFT = "draft"
+
+# Final Operator correction/void/requests package — the Operator direct-
+# Edit window is now an EXACT 24-hour window measured from the record's
+# own created_at (never the business Date, never the browser clock; see
+# operator_can_directly_edit()'s own docstring for why). This deliberately
+# supersedes the earlier "same business day" rule from a prior round.
+OPERATOR_EDIT_WINDOW = timedelta(hours=24)
 
 
-def operator_can_directly_edit(record, user):
+def operator_can_directly_edit(record, user, now=None):
     """
-    Operator same-day edit/void window: an Operator may directly Edit or
-    Void a record only when they created it AND its own business Date
-    (never created_at/updated_at/today's server clock in any other zone)
-    is still today in Africa/Kampala — once that business date has
-    passed, direct mutation is refused; the Operator must use Request
-    Correction/Request Void instead (see correction_request_service.py),
-    which requires Manager/Super Admin approval before anything actually
-    changes. Manager/Super Admin are never subject to this check — they
-    call this only for Operator-role callers.
+    Operator direct Edit window: an Operator may directly Edit a record
+    only when they created it AND less than exactly 24 hours have elapsed
+    since its own `created_at` (server-authoritative, UTC-stored, Kampala
+    only for DISPLAY — see business_calendar.format_kampala_datetime()).
+    This is deliberately NOT "same business date" — a record entered at
+    11 PM is editable until 11 PM the next calendar day, and a record
+    entered at 1 AM stops being editable at 1 AM the same calendar day.
+    Once this window closes, direct correction is refused; the Operator
+    must submit a Request Correction instead (see
+    correction_request_service.py) — UNLESS they hold an active,
+    unconsumed approval grant for this exact record (see
+    operator_has_active_grant() below), in which case Edit is allowed
+    again for one single correction. Manager/Super Admin are never
+    subject to this check — they call this only for Operator-role
+    callers. `now` is accepted for deterministic testing (never trust a
+    real wall-clock read in a test); production code omits it and gets
+    the real current instant.
     """
-    return record.created_by == user.id and is_same_business_day(record.date)
+    if record.created_by != user.id:
+        return False
+    if record.status == STATUS_VOID:
+        # Full targeted Operator correction/void/requests/notification
+        # package, section 1: a voided record is NEVER directly editable,
+        # regardless of age — it always goes through Request Correction
+        # + Manager/Super Admin approval + a one-time grant instead (see
+        # correct_record()'s own void handling below). Without this
+        # check, a *freshly* voided record (<24h old) would otherwise
+        # read as "still directly editable" here while correct_record()
+        # itself refuses a direct (non-grant) edit on any void record —
+        # a dead end where neither Edit nor Request Correction could ever
+        # be reached. This keeps the two checks in agreement.
+        return False
+    now = now or utcnow()
+    return now < record.created_at + OPERATOR_EDIT_WINDOW
+
+
+def operator_can_directly_void(record, user):
+    """
+    Operator direct Void — deliberately UNCONDITIONAL on record age
+    (unlike Edit above): an Operator may Void their own record at any
+    time after creation, no matter how old it is. There is no "Request
+    Void" — Void is always self-serve for the Operator's own record; see
+    correction_request_service.create_request(), which now refuses to
+    create a void-type request at all. Ownership is the only gate.
+    """
+    return record.created_by == user.id
+
+
+def operator_has_active_grant(record_type, record_id, user, now=None):
+    """
+    True when this exact Operator holds an active (STATUS_APPROVED, not
+    yet consumed, not yet expired) one-time correction grant for this
+    exact record_type/record_id — see correction_request_service.py's
+    grant lifecycle (approve_request() starts it; consume_grant() ends it
+    on first successful use; expire_if_needed() ends it after 24h
+    unused). Reused by every one of dispatches.py/returns.py/
+    production.py's /correct routes so "does this Operator have an
+    editable-via-grant record right now" is answered in exactly one
+    place. Lazily expires a stale-but-still-DB-APPROVED grant as a side
+    effect of checking it, so the Requests page and this check never
+    disagree about whether a grant is still live.
+    """
+    from webapp.services import correction_request_service
+    return correction_request_service.get_active_grant(record_type, record_id, user, now=now) is not None
 
 # One small registry so this logic is written once and shared by all three
 # source books (which are otherwise near-identical modules with no common
@@ -103,7 +166,8 @@ def get_record(source_type, record_id):
 
 def correct_record(source_type, record_id, *, lines, reason, actor, notes=None, expected_updated_at=None,
                     date=None, customer_id=None, new_customer_name=None, sales_category_id=None,
-                    shift=None, returned_by_customer_id=None, returned_by_name=None, signed_by_name=None):
+                    shift=None, returned_by_customer_id=None, returned_by_name=None, signed_by_name=None,
+                    via_request_id=None):
     """
     lines: a list of {id, product_id, cartons, packs, pieces, line_notes}
       dicts describing the FULL corrected line set —
@@ -164,9 +228,19 @@ def correct_record(source_type, record_id, *, lines, reason, actor, notes=None, 
     record = db.session.get(cfg["model"], record_id)
     if record is None:
         raise RecordCorrectionError("record not found")
-    if record.status == STATUS_VOID:
+
+    was_void = record.status == STATUS_VOID
+    if was_void and via_request_id is None:
+        # Full targeted Operator correction/void/requests/notification
+        # package, section 1: a voided record can still be corrected —
+        # but ONLY via an approved, consumed one-time Request Correction
+        # grant (via_request_id set by the /correct route below), never
+        # by a direct edit. This is the one narrow exception to the
+        # otherwise-unconditional "void is permanent" refusal.
         raise RecordCorrectionError(
-            "A voided record cannot be corrected — void is permanent history; create a fresh entry instead"
+            "A voided record cannot be edited directly — submit a Request Correction; "
+            "once a Manager or Super Administrator approves it, you may correct this "
+            "record's details while it remains void"
         )
 
     if expected_updated_at is not None:
@@ -177,6 +251,28 @@ def correct_record(source_type, record_id, *, lines, reason, actor, notes=None, 
     error_cls = cfg["error"]
     was_finalized = record.status == STATUS_FINALIZED
     date_before = record.date
+
+    # Correcting a voided record must NEVER unvoid it (section 1/17): no
+    # status change to Finalized, no restored stock contribution, no
+    # compensating adjustment. update_header()/update_recipient() (each
+    # source book's own field-level guard) and finalize() all require
+    # STATUS_DRAFT — exactly like the reopen-edit-refinalize dance just
+    # below already does for a FINALIZED record, this temporarily flips
+    # status to draft so those same, unmodified functions run completely
+    # unchanged, then restores status=void (and the ORIGINAL voided_by/
+    # voided_at/void_reason — never a new void event, never a fresh
+    # timestamp) once the edit is done. This is safe for stock: every
+    # Issued/Returns/Production aggregate query filters status ==
+    # FINALIZED only (see stock_service.py) — a record sitting at
+    # STATUS_DRAFT for the middle of this one never-separately-committed
+    # transaction can never be read, counted, or double-counted by
+    # anything else.
+    void_provenance = None
+    if was_void:
+        void_provenance = {
+            "voided_by": record.voided_by, "voided_at": record.voided_at, "void_reason": record.void_reason,
+        }
+        record.status = STATUS_DRAFT
 
     if was_finalized:
         cfg["reopen"](record, actor, f"Correction: {reason}")
@@ -271,12 +367,20 @@ def correct_record(source_type, record_id, *, lines, reason, actor, notes=None, 
 
     if was_finalized:
         cfg["finalize"](record, actor)
+    elif was_void:
+        # Restore exactly the original void event — never a new one:
+        # same voider, same original timestamp, same original reason.
+        record.status = STATUS_VOID
+        record.voided_by = void_provenance["voided_by"]
+        record.voided_at = void_provenance["voided_at"]
+        record.void_reason = void_provenance["void_reason"]
     product_usage_service.record_usage(source_type, record.id, {line.product_id for line in record.lines})
 
     record_audit(
         actor, "correct_record", cfg["audit_entity_type"], entity_id=record.id,
         before={
-            "reason": reason, "actor_role": actor.role, "status_before": STATUS_FINALIZED if was_finalized else record.status,
+            "reason": reason, "actor_role": actor.role,
+            "status_before": STATUS_FINALIZED if was_finalized else (STATUS_VOID if was_void else record.status),
             "date_before": date_before,
         },
         after={
@@ -284,6 +388,15 @@ def correct_record(source_type, record_id, *, lines, reason, actor, notes=None, 
             "added_lines": added_lines, "removed_lines": removed_lines, "changed_lines": changed_lines,
             "notes": getattr(record, cfg["notes_field"]) if notes is not None else None,
             "date_after": record.date,
+            # Section 21: distinguishes an Operator's direct same-24h-window
+            # edit from one made under a Manager/Super-Admin-approved
+            # historical correction grant — via_request_id links straight
+            # back to the CorrectionRequest row that authorized it.
+            "via_request_id": via_request_id,
+            "correction_source": "approved_grant" if via_request_id is not None else "direct",
+            # Section 1: proves this correction never unvoided the record —
+            # explicit even though status_after already shows it.
+            "void_status_preserved": was_void,
         },
     )
     return record, {"added_lines": added_lines, "removed_lines": removed_lines, "changed_lines": changed_lines}

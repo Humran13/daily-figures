@@ -67,3 +67,71 @@ self.addEventListener('fetch', (event) => {
     );
   }
 });
+
+// ---------- Web Push (correction-request notifications) ----------
+// Entirely optional — this handler only ever fires for a device that
+// explicitly opted in (see static/requests.html's initPushOptIn()) and a
+// deployment with VAPID configured (webapp/services/push_service.py);
+// neither of those is assumed here, this file just reacts if/when a
+// push message actually arrives. The payload is always the small JSON
+// shape webapp/services/push_service.py sends: {title, body, url} — no
+// sensitive business figures, matching "never expose sensitive
+// information in lock-screen push notifications unnecessarily".
+// Background app-icon badging — feature-detected: the Badging API's
+// setAppBadge()/clearAppBadge() are only reachable from a Service Worker
+// on platforms that implement the (newer, less consistently supported)
+// WorkerNavigator extension of the spec. Never assumed available; never
+// throws on a platform that lacks it (Safari/iOS in particular). The
+// in-app red Requests badge (static/app-shell.js's setAppIconBadge(),
+// only reachable once the app is actually opened) remains the
+// guaranteed fallback regardless of what this can or can't do.
+function updateBackgroundBadge(count) {
+  try {
+    if (!self.navigator || !('setAppBadge' in self.navigator)) return;
+    if (typeof count === 'number' && count > 0) {
+      self.navigator.setAppBadge(count).catch(() => {});
+    } else if ('clearAppBadge' in self.navigator) {
+      self.navigator.clearAppBadge().catch(() => {});
+    }
+  } catch (e) { /* unsupported platform — never fatal */ }
+}
+
+self.addEventListener('push', (event) => {
+  let payload = { title: 'Daily Figures', body: 'You have a new notification.', url: '/requests.html' };
+  try {
+    if (event.data) payload = { ...payload, ...event.data.json() };
+  } catch (e) { /* malformed/empty payload — fall back to the generic message above */ }
+
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { url: payload.url || '/requests.html' },
+    }).catch(() => {})
+  );
+  // Keeps the app icon's badge accurate even while the PWA is fully
+  // closed/backgrounded, on platforms that support it — see
+  // updateBackgroundBadge() above. badgeCount is only ever present on
+  // the "new correction request" notification (see webapp/services/
+  // notification_service.py); other notification types simply omit it
+  // and this is a no-op.
+  if (typeof payload.badgeCount === 'number') {
+    event.waitUntil(Promise.resolve(updateBackgroundBadge(payload.badgeCount)));
+  }
+});
+
+// Clicking the notification focuses an already-open Requests tab if one
+// exists, or opens a new one — never silently does nothing.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/requests.html';
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if (client.url.includes('/requests.html') && 'focus' in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow(targetUrl);
+    })
+  );
+});

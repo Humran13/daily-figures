@@ -58,18 +58,17 @@
 
 <div class="wrap">
   <!-- Client-side gate is cosmetic only — the real enforcement is
-       webapp/routes/pages.py's server-side page guard (Manager/Super
-       Administrator, redirecting anyone else) plus every API this page
-       calls being independently role-gated. -->
+       webapp/routes/pages.py's server-side page guard (Super
+       Administrator only, redirecting anyone else) plus every API this
+       page calls being independently role-gated the same way. -->
   <div id="gate" class="gate hidden">
-    <p>You need a Manager or Super Administrator account to view this page.</p>
+    <p>You need a Super Administrator account to view this page.</p>
   </div>
 
   <div id="resetBody" class="hidden">
     <!-- RESET DAILY VALUES — identical functionality to the panel inside
-         admin.html (Super Administrator only), exposed here so a Manager
-         (who cannot reach admin.html at all) has a real UI path to the
-         same, unmodified backend reset service. Nothing here reimplements
+         admin.html, exposed here as a dedicated page for the same
+         Super-Administrator-only audience. Nothing here reimplements
          reset logic — every action below calls the exact same
          /api/daily-reset* endpoints admin.html's panel calls. -->
     <div class="card">
@@ -286,7 +285,7 @@ document.getElementById('resetConfirmSubmitBtn').addEventListener('click', async
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
-  if(!data.authed || !data.user || !['manager','super_admin'].includes(data.user.role)){
+  if(!data.authed || !data.user || data.user.role !== 'super_admin'){
     document.getElementById('gate').classList.remove('hidden');
     return;
   }

@@ -91,11 +91,15 @@ def _multi_product_dispatch(client, pid_a, pid_b, customer_id, date_str, number)
 # Permissions
 # =====================================================================
 
-def test_manager_can_use_both_reset_modes(client, login_as):
+def test_manager_is_refused_both_reset_modes(client, login_as):
+    # Full targeted Operator correction/void/requests/notification
+    # package, Part 18: Reset Daily Values is now Super-Administrator
+    # only — tightened from the prior Manager-or-Super-Administrator
+    # rule this test originally encoded.
     login_as("reset_modes_mgr", "password123", "manager")
     for mode in ("figures_only", "full"):
         res = client.post("/api/daily-reset/preview", json={"date": "2026-08-01", "shift": "Day", "mode": mode})
-        assert res.status_code == 200
+        assert res.status_code == 403
 
 
 def test_super_admin_can_use_both_reset_modes(client, login_as):

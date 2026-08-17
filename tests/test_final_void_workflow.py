@@ -370,9 +370,10 @@ def test_void_button_in_ui_offered_for_drafts_too_not_just_finalized(client, set
 # FINAL CONSISTENCY FIX — Void button visibility (draft included)
 #
 # The Void action-row button is gated purely on `data.status !== 'void'`
-# (isElevated || sameDayOwned directly; historicalOwned via Request
-# Void) — the SAME condition on every one of Dispatch/Returns/Production,
-# and it no longer singles out 'finalized'. "Sees Void" below is proven
+# combined with (isElevated || (isOperator && ownsRecord)) — deliberately
+# unconditional on record age, no "Request Void" at all — the SAME
+# condition on every one of Dispatch/Returns/Production, and it no longer
+# singles out 'finalized'. "Sees Void" below is proven
 # two ways together, since this project has no JS/browser test runner:
 #   (a) the shared markup condition (verified once, role-agnostically,
 #       in test_final_targeted_ux_permissions.py::
@@ -518,36 +519,37 @@ def test_viewer_never_sees_void_on_draft_or_finalized(client, setup, super_admin
     assert res2.status_code == 403
 
 
-# 8. Historical Operator records use Request Void rather than direct Void
-#    — proven for both a historical Draft and a historical Finalized
-#    record (the historicalOwned branch is keyed off ownership+date, not
-#    status, so it must cover both).
-def test_operator_historical_draft_dispatch_uses_request_void_not_direct_void(client, setup, login_as):
+# 8. Full targeted Operator correction/void/requests package — Void is
+#    now deliberately UNCONDITIONAL on record age for the owning
+#    Operator (there is no "Request Void" at all any more, for a draft
+#    or a finalized historical record alike). Contrast with Edit, which
+#    IS age-gated — see test_final_operator_same_day_edit_window.py.
+def test_operator_can_still_directly_void_a_historical_draft_dispatch(client, setup, login_as):
     login_as("cf_hist_draft_op", "password123", "operator")
     d = _draft_dispatch(client, setup, "2020-01-01", number="VOID-CONSIST-HISTDRAFT")
     assert d["status"] == "draft"
-    direct = client.post(f"/api/dispatches/{d['id']}/void", json={"reason": "trying direct anyway"})
-    assert direct.status_code == 403
-
-    request = client.post("/api/correction-requests", json={
-        "record_type": "dispatch", "record_id": d["id"], "action": "void", "reason": "historical draft cleanup",
-    })
-    assert request.status_code == 201
-    assert request.get_json()["status"] == "pending"
+    direct = client.post(f"/api/dispatches/{d['id']}/void", json={"reason": "still voidable directly"})
+    assert direct.status_code == 200
+    assert client.get(f"/api/dispatches/{d['id']}").get_json()["status"] == "void"
 
 
-def test_operator_historical_finalized_dispatch_uses_request_void_not_direct_void(client, setup, login_as):
+def test_operator_can_still_directly_void_a_historical_finalized_dispatch(client, setup, login_as):
     login_as("cf_hist_final_op", "password123", "operator")
     d = _draft_dispatch(client, setup, "2020-01-01", number="VOID-CONSIST-HISTFINAL")
     client.post(f"/api/dispatches/{d['id']}/finalize")
-    direct = client.post(f"/api/dispatches/{d['id']}/void", json={"reason": "trying direct anyway"})
-    assert direct.status_code == 403
+    direct = client.post(f"/api/dispatches/{d['id']}/void", json={"reason": "still voidable directly"})
+    assert direct.status_code == 200
+    assert client.get(f"/api/dispatches/{d['id']}").get_json()["status"] == "void"
 
+
+def test_no_void_request_action_reaches_the_correction_request_api(client, setup, login_as):
+    login_as("cf_hist_void_req_op", "password123", "operator")
+    d = _draft_dispatch(client, setup, "2020-01-01", number="VOID-CONSIST-NOREQ")
+    client.post(f"/api/dispatches/{d['id']}/finalize")
     request = client.post("/api/correction-requests", json={
-        "record_type": "dispatch", "record_id": d["id"], "action": "void", "reason": "historical cleanup",
+        "record_type": "dispatch", "record_id": d["id"], "action": "void", "reason": "historical cleanup attempt",
     })
-    assert request.status_code == 201
-    assert request.get_json()["status"] == "pending"
+    assert request.status_code == 400  # action=void is refused outright — Void is always direct
 
 
 # 9. Backend and frontend permissions remain consistent — the exact
@@ -557,11 +559,11 @@ def test_backend_and_frontend_void_permissions_are_consistent(client, setup, log
     import pathlib
     dispatch_html = (pathlib.Path(__file__).resolve().parent.parent / "static" / "dispatch.html").read_text(encoding="utf-8")
     # Markup: the Void family is gated on `data.status !== 'void'` (draft
-    # or finalized both qualify) with (isElevated || sameDayOwned) direct
-    # and historicalOwned via request — never a finalized-only condition.
+    # or finalized both qualify) with (isElevated || (isOperator &&
+    # ownsRecord)) — deliberately unconditional on age, never a
+    # finalized-only or age-gated condition.
     assert "if(data.status === 'finalized'){" not in dispatch_html
-    assert "if(isElevated || sameDayOwned){" in dispatch_html
-    assert "} else if(historicalOwned){" in dispatch_html
+    assert "if(isElevated || (isOperator && ownsRecord)){" in dispatch_html
 
     today = business_today()
     cases = []  # (label, expected_status_code, setup_fn)
@@ -573,7 +575,7 @@ def test_backend_and_frontend_void_permissions_are_consistent(client, setup, log
     client.post(f"/api/dispatches/{same_day_final['id']}/finalize")
     cases.append(("operator/same-day/finalized", 200, same_day_final["id"]))
     historical_draft = _draft_dispatch(client, setup, "2020-01-01", number="VOID-MATRIX-3")
-    cases.append(("operator/historical/draft", 403, historical_draft["id"]))
+    cases.append(("operator/historical/draft", 200, historical_draft["id"]))
 
     for label, expected, dispatch_id in cases:
         res = client.post(f"/api/dispatches/{dispatch_id}/void", json={"reason": "matrix check"})

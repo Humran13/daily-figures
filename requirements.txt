@@ -5,3 +5,15 @@ Flask-Migrate==4.0.7
 openpyxl==3.1.5
 fpdf2==2.8.2
 Pillow==12.3.0
+# Web Push delivery for correction-request notifications. A REAL, active
+# dependency — `pip install -r requirements.txt` (see Dockerfile, which
+# runs exactly that) installs it automatically on every build; no manual
+# `pip install` step is ever needed after a Docker rebuild/deploy.
+# Optional only at RUNTIME: webapp/services/push_service.py imports it
+# lazily inside a try/except and no-ops gracefully if VAPID_PUBLIC_KEY/
+# VAPID_PRIVATE_KEY are unset, so the app starts and runs fully even with
+# push unconfigured. This local dev/test virtualenv simply hasn't had
+# `pip install -r requirements.txt` re-run since this line was added —
+# that's an environment-setup gap, not a packaging gap; a fresh install
+# (dev or Docker) always gets it.
+pywebpush==2.0.1

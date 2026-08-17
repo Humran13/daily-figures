@@ -60,6 +60,7 @@
     if (path === '/dashboard.html') return 'dashboard';
     if (path === '/admin.html') return 'admin';
     if (path === '/reset-daily-values.html') return 'reset_daily_values';
+    if (path === '/requests.html') return 'requests';
     return null;
   }
 
@@ -104,7 +105,7 @@
   // only run after this script itself has loaded and executed, which is
   // exactly what caused the unstyled "flash" this file used to have.
 
-  function navLink(item, activeKey) {
+  function navLink(item, activeKey, pendingCount) {
     var isActive = item.key === activeKey;
     var a = document.createElement('a');
     a.href = item.href;
@@ -112,6 +113,15 @@
     if (isActive) {
       a.setAttribute('aria-current', 'page');
       a.classList.add('ash-active');
+    }
+    // Red pending-request count badge — item.badge marks which nav entry
+    // wants one (currently only 'requests'); zero/undefined never renders
+    // one at all, matching "badge disappears when count reaches zero".
+    if (item.badge === 'pendingRequests' && pendingCount) {
+      var badge = document.createElement('span');
+      badge.className = 'ash-badge';
+      badge.textContent = String(pendingCount);
+      a.appendChild(badge);
     }
     return a;
   }
@@ -125,11 +135,16 @@
     }
     if (enabled(flags, 'daily_figures')) items.push({ key: 'daily_figures', label: 'Daily Figures', href: '/' });
     if (enabled(flags, 'history_exports')) items.push({ key: 'history_exports', label: 'History & Exports', href: '/history.html' });
-    // Final UI correction: Reset Daily Values is Manager-or-Super-
-    // Administrator — its own dedicated page (never inside admin.html,
-    // which stays Super-Administrator-only for unrelated controls).
-    if ((role === 'manager' || role === 'super_admin') && enabled(flags, 'daily_figures')) {
+    // Full targeted Operator correction/void/requests/notification
+    // package: Reset Daily Values is now Super-Administrator ONLY —
+    // Manager no longer sees or reaches this capability at all (tightened
+    // from the prior Manager-or-Super-Administrator rule; enforced
+    // server-side too, see webapp/routes/daily_reset.py).
+    if (role === 'super_admin' && enabled(flags, 'daily_figures')) {
       items.push({ key: 'reset_daily_values', label: 'Reset Daily Values', href: '/reset-daily-values.html' });
+    }
+    if (role === 'manager' || role === 'super_admin') {
+      items.push({ key: 'requests', label: 'Requests', href: '/requests.html', badge: 'pendingRequests' });
     }
     if (role === 'super_admin') items.push({ key: 'admin', label: 'Admin', href: '/admin.html' });
     return items;
@@ -151,7 +166,7 @@
     return items;
   }
 
-  function renderNav(container, role, flags, pageKey) {
+  function renderNav(container, role, flags, pageKey, pendingCount) {
     container.innerHTML = '';
     container.setAttribute('aria-label', 'Primary');
     var nav = document.createElement('nav');
@@ -161,7 +176,8 @@
       // Operators get a single, unchanging navigation frame everywhere
       // they can reach: the three data-entry books, plus review-only
       // links to Daily Figures/History & Exports, visually separated
-      // rather than mixed into one row.
+      // rather than mixed into one row. Operator never sees the Requests
+      // badge — pendingCount is simply never passed for this branch.
       operationalNavItems(flags).forEach(function (item) {
         nav.appendChild(navLink(item, pageKey));
       });
@@ -185,7 +201,7 @@
       });
     } else {
       reportingNavItems(role, flags).forEach(function (item) {
-        nav.appendChild(navLink(item, pageKey));
+        nav.appendChild(navLink(item, pageKey, pendingCount));
       });
     }
 
@@ -278,11 +294,29 @@
     if (location.pathname !== '/' && location.pathname !== '/index.html') location.href = '/';
   }
 
+  // ---------- PWA app-icon badge (Badging API) ----------
+  // Standards-based, NOT assumed to be identical across iOS/Android/
+  // Desktop — feature-detected every call, and every call is wrapped so
+  // an unsupported/throwing implementation can never break the rest of
+  // page boot. The in-nav red badge above is the guaranteed fallback
+  // regardless of whether this API exists or does anything at all here.
+  function setAppIconBadge(count) {
+    try {
+      if (!('setAppBadge' in navigator)) return;
+      if (count > 0) {
+        navigator.setAppBadge(count).catch(function () { /* unsupported/denied — silently ignored */ });
+      } else if ('clearAppBadge' in navigator) {
+        navigator.clearAppBadge().catch(function () { /* unsupported/denied — silently ignored */ });
+      }
+    } catch (e) { /* never let badge support (or its absence) break page boot */ }
+  }
+
   var AppShell = {
     resolveLanding: resolveLanding,
     currentPageKey: currentPageKey,
     user: null,
     flags: {},
+    pendingRequestCount: 0,
   };
 
   async function render() {
@@ -306,8 +340,22 @@
     var homeHref = resolveLanding(session.user.role, flags);
     var pageKey = currentPageKey();
 
+    // Pending correction-request count — Manager/Super Admin only (the
+    // backend route itself is also role-gated; this is purely "who do we
+    // even bother asking"). Drives both the in-nav red badge (the
+    // guaranteed fallback) and the PWA app-icon badge where the platform
+    // supports it (see setAppIconBadge() below) — same authoritative
+    // backend number for both, never guessed from visible rows.
+    var pendingCount = 0;
+    if (session.user.role === 'manager' || session.user.role === 'super_admin') {
+      var pendingData = await apiGet('/api/correction-requests/pending-count');
+      pendingCount = (pendingData && typeof pendingData.count === 'number') ? pendingData.count : 0;
+    }
+    AppShell.pendingRequestCount = pendingCount;
+    setAppIconBadge(pendingCount);
+
     if (identityContainer) renderIdentityBar(identityContainer, session.user, homeHref);
-    if (navContainer) renderNav(navContainer, session.user.role, flags, pageKey);
+    if (navContainer) renderNav(navContainer, session.user.role, flags, pageKey, pendingCount);
 
     // The page's own applyBranding() (already defined identically on every
     // page) already targets every [data-brand-name]/[data-brand-logo]

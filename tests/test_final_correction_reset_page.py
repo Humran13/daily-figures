@@ -1,10 +1,15 @@
 """
 Final UI correction: Reset Daily Values gets its own dedicated page
-(static/reset-daily-values.html) reachable by Manager and Super
-Administrator — closing the gap where the reset backend already allowed
-Manager but the only UI for it lived inside admin.html, which is (and
-remains) Super-Administrator-only for its unrelated Users/Company-
-Settings/Feature-Flags/branding controls.
+(static/reset-daily-values.html) — originally reachable by Manager and
+Super Administrator, closing the gap where the reset backend already
+allowed Manager but the only UI for it lived inside admin.html.
+
+The Full targeted Operator correction/void/requests/notification package
+(Part 18) later tightened this to Super-Administrator ONLY — Manager is
+now redirected away from this page exactly like every other unrelated
+Super-Administrator-only tool, see the Manager-redirect tests below.
+admin.html remains Super-Administrator-only for its unrelated Users/
+Company-Settings/Feature-Flags/branding controls.
 
 No reset business logic is duplicated here — the new page calls the same
 /api/daily-reset/preview and /api/daily-reset endpoints
@@ -26,10 +31,15 @@ APP_SHELL_JS = (STATIC_DIR / "app-shell.js").read_text(encoding="utf-8")
 # Page-level access
 # =====================================================================
 
-def test_manager_can_open_the_reset_page(client, login_as):
+def test_manager_is_redirected_away_from_the_reset_page(client, login_as):
+    # Full targeted Operator correction/void/requests/notification
+    # package, Part 18: Reset Daily Values is now Super-Administrator
+    # only — this test originally encoded the prior Manager-or-Super-
+    # Administrator rule.
     login_as("reset_page_mgr", "password123", "manager")
     res = client.get("/reset-daily-values.html")
-    assert res.status_code == 200
+    assert res.status_code == 302
+    assert res.headers["Location"] != "/reset-daily-values.html"
 
 
 def test_super_administrator_can_open_the_reset_page(client, login_as):
@@ -196,10 +206,10 @@ def setup(client, login_as):
     return {"product": product, "customer": customer}
 
 
-def test_manager_can_preview_via_the_underlying_api(client, login_as, setup):
+def test_manager_is_refused_preview_via_the_underlying_api(client, login_as, setup):
     login_as("reset_page_mgr6", "password123", "manager")
     res = client.post("/api/daily-reset/preview", json={"date": "2026-08-01", "shift": "Day"})
-    assert res.status_code == 200
+    assert res.status_code == 403
 
 
 def test_preview_response_matches_what_the_page_renders(client, setup):

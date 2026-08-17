@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request
 
 from webapp.auth import current_user, roles_required, feature_required
 from webapp.extensions import db
-from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+from webapp.models.user import ROLE_SUPER_ADMIN
 from webapp.services import daily_reset_service as svc
 
 daily_reset_bp = Blueprint("daily_reset", __name__, url_prefix="/api/daily-reset")
@@ -25,7 +25,7 @@ def _mode_from(d):
 
 
 @daily_reset_bp.route("/preview", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN)
 @feature_required("daily_figures")
 def preview():
     d = request.get_json(force=True) or {}
@@ -37,7 +37,7 @@ def preview():
 
 
 @daily_reset_bp.route("", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN)
 @feature_required("daily_figures")
 def execute():
     d = request.get_json(force=True) or {}

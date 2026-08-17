@@ -19,6 +19,22 @@ from datetime import datetime, timedelta, timezone
 KAMPALA_OFFSET = timezone(timedelta(hours=3))
 
 
+def utcnow():
+    """
+    The one shared "current instant" for anything storing/comparing a
+    naive-UTC timestamp column (created_at/reviewed_at/completed_at
+    etc. — matches every model's own private `_utcnow()` exactly, just
+    centralized here so the 24-hour edit-window/grant-expiry math in
+    record_correction_service.py and correction_request_service.py has a
+    single source instead of each duplicating datetime.now(timezone.utc)
+    .replace(tzinfo=None)). Callers that need deterministic tests accept
+    an explicit `now` parameter instead of calling this directly inside
+    the comparison itself — this function is only ever the production
+    default.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def business_today():
     """Today's date (YYYY-MM-DD) in Africa/Kampala, right now."""
     return datetime.now(KAMPALA_OFFSET).strftime("%Y-%m-%d")

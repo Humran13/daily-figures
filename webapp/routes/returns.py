@@ -374,16 +374,16 @@ def reopen(return_id):
 def void(return_id):
     """
     Manager/Super Admin may void any return, any day. An Operator may
-    void one too — but only a return they themselves created AND only
-    while its own business Date is still today in Africa/Kampala — see
-    dispatches.py's void() for the full rationale (identical rule).
+    directly void their own return too — unconditional on record age; see
+    dispatches.py's void() for the full rationale (identical rule, same
+    operator_can_directly_void() check). There is no "Request Void".
     """
     user = current_user()
     record = db.session.get(ReturnRecord, return_id)
     if record is None:
         return jsonify({"error": "not found"}), 404
-    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(record, user):
-        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Void instead"}), 403
+    if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_void(record, user):
+        return jsonify({"error": "forbidden — you may only void your own record"}), 403
 
     d = request.get_json(force=True) or {}
     before = record.to_dict()
@@ -449,17 +449,30 @@ def correct(return_id):
     webapp/services/record_correction_service.py.
 
     Manager/Super Admin may correct any return, draft or finalized, any
-    day. An Operator may correct one too — but only a return they
-    themselves created AND only while its own business Date is still
-    today in Africa/Kampala — see dispatches.py's correct() for the full
-    rationale (identical rule, same operator_can_directly_edit() check).
+    day. An Operator may correct one too, via a direct 24-hour edit
+    window or an active approval grant — see dispatches.py's correct()
+    for the full rationale (identical rule).
     """
+    from webapp.services import correction_request_service
+
     user = current_user()
     existing = record_correction_service.get_record("returns", return_id)
     if existing is None:
         return jsonify({"error": "not found"}), 404
+
+    grant = None
     if user.role == ROLE_OPERATOR and not record_correction_service.operator_can_directly_edit(existing, user):
-        return jsonify({"error": "forbidden — this record is no longer same-day; submit a Request Correction instead"}), 403
+        grant = correction_request_service.get_active_grant("returns", return_id, user)
+        if grant is None:
+            return jsonify({
+                "error": "forbidden — this record's 24-hour edit window has closed; submit a Request Correction instead",
+            }), 403
+        try:
+            correction_request_service.consume_grant(grant)
+        except correction_request_service.CorrectionRequestError as e:
+            db.session.rollback()
+            return _error(e, 409)
+
     d = request.get_json(force=True) or {}
     try:
         record, summary = record_correction_service.correct_record(
@@ -470,6 +483,7 @@ def correct(return_id):
             returned_by_customer_id=int(d["customer_id"]) if d.get("customer_id") else None,
             returned_by_name=d.get("returned_by_name"),
             signed_by_name=d.get("signed_by_name"),
+            via_request_id=grant.id if grant else None,
         )
     except RecordCorrectionConflict as e:
         db.session.rollback()

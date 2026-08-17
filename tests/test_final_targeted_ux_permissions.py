@@ -364,28 +364,32 @@ def test_operator_button_set_includes_edit_print_via_owned_draft():
         assert 'data-action="edit-draft">Edit<' in body
 
 
-def test_operator_same_day_owned_finalized_record_gets_direct_edit_and_void():
-    # sameDayOwned — an Operator's own record whose business date is still
-    # today (Africa/Kampala) — reaches the SAME direct Edit/Void actions
-    # Manager/Super Admin get, via the shared (isElevated || sameDayOwned)
-    # gate; never a separate/duplicated code path.
+def test_operator_within_edit_window_or_with_grant_gets_direct_edit():
+    # withinEditWindow (24h from created_at) OR hasActiveGrant (an
+    # approved, unconsumed correction-request grant) — an Operator's own
+    # record reaches the SAME direct Edit action Manager/Super Admin get,
+    # via the shared (isElevated || withinEditWindow || hasActiveGrant)
+    # gate; never a separate/duplicated code path. Void is a completely
+    # separate, unconditional-on-age gate — see test_void_is_reachable_
+    # on_any_non_void_status_including_draft below.
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
-        assert "if(isElevated || sameDayOwned){" in body
+        assert "if(isElevated || withinEditWindow || hasActiveGrant){" in body
         assert 'data-action="correct">Edit<' in body
-        assert 'data-action="void">Void<' in body
 
 
-def test_operator_historical_owned_finalized_record_gets_request_actions_only():
-    # historicalOwned — an Operator's own record whose business date has
-    # passed — loses the direct Edit/Void actions and instead sees Request
-    # Correction / Request Void, queued for Manager/Super Admin approval
-    # rather than a silent rewrite of history.
+def test_operator_past_edit_window_with_no_grant_gets_request_correction_only():
+    # Past the 24-hour direct Edit window with no active grant — loses
+    # direct Edit and instead sees Request Correction, queued for
+    # Manager/Super Admin approval rather than a silent rewrite of
+    # history. Void remains directly available regardless (see below) —
+    # there is no "Request Void" at all.
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
-        assert "} else if(historicalOwned){" in body
+        assert "} else if(isOperator && ownsRecord){" in body
         assert 'data-action="request-correct">Request Correction<' in body
-        assert 'data-action="request-void">Request Void<' in body
+        assert 'data-action="request-void"' not in body
+        assert ">Request Void<" not in body
 
 
 def test_delete_is_reachable_only_through_isElevated_gate():
@@ -395,25 +399,33 @@ def test_delete_is_reachable_only_through_isElevated_gate():
 
 
 def test_single_edit_action_per_record_state_no_duplicates():
-    # Draft-edit, direct Correct, and Request Correction are mutually
-    # exclusive branches of one if/else-if/else-if — never more than one
-    # Edit-family action pushed for the same record.
+    # Draft-edit, void-branch Correct/Request-Correction, and
+    # else-branch (elevated/window/grant) Correct/Request-Correction are
+    # three mutually exclusive branches of one if/else-if/else-if/else
+    # chain — never more than one Edit-family action pushed for the same
+    # record. The literal Edit/Request-Correction button markup now
+    # appears TWICE in the SOURCE (once per non-draft branch) because a
+    # voided record follows different eligibility rules than a non-void
+    # finalized one (section 1 of the Full targeted Operator correction/
+    # void/requests/notification package: a void record is never
+    # directly editable by anyone, including Manager/Super Admin — only
+    # an active approval grant reaches Edit there).
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
         assert body.count('data-action="edit-draft">Edit<') == 1
-        assert body.count('data-action="correct">Edit<') == 1
-        assert body.count('data-action="request-correct">Request Correction<') == 1
+        assert body.count('data-action="correct">Edit<') == 2
+        assert body.count('data-action="request-correct">Request Correction<') == 2
         idx_draft = body.index("if(data.status === 'draft'){")
-        idx_finalized = body.index("} else if(data.status !== 'void'){", idx_draft)
-        assert idx_finalized > idx_draft  # one shared if/else-if chain, not independent ifs
+        idx_void = body.index("} else if(data.status === 'void'){", idx_draft)
+        idx_else = body.index("} else {", idx_void)
+        assert idx_void > idx_draft  # one shared if/else-if/else-if/else chain, not independent ifs
+        assert idx_else > idx_void
 
 
 _VOID_BLOCK = (
     "  if(data.status !== 'void'){\n"
-    "    if(isElevated || sameDayOwned){\n"
+    "    if(isElevated || (isOperator && ownsRecord)){\n"
     "      buttons.push(`<button class=\"btn btn-ghost\" data-action=\"void\">Void</button>`);\n"
-    "    } else if(historicalOwned){\n"
-    "      buttons.push(`<button class=\"btn btn-ghost\" data-action=\"request-void\">Request Void</button>`);\n"
     "    }\n"
     "  }"
 )
@@ -423,12 +435,12 @@ def test_void_is_reachable_on_any_non_void_status_including_draft():
     # The backend has always allowed voiding a still-draft record directly
     # (e.g. "customer cancelled before we ever finalized this") — the
     # button must not artificially hide just because status is 'draft';
-    # only an already-void record excludes it.
+    # only an already-void record excludes it. Deliberately unconditional
+    # on record age — there is no "Request Void" at all.
     for html in ALL_THREE_HTML:
         body = _detail_actions_body(html)
         assert _VOID_BLOCK in body
         assert body.count('data-action="void">Void<') == 1
-        assert body.count('data-action="request-void">Request Void<') == 1
 
 
 def test_operator_cannot_correct_a_finalized_record_they_do_not_own(client, setup, login_as):
@@ -798,11 +810,12 @@ def test_delete_removes_no_unrelated_data_production(client, setup, super_admin)
 
 
 # =====================================================================
-# SECTION — CORRECT / VOID / REQUEST-VOID / DELETE PANEL SAFETY
-# (mutual exclusivity: opening any one of these four panels hides the
-#  other three, so a stale form is never left showing behind/above the
-#  one currently in use — the same class of bug Preview's removal fixed
-#  is now guarded against for its four replacements.)
+# SECTION — CORRECT / VOID / DELETE PANEL SAFETY
+# (mutual exclusivity: opening any one of these three panels hides the
+#  other two, so a stale form is never left showing behind/above the one
+#  currently in use. Request Void no longer exists at all — Void is
+#  always a direct action now, see record_correction_service.
+#  operator_can_directly_void().)
 # =====================================================================
 
 def _js_function_body(html, start_marker):
@@ -811,46 +824,41 @@ def _js_function_body(html, start_marker):
     return html[idx:end]
 
 
-def test_opening_correct_panel_hides_void_request_void_and_delete_panels():
+def test_opening_correct_panel_hides_void_and_delete_panels():
     for html in ALL_THREE_HTML:
         body = _js_function_body(html, "function openCorrectPanel(data, mode){")
         assert "voidPanel').classList.add('hidden')" in body
-        assert "requestVoidPanel').classList.add('hidden')" in body
         assert "deletePanel').classList.add('hidden')" in body
 
 
-def test_opening_void_panel_hides_correct_request_void_and_delete_panels():
+def test_opening_void_panel_hides_correct_and_delete_panels():
     for html in ALL_THREE_HTML:
         body = _js_function_body(html, "function openVoidPanel(data){")
         assert "correctPanel').classList.add('hidden')" in body
-        assert "requestVoidPanel').classList.add('hidden')" in body
         assert "deletePanel').classList.add('hidden')" in body
 
 
-def test_opening_request_void_panel_hides_correct_void_and_delete_panels():
-    for html in ALL_THREE_HTML:
-        body = _js_function_body(html, "function openRequestVoidPanel(data){")
-        assert "correctPanel').classList.add('hidden')" in body
-        assert "voidPanel').classList.add('hidden')" in body
-        assert "deletePanel').classList.add('hidden')" in body
-
-
-def test_opening_delete_panel_hides_correct_void_and_request_void_panels():
+def test_opening_delete_panel_hides_correct_and_void_panels():
     for html in ALL_THREE_HTML:
         body = _js_function_body(html, "function openDeletePanel(data){")
         assert "correctPanel').classList.add('hidden')" in body
         assert "voidPanel').classList.add('hidden')" in body
-        assert "requestVoidPanel').classList.add('hidden')" in body
 
 
-def test_void_and_request_void_actions_require_a_reason_before_calling_api():
+def test_no_request_void_panel_or_handler_remains():
     for html in ALL_THREE_HTML:
-        for btn_id in ("voidConfirmBtn", "requestVoidConfirmBtn"):
-            idx = html.index(f"{btn_id}').addEventListener('click'")
-            end = html.index("});", idx) + 3
-            body = html[idx:end]
-            assert "if(!reason){" in body
-            assert body.index("if(!reason){") < body.index("api(")
+        assert "requestVoidPanel" not in html
+        assert "openRequestVoidPanel" not in html
+        assert "requestVoidConfirmBtn" not in html
+
+
+def test_void_action_requires_a_reason_before_calling_api():
+    for html in ALL_THREE_HTML:
+        idx = html.index("voidConfirmBtn').addEventListener('click'")
+        end = html.index("});", idx) + 3
+        body = html[idx:end]
+        assert "if(!reason){" in body
+        assert body.index("if(!reason){") < body.index("api(")
 
 
 def test_void_button_never_appears_alongside_delete_button_label_confusion():

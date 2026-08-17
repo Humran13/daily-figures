@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1B2430">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Daily Figures">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app-shell.css">
+<title>Requests — Daily Figures</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7;
+    --line:#DEDACF; --teal:#1F8A70; --teal-dark:#166653; --amber:#E2A93B; --red:#C1443A;
+    --mono:'SF Mono','Roboto Mono','Consolas',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:560px; margin:0 auto; min-height:100vh; background:var(--paper); }
+  header{ background:var(--ink); color:var(--paper); padding:18px 20px 14px; position:sticky; top:0; z-index:10; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  main{ padding:16px; padding-bottom:60px; }
+  .hidden{ display:none !important; }
+  .hint{ font-size:11px; color:var(--ink-soft); }
+  .quick-filters{ display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:8px; font-weight:700; }
+  .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
+  .btn-small{ padding:8px 12px; font-size:12px; }
+  .btn-primary{ background:var(--teal); color:white; }
+  .btn-danger{ background:var(--red); color:white; }
+  .quick-filters button.active{ background:var(--teal); color:white; }
+  .empty-state{ text-align:center; padding:50px 20px; color:var(--ink-soft); }
+  .gate{ padding:60px 20px; text-align:center; color:white; }
+  .pill{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .pill-pending{ background:#FCEfd7; color:#8a5a12; }
+  .pill-approved{ background:#E4F3EC; color:var(--teal-dark); }
+  .pill-completed{ background:#E4F3EC; color:var(--teal-dark); }
+  .pill-rejected{ background:#F3E4E4; color:var(--red); }
+  .pill-expired{ background:var(--paper-dim); color:var(--ink-soft); }
+  .request-row{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:14px; margin-bottom:10px; }
+  .request-row .top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px; }
+  .request-row .title{ font-weight:700; font-size:15px; }
+  .request-row .id{ font-family:var(--mono); color:var(--ink-soft); font-size:11px; }
+  .request-row .meta{ font-size:12px; color:var(--ink-soft); margin-bottom:4px; }
+  .request-row .reason{ font-size:13px; margin:8px 0; padding:8px 10px; background:var(--paper-dim); border-radius:8px; }
+  .request-row .row-actions{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  .request-row .review-note{ width:100%; min-width:0; font-size:12px; padding:7px 8px; border:1.5px solid var(--line); border-radius:8px; margin-bottom:8px; font-family:var(--sans); }
+  .push-opt-in{ display:flex; align-items:center; justify-content:space-between; gap:10px; background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:14px; }
+  .push-opt-in p{ margin:0; font-size:12px; color:var(--ink-soft); }
+</style>
+</head>
+<body>
+
+<div id="gate" class="hidden gate">Sign in from the main app first.</div>
+<div id="roleGate" class="hidden gate" style="color:var(--ink);">
+  <p>You need a Manager or Super Administrator account to view this page.</p>
+</div>
+
+<div class="shell hidden" id="appShell">
+  <div id="appIdentityBar"></div>
+  <header>
+    <p class="eyebrow">Correction Requests</p>
+    <h1>Requests</h1>
+  </header>
+  <div id="appRoleNav"></div>
+
+  <main>
+    <!-- Web Push opt-in — feature-detected, entirely optional, never
+         required for the page's core review workflow (the in-page list +
+         nav badge always work regardless of push support/configuration). -->
+    <div class="push-opt-in hidden" id="pushOptIn">
+      <p>Get a device notification when a new correction request comes in.</p>
+      <button class="btn-small btn-ghost" id="pushEnableBtn">Enable notifications</button>
+    </div>
+
+    <div class="quick-filters">
+      <button class="btn-ghost btn-small active" data-status="pending">Pending</button>
+      <button class="btn-ghost btn-small" data-status="approved">Approved</button>
+      <button class="btn-ghost btn-small" data-status="completed">Completed</button>
+      <button class="btn-ghost btn-small" data-status="rejected">Rejected</button>
+      <button class="btn-ghost btn-small" data-status="expired">Expired</button>
+      <button class="btn-ghost btn-small" data-status="">All</button>
+    </div>
+    <div id="requestsList"></div>
+  </main>
+</div>
+
+<script src="/quantity_format.js"></script>
+<script>
+let currentUser = null;
+
+async function api(path, opts){
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await res.json().catch(()=>({}));
+  return {status: res.status, data};
+}
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function applyBranding(){
+  try{
+    const res = await fetch('/api/branding');
+    const b = await res.json();
+    document.querySelectorAll('[data-brand-name]').forEach(el=>{ el.textContent = b.display_name; });
+    document.querySelectorAll('[data-brand-logo]').forEach(el=>{
+      if(b.logo_url){ el.src = b.logo_url; el.classList.remove('hidden'); }
+      else { el.classList.add('hidden'); }
+    });
+  } catch(e) { /* branding is cosmetic — never block the app over a failed fetch */ }
+}
+applyBranding();
+
+// ================= REQUESTS LIST =================
+// Manager/Super Admin only (page-level guard: webapp/routes/pages.py's
+// requests_page(); every API this page calls is independently role-
+// gated too). Approve/Reject here never write to the underlying
+// Dispatch/Return/Production record directly for action=correct — they
+// only start/settle a one-time edit GRANT (see webapp/services/
+// correction_request_service.py) — the Operator applies the actual
+// correction themselves, later, through the exact same /correct route a
+// same-window direct edit already uses.
+
+const RECORD_TYPE_LABEL = {dispatch: 'Dispatch', returns: 'Return', production: 'Production'};
+const RECORD_TYPE_HREF = {dispatch: '/dispatch.html', returns: '/returns.html', production: '/production.html'};
+let statusFilter = 'pending';
+
+function recordNumberLabel(r){
+  const snap = r.before_snapshot || {};
+  if(r.record_type === 'dispatch' && snap.dispatch_number) return `#${snap.dispatch_number}`;
+  return `#${r.record_id}`;
+}
+
+async function loadRequests(){
+  const list = document.getElementById('requestsList');
+  list.innerHTML = '<p class="hint">Loading…</p>';
+  const params = new URLSearchParams();
+  if(statusFilter) params.set('status', statusFilter);
+  const {status, data} = await api(`/api/correction-requests?${params.toString()}`);
+  if(status !== 200 || !Array.isArray(data)){
+    list.innerHTML = '<p class="hint">Could not load requests.</p>';
+    return;
+  }
+  if(data.length === 0){
+    list.innerHTML = `<div class="empty-state">No ${statusFilter || ''} requests.</div>`;
+    return;
+  }
+  list.innerHTML = data.map(renderRequestRow).join('');
+  list.querySelectorAll('[data-approve]').forEach(btn=>{
+    btn.addEventListener('click', ()=>decideRequest(parseInt(btn.dataset.approve,10), 'approve'));
+  });
+  list.querySelectorAll('[data-reject]').forEach(btn=>{
+    btn.addEventListener('click', ()=>decideRequest(parseInt(btn.dataset.reject,10), 'reject'));
+  });
+}
+
+function renderRequestRow(r){
+  const recordLabel = RECORD_TYPE_LABEL[r.record_type] || r.record_type;
+  const href = `${RECORD_TYPE_HREF[r.record_type] || '#'}?open=${r.record_id}`;
+  const snap = r.before_snapshot || {};
+  const isPending = r.status === 'pending';
+  const isApproved = r.status === 'approved';
+  return `
+    <div class="request-row" data-request-id="${r.id}">
+      <div class="top">
+        <div>
+          <div class="title">Correction — <a href="${href}" style="color:var(--teal-dark);">${escapeHtml(recordLabel)} ${recordNumberLabel(r)}</a></div>
+          <div class="id">Request #${r.id}</div>
+        </div>
+        <span class="pill pill-${r.status}">${escapeHtml(r.status)}</span>
+      </div>
+      <div class="meta">Operator: ${escapeHtml(r.requested_by_username || '—')}</div>
+      ${snap.date ? `<div class="meta">Business date: ${escapeHtml(snap.date)}</div>` : ''}
+      <div class="meta">Time Entered: ${escapeHtml(snap.created_at_label || '—')}</div>
+      <div class="meta">Requested: ${escapeHtml(r.created_at_label || '—')}</div>
+      <div class="reason">${escapeHtml(r.reason)}</div>
+      ${isApproved ? `<div class="meta">Edit grant active until ${escapeHtml(r.grant_expires_at_label || '—')} — one correction only.</div>` : ''}
+      ${r.status === 'completed' ? `<div class="meta">Correction submitted ${escapeHtml(r.completed_at_label || '—')}.</div>` : ''}
+      ${!isPending && !isApproved && r.status !== 'completed' && r.status !== 'expired' ? `<div class="meta">Reviewed by ${escapeHtml(r.reviewed_by_username || '—')} · ${escapeHtml(r.reviewed_at_label || '—')}${r.review_note ? ` · ${escapeHtml(r.review_note)}` : ''}</div>` : ''}
+      ${isPending ? `
+      <textarea class="review-note" id="reviewNote${r.id}" placeholder="Review note (optional for Approve, required for Reject)"></textarea>
+      <div class="row-actions">
+        <button class="btn-small btn-primary" data-approve="${r.id}">Approve</button>
+        <button class="btn-small btn-danger" data-reject="${r.id}">Reject</button>
+      </div>` : ''}
+    </div>`;
+}
+
+async function decideRequest(id, decision){
+  const noteEl = document.getElementById(`reviewNote${id}`);
+  const review_note = noteEl ? noteEl.value.trim() || null : null;
+  if(decision === 'reject'){
+    // The backend requires a review note to reject (it's the only record
+    // of *why*, since rejecting changes nothing else) — checked here too
+    // so the request isn't sent just to bounce back with an error.
+    if(!review_note){ alert('A review note is required to reject a request.'); return; }
+    if(!confirm('Reject this request? The underlying record will not be changed.')) return;
+  } else {
+    if(!confirm('Approve this request? The Operator will get a one-time, 24-hour edit grant — nothing on the record changes yet.')) return;
+  }
+  const {status, data} = await api(`/api/correction-requests/${id}/${decision}`, {method:'POST', body: JSON.stringify({review_note})});
+  if(status !== 200){
+    alert(data.error || `Could not ${decision} this request.`);
+    return;
+  }
+  loadRequests();
+  // The nav badge's pending count just changed — refresh it immediately
+  // rather than waiting for the next full page load.
+  if(window.AppShell && typeof window.AppShell.refresh === 'function') window.AppShell.refresh();
+}
+
+document.querySelectorAll('[data-status]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('[data-status]').forEach(b=>b.classList.toggle('active', b===btn));
+    statusFilter = btn.dataset.status;
+    loadRequests();
+  });
+});
+
+// ================= WEB PUSH OPT-IN =================
+// Entirely optional — feature-detected, never assumed supported. The
+// in-page list above and the nav's red pending-count badge are the
+// guaranteed fallback regardless of whether this succeeds, is declined,
+// or the platform/browser doesn't support it at all.
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+async function initPushOptIn(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+  if(Notification.permission === 'denied') return;
+  const {status, data} = await api('/api/push/vapid-public-key');
+  if(status !== 200 || !data.configured || !data.key) return; // push not configured for this deployment — stay silent, in-app badge remains authoritative
+
+  const reg = await navigator.serviceWorker.ready.catch(()=>null);
+  if(!reg) return;
+  const existing = await reg.pushManager.getSubscription().catch(()=>null);
+  if(existing) return; // already subscribed on this device
+
+  document.getElementById('pushOptIn').classList.remove('hidden');
+  document.getElementById('pushEnableBtn').addEventListener('click', async ()=>{
+    const permission = await Notification.requestPermission();
+    if(permission !== 'granted'){ document.getElementById('pushOptIn').classList.add('hidden'); return; }
+    try{
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(data.key),
+      });
+      await api('/api/push/subscribe', {method:'POST', body: JSON.stringify({subscription: sub.toJSON()})});
+      document.getElementById('pushOptIn').classList.add('hidden');
+    } catch(e) {
+      // Subscription can fail for many benign platform-specific reasons —
+      // never crash the page over it; the in-app badge still works.
+      document.getElementById('pushOptIn').classList.add('hidden');
+    }
+  });
+}
+
+// ---------- boot ----------
+(async function init(){
+  const {data} = await api('/api/session');
+  if(!data.authed || !data.user){
+    document.getElementById('gate').classList.remove('hidden');
+    return;
+  }
+  if(!['super_admin','manager'].includes(data.user.role)){
+    document.getElementById('roleGate').classList.remove('hidden');
+    return;
+  }
+  currentUser = data.user;
+  document.getElementById('appShell').classList.remove('hidden');
+  await loadRequests();
+  initPushOptIn();
+})();
+</script>
+<script src="/pwa.js" defer></script>
+<script src="/app-shell.js" defer></script>
+</body>
+</html>

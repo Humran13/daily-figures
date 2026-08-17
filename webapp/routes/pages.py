@@ -152,17 +152,29 @@ def admin_page():
 
 @pages_bp.route("/reset-daily-values.html")
 def reset_daily_values_page():
-    # Final UI correction: Reset Daily Values is Manager-or-Super-
-    # Administrator (unlike admin.html, which stays Super-Administrator-
-    # only for its unrelated Users/Company-Settings/Feature-Flags/
-    # branding controls) — a dedicated page rather than widening
-    # admin.html's own access. Gated on the same "daily_figures" module
-    # the underlying /api/daily-reset* endpoints already require via
-    # @feature_required, so a disabled Daily Figures module hides this
-    # page exactly the same way it already hides the reset APIs.
-    return _guard_page("reset-daily-values.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER), module_key="daily_figures")
+    # Full targeted Operator correction/void/requests/notification
+    # package: Reset Daily Values is now Super-Administrator ONLY —
+    # tightened from the prior Manager-or-Super-Administrator rule (see
+    # webapp/routes/daily_reset.py's own routes and static/app-shell.js's
+    # nav for the matching UI/API restriction). Gated on the same
+    # "daily_figures" module the underlying /api/daily-reset* endpoints
+    # already require via @feature_required, so a disabled Daily Figures
+    # module hides this page exactly the same way it already hides the
+    # reset APIs.
+    return _guard_page("reset-daily-values.html", (ROLE_SUPER_ADMIN,), module_key="daily_figures")
 
 
 @pages_bp.route("/history.html")
 def history_page():
     return _guard_flag_and_auth("history.html", "history_exports")
+
+
+@pages_bp.route("/requests.html")
+def requests_page():
+    # Full targeted Operator correction/void/requests/notification
+    # package — the new top-level Requests destination (correction-
+    # request review, moved here from the removed internal tab inside
+    # history.html) is Manager-or-Super-Administrator only, exactly like
+    # the underlying /api/correction-requests* review endpoints
+    # (approve/reject/pending-count).
+    return _guard_page("requests.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER))
