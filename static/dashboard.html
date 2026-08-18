@@ -658,11 +658,15 @@ function correctionRow(entry){
 // ---------- quick actions ----------
 // Viewer dashboard correction — the entire Quick Actions panel (card,
 // heading, every link) is presentation-hidden for Viewer specifically;
-// Manager/Super Administrator keep exactly the same set they always had.
-// This is display-only: none of these links were ever a write/correction
-// action to begin with, and no backend permission changes with this —
-// a Viewer who navigates to one of these pages directly is still gated
-// exactly as before by that page's own existing role checks.
+// Manager/Super Administrator keep exactly the same set they always had,
+// EXCEPT Reset Daily Values (Super Administrator only — tightened along
+// with the top nav in app-shell.js, the /api/daily-reset* routes, and
+// the /reset-daily-values.html page guard; this quick-action link was
+// missed when those were tightened). This is display-only: none of
+// these links were ever a write/correction action to begin with, and no
+// backend permission changes with this — a Viewer who navigates to one
+// of these pages directly is still gated exactly as before by that
+// page's own existing role checks.
 function renderQuickActions(role){
   const card = document.getElementById('quickActionsCard');
   if(role === 'viewer'){
@@ -677,7 +681,7 @@ function renderQuickActions(role){
   }
   actions.push({href:'/', label:'View Daily Figures'});
   actions.push({href:'/history.html', label:'Open History & Exports'});
-  if(role === 'manager' || role === 'super_admin'){
+  if(role === 'super_admin'){
     actions.push({href:'/reset-daily-values.html', label:'Reset Daily Values'});
   }
   if(role === 'super_admin'){

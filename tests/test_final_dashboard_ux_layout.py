@@ -240,10 +240,17 @@ def test_viewer_gets_no_restricted_quick_actions():
     assert "role === 'super_admin'" in body
 
 
-def test_manager_gets_operations_and_reset_but_not_admin():
+def test_manager_gets_operations_but_not_reset_or_admin():
     body = re.search(r"function renderQuickActions\(role\)\{(.*?)\n\}", DASHBOARD_HTML, re.DOTALL).group(1)
-    reset_gate = re.search(r"if\(role === 'manager' \|\| role === 'super_admin'\)\{\s*actions\.push\(\{href:'/reset-daily-values\.html'", body)
-    assert reset_gate, "Reset Daily Values must be gated to Manager/Super Administrator"
+    operations_gate = re.search(r"if\(role === 'manager' \|\| role === 'super_admin'\)\{\s*actions\.push\(\{href:'/dispatch\.html'", body)
+    assert operations_gate, "Open Operations must remain Manager/Super Administrator"
+    # Targeted fix: Reset Daily Values is Super Administrator ONLY on the
+    # Dashboard Quick Actions too — this was previously (wrongly) gated
+    # the same as Open Operations, letting Manager see it here even
+    # though the top nav/API/page guard were already Super-Admin-only.
+    reset_gate = re.search(r"if\(role === 'super_admin'\)\{\s*actions\.push\(\{href:'/reset-daily-values\.html'", body)
+    assert reset_gate, "Reset Daily Values must be gated to Super Administrator only"
+    assert "if(role === 'manager' || role === 'super_admin'){\n    actions.push({href:'/reset-daily-values.html'" not in body
     admin_gate = re.search(r"if\(role === 'super_admin'\)\{\s*actions\.push\(\{href:'/admin\.html'", body)
     assert admin_gate, "Admin must remain Super Administrator only"
 
