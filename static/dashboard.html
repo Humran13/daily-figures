@@ -75,24 +75,41 @@
   .view-all-btn{ display:block; width:100%; margin-top:8px; padding:9px; border:1.5px dashed var(--line); border-radius:10px; background:none; color:var(--teal-dark); font-family:inherit; font-size:12px; font-weight:700; cursor:pointer; }
   .view-all-btn:hover{ background:var(--paper-dim); }
 
-  /* ---------- Per-Product Daily Figures — horizontally scrollable table ----------
-     On a phone, five numeric columns plus Product never fit without either
-     wrapping (pushing Closing Stock onto its own line) or squeezing until
-     figures overlap. Same proven pattern as the Operator Daily Figures
-     table (static/index.html's .op-table): a real min-width, per-column
-     min-widths, and ONLY this wrapper scrolls horizontally — the page
-     itself never does. Data/values are unchanged; this is presentation
-     only (see figureRow() below — every value still comes straight from
-     the backend, no frontend calculation). */
-  .dfig-table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
-  table.dfig-table{ border-collapse:collapse; width:100%; min-width:620px; font-size:12px; }
-  table.dfig-table thead{ position:sticky; top:0; background:var(--paper-dim); z-index:1; }
-  table.dfig-table th{ text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--ink-soft); padding:8px; white-space:nowrap; }
-  table.dfig-table th:first-child{ text-align:left; min-width:170px; }
-  table.dfig-table th:not(:first-child){ min-width:85px; }
+  /* ---------- Per-Product Daily Figures — responsive table, both in the
+     compact preview card and the "View all" modal (same shell/CSS — see
+     _dailyFiguresTableShell()) ----------
+     On a phone, five numeric columns plus Product never fit without
+     wrapping the header words or scrolling. On desktop/tablet the table
+     should need neither: a real min-width plus per-column min-widths
+     define the table's natural size, headers may wrap onto two lines
+     instead of forcing overflow, and ONLY this wrapper ever scrolls
+     horizontally — the page itself never does. Data/values are
+     unchanged; this is presentation only (see figureRow() below — every
+     value still comes straight from the backend, no frontend
+     calculation). */
+  /* overflow-y:auto + max-height make this wrapper (not the outer
+     .modal-body) the genuine scrolling container the table's sticky th
+     cells stick relative to — sticky positions relative to its nearest
+     scrolling ancestor, and without a bounded height here this element
+     never itself scrolled (its box just grew to fit the table), so the
+     outer .modal-body did the real scrolling instead and "sticky" top:0
+     had no visible effect. Harmless for the 3-row preview card, which
+     never reaches this height. */
+  .dfig-table-wrap{ overflow-x:auto; overflow-y:auto; max-height:60vh; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
+  table.dfig-table{ border-collapse:collapse; width:100%; min-width:650px; font-size:12px; }
+  table.dfig-table th{ position:sticky; top:0; z-index:1; background:var(--paper-dim); text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--ink-soft); padding:8px; white-space:normal; }
+  /* Header word-wrap allowed (section 3: "Opening Stock" may wrap to
+     "Opening" / "Stock") instead of the old white-space:nowrap, which
+     forced columns to overflow their min-width rather than wrap — that
+     overflow, squeezed inside the old 640px-capped modal, is what made
+     "Closing Stock" read as partially cut off. */
+  table.dfig-table th:first-child{ text-align:left; min-width:170px; left:0; z-index:2; }
+  table.dfig-table th:not(:first-child){ min-width:92px; }
+  table.dfig-table th:last-child{ min-width:100px; }
   table.dfig-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:8px; border-top:1px solid var(--line); white-space:nowrap; }
-  table.dfig-table td:first-child{ text-align:left; font-family:var(--sans); white-space:normal; word-break:break-word; }
+  table.dfig-table td:first-child{ text-align:left; font-family:var(--sans); white-space:normal; word-break:break-word; position:sticky; left:0; z-index:1; background:white; }
   table.dfig-table tbody tr:nth-child(even){ background:var(--paper-dim); }
+  table.dfig-table tbody tr:nth-child(even) td:first-child{ background:var(--paper-dim); }
   table.dfig-table td.dfig-closing{ font-weight:800; font-size:13px; }
   .figure-name{ font-size:13px; font-weight:700; text-decoration:none; color:var(--ink); display:block; margin-bottom:3px; }
 
@@ -111,6 +128,16 @@
   /* ---------- Reusable modal / drawer ---------- */
   .modal-overlay{ position:fixed; inset:0; background:rgba(27,36,48,.6); display:flex; align-items:flex-end; justify-content:center; z-index:1000; }
   .modal-panel{ background:var(--paper); width:100%; max-width:640px; max-height:88vh; border-radius:16px 16px 0 0; display:flex; flex-direction:column; overflow:hidden; }
+  /* Opt-in wider panel for the Per-Product Daily Figures "View all" modal
+     only (see openModal()'s `opts.wide`) — width:100% already keeps this
+     harmless on any viewport narrower than the cap, so no extra media
+     query is needed: phones/small tablets are unaffected, while tablet/
+     desktop viewports now get enough room for all six Daily Figures
+     columns without horizontal scrolling. Every other "View all" modal
+     (Top issued products, Recent dispatches/corrections, Issued by
+     category/recipient) never gets this class and keeps its existing
+     640px-capped width exactly as before. */
+  .modal-panel.modal-panel--wide{ max-width:960px; }
   .modal-header{ display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1.5px solid var(--line); flex:0 0 auto; }
   .modal-header h3{ margin:0; font-size:15px; }
   .modal-close{ background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:var(--ink-soft); padding:2px 6px; }
@@ -316,10 +343,18 @@ function setActiveQuick(name){
 // to whatever triggered it on close.
 // =====================================================================
 
-function openModal(title, bodyHtml){
+function openModal(title, bodyHtml, opts){
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('modalBody').innerHTML = bodyHtml;
   const overlay = document.getElementById('viewAllModal');
+  // Opt-in only — every existing caller (Top issued products, Recent
+  // dispatches/corrections, Issued by category/recipient) omits `opts`
+  // and keeps the unchanged 640px-capped panel. Only the Per-Product
+  // Daily Figures "View all" call passes {wide:true}, since its 6-column
+  // table (Product/Opening Stock/Production/Returns/Issued/Closing Stock)
+  // is the one that needs real desktop/tablet width to avoid forced
+  // horizontal scrolling — see .modal-panel--wide below.
+  document.querySelector('.modal-panel').classList.toggle('modal-panel--wide', !!(opts && opts.wide));
   overlay.classList.remove('hidden');
   document.body.classList.add('modal-open');
   modalPreviouslyFocused = document.activeElement;
@@ -498,7 +533,7 @@ function renderDailyFiguresToday(items){
     html += `<button type="button" class="view-all-btn" id="dfigViewAllBtn">View all ${items.length}</button>`;
     containerEl.innerHTML = html;
     document.getElementById('dfigViewAllBtn').addEventListener('click', ()=>{
-      openModal('Per-product Daily Figures', _dailyFiguresTableShell(items.map(figureRow).join('')));
+      openModal('Per-product Daily Figures', _dailyFiguresTableShell(items.map(figureRow).join('')), {wide: true});
     });
   } else {
     containerEl.innerHTML = html;
