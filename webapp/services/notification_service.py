@@ -4,7 +4,7 @@ message says — the actual transport is push_service.py (a graceful no-op
 without VAPID configuration; see its own docstring). The guaranteed,
 always-on equivalent is entirely independent of whether push is
 configured or delivered at all:
-  - Manager/Super Admin: the Requests top-level nav badge (authoritative
+  - Manager/Super Admin/Accountant: the Requests top-level nav badge (authoritative
     backend pending count — see correction_request_service.pending_count())
     and the Requests page itself.
   - Operator: their own record's action-button matrix reflects an active
@@ -21,7 +21,7 @@ never surface as an error on the request that triggered it.
 """
 import logging
 
-from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN, User
+from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_SUPER_ADMIN, User
 from webapp.services import push_service
 
 logger = logging.getLogger(__name__)
@@ -37,17 +37,17 @@ def _record_label(record_type, record_id):
 
 def notify_new_correction_request(request_row):
     """
-    One push, to every Manager/Super Admin with an opted-in subscription,
-    per request creation — never duplicated, since this is called exactly
-    once from POST /api/correction-requests immediately after the single
-    INSERT that creates the row.
+    One push, to every Manager/Super Admin/Accountant with an opted-in
+    subscription, per request creation — never duplicated, since this is
+    called exactly once from POST /api/correction-requests immediately
+    after the single INSERT that creates the row.
     """
     try:
         from webapp.services import correction_request_service
 
         manager_ids = [
             u.id for u in User.query.filter(
-                User.role.in_([ROLE_MANAGER, ROLE_SUPER_ADMIN]), User.active.is_(True),
+                User.role.in_([ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_ACCOUNTANT]), User.active.is_(True),
             ).all()
         ]
         requester_name = request_row.requester.username if request_row.requester else "an operator"

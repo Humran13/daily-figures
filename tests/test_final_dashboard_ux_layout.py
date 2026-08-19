@@ -257,11 +257,13 @@ def test_manager_gets_operations_but_not_reset_or_admin():
 
 def test_backend_dashboard_route_still_requires_manager_or_super_admin_or_viewer():
     # Backend authorization is untouched by this presentation correction —
-    # confirmed at the route-decorator level, not re-derived here.
+    # confirmed at the route-decorator level, not re-derived here. Accountant
+    # was added alongside Viewer (same read-only Dashboard access) when the
+    # Accountant role was introduced; Operator remains excluded.
     import inspect
     from webapp.routes import dashboard as dashboard_route
     src = inspect.getsource(dashboard_route)
-    assert "roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_VIEWER)" in src
+    assert "roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_VIEWER)" in src
 
 
 # =====================================================================

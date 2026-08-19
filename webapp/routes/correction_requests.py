@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
 from webapp.models.correction_request import ACTION_CORRECT, CorrectionRequest
-from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN
+from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN
 from webapp.services import correction_request_service as svc
 from webapp.services import record_correction_service
 from webapp.services.audit_service import record_audit
@@ -19,8 +19,10 @@ def _error(e, status=400):
 @login_required
 def list_requests():
     """
-    Manager/Super Admin see every request (optionally filtered); an
-    Operator sees only their own — read-only status tracking, never a
+    Manager/Super Admin/Accountant see every request (optionally
+    filtered) — Accountant has the same request-review authority as
+    Manager (approve/reject), just never operational mutation authority.
+    An Operator sees only their own — read-only status tracking, never a
     review surface for them. Viewer has no access at all (matches
     "Viewer: no editing, no correction requests, read-only"). Sweeps any
     stale-in-the-database APPROVED grant past its 24h window to EXPIRED
@@ -28,7 +30,7 @@ def list_requests():
     live-ness (see correction_request_service.expire_if_needed()).
     """
     user = current_user()
-    if user.role not in (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR):
+    if user.role not in (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_OPERATOR):
         return jsonify({"error": "forbidden"}), 403
 
     query = CorrectionRequest.query
@@ -48,12 +50,12 @@ def list_requests():
 
 
 @correction_requests_bp.route("/pending-count", methods=["GET"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT)
 def pending_count():
     """
     Authoritative backend count for the top-level Requests nav badge and
-    the PWA app-icon badge — Manager/Super Admin only (matches who sees
-    the badge at all; Operator/Viewer never call this).
+    the PWA app-icon badge — Manager/Super Admin/Accountant only (matches
+    who sees the badge at all; Operator/Viewer never call this).
     """
     return jsonify({"count": svc.pending_count()})
 
@@ -136,12 +138,15 @@ def create_request():
 
 
 @correction_requests_bp.route("/<int:request_id>/approve", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT)
 def approve_request(request_id):
     """
     Starts the requesting Operator's one-time, record-specific, 24-hour
     edit grant — never immediately touches the underlying record (see
     correction_request_service.approve_request()'s own docstring).
+    Accountant reviews here exactly like Manager/Super Admin; the grant
+    always goes to the original requesting Operator, never to the
+    reviewer, regardless of which of the three reviewer roles approved it.
     """
     user = current_user()
     req = db.session.get(CorrectionRequest, request_id)
@@ -155,7 +160,9 @@ def approve_request(request_id):
         db.session.rollback()
         return _error(e)
 
-    record_audit(user, "approve", "correction_request", entity_id=req.id, before=before, after=req.to_dict())
+    record_audit(user, "approve", "correction_request", entity_id=req.id,
+                 before={**before, "reviewer_role": None},
+                 after={**req.to_dict(), "reviewer_role": user.role})
     db.session.commit()
     from webapp.services import notification_service
     notification_service.notify_request_decided(req, approved=True)
@@ -163,7 +170,7 @@ def approve_request(request_id):
 
 
 @correction_requests_bp.route("/<int:request_id>/reject", methods=["POST"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT)
 def reject_request(request_id):
     user = current_user()
     req = db.session.get(CorrectionRequest, request_id)
@@ -177,7 +184,9 @@ def reject_request(request_id):
         db.session.rollback()
         return _error(e)
 
-    record_audit(user, "reject", "correction_request", entity_id=req.id, before=before, after=req.to_dict())
+    record_audit(user, "reject", "correction_request", entity_id=req.id,
+                 before={**before, "reviewer_role": None},
+                 after={**req.to_dict(), "reviewer_role": user.role})
     db.session.commit()
     from webapp.services import notification_service
     notification_service.notify_request_decided(req, approved=False)

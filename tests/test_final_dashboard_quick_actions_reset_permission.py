@@ -158,12 +158,14 @@ def test_reset_calculations_and_reset_service_behavior_untouched(client, setup, 
 
 def test_dashboard_no_other_role_gate_lines_changed():
     # Snapshot the exact set of role-gate `if(...)` lines inside
-    # renderQuickActions() — proves this fix touched only the one line
-    # (Reset Daily Values), not Open Operations/Admin/Viewer.
+    # renderQuickActions() — proves the Accountant addition only extended
+    # the existing Viewer gate (Accountant gets the same hidden-panel
+    # treatment as Viewer), and touched nothing else: Open Operations,
+    # Reset Daily Values, and Admin remain exactly as they were.
     body = _quick_actions_body()
     gate_lines = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("if(role ===")]
     assert gate_lines == [
-        "if(role === 'viewer'){",
+        "if(role === 'viewer' || role === 'accountant'){",
         "if(role === 'manager' || role === 'super_admin'){",
         "if(role === 'super_admin'){",
         "if(role === 'super_admin'){",

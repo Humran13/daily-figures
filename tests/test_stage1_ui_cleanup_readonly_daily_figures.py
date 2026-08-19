@@ -52,9 +52,10 @@ def test_fully_read_only_condition_covers_viewer_and_unpermitted_operator():
     # Figures now only ever accepts Opening Stock directly (on a product's
     # first-ever period, or, as of Stage 8 section 3, an elevated
     # correction on a later period — see showOpeningInputs), so
-    # isFullyReadOnly collapses to "Viewer, or anyone not allowed/able to
-    # edit Opening Stock right now".
-    match = re.search(r"const isFullyReadOnly = isViewer \|\| !\(showOpeningInputs && canEditOpening\);", INDEX_HTML)
+    # isFullyReadOnly collapses to "Viewer, Accountant, or anyone not
+    # allowed/able to edit Opening Stock right now" — Accountant added
+    # alongside Viewer as a second always-read-only role.
+    match = re.search(r"const isFullyReadOnly = isViewer \|\| isAccountant \|\| !\(showOpeningInputs && canEditOpening\);", INDEX_HTML)
     assert match, "isFullyReadOnly definition not found"
 
 

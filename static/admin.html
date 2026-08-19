@@ -96,6 +96,7 @@
             <select id="newUserRole">
               <option value="viewer">Viewer</option>
               <option value="operator">Operator</option>
+              <option value="accountant">Accountant</option>
               <option value="manager">Manager</option>
               <option value="super_admin">Super Administrator</option>
             </select>
@@ -567,7 +568,7 @@ async function loadUsers(){
       <td><input data-username-for="${u.id}" value="${escapeHtml(u.username)}" style="width:130px;"></td>
       <td>
         <select data-role-for="${u.id}">
-          ${['viewer','operator','manager','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${r.replace('_',' ')}</option>`).join('')}
+          ${['viewer','operator','accountant','manager','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${r.replace('_',' ')}</option>`).join('')}
         </select>
       </td>
       <td><span class="pill ${u.active?'pill-active':'pill-inactive'}">${u.active?'Active':'Disabled'}</span></td>

@@ -59,7 +59,7 @@
 
 <div id="gate" class="hidden gate">Sign in from the main app first.</div>
 <div id="roleGate" class="hidden gate" style="color:var(--ink);">
-  <p>You need a Manager or Super Administrator account to view this page.</p>
+  <p>You need a Manager, Accountant, or Super Administrator account to view this page.</p>
 </div>
 
 <div class="shell hidden" id="appShell">
@@ -118,9 +118,9 @@ async function applyBranding(){
 applyBranding();
 
 // ================= REQUESTS LIST =================
-// Manager/Super Admin only (page-level guard: webapp/routes/pages.py's
-// requests_page(); every API this page calls is independently role-
-// gated too). Approve/Reject here never write to the underlying
+// Manager/Super Admin/Accountant only (page-level guard: webapp/routes/
+// pages.py's requests_page(); every API this page calls is independently
+// role-gated too). Approve/Reject here never write to the underlying
 // Dispatch/Return/Production record directly for action=correct — they
 // only start/settle a one-time edit GRANT (see webapp/services/
 // correction_request_service.py) — the Operator applies the actual
@@ -272,7 +272,7 @@ async function initPushOptIn(){
     document.getElementById('gate').classList.remove('hidden');
     return;
   }
-  if(!['super_admin','manager'].includes(data.user.role)){
+  if(!['super_admin','manager','accountant'].includes(data.user.role)){
     document.getElementById('roleGate').classList.remove('hidden');
     return;
   }

@@ -832,7 +832,7 @@ function applyDailyFiguresFiltersFromUrl(q){
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
-  if(!data.authed || !['super_admin','manager','operator','viewer'].includes((data.user||{}).role)){
+  if(!data.authed || !['super_admin','manager','accountant','operator','viewer'].includes((data.user||{}).role)){
     document.getElementById('gate').classList.remove('hidden');
     return;
   }

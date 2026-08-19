@@ -657,8 +657,10 @@ function correctionRow(entry){
 
 // ---------- quick actions ----------
 // Viewer dashboard correction — the entire Quick Actions panel (card,
-// heading, every link) is presentation-hidden for Viewer specifically;
-// Manager/Super Administrator keep exactly the same set they always had,
+// heading, every link) is presentation-hidden for Viewer and Accountant
+// specifically (both are read-only-plus-requests roles with no
+// operational quick actions to offer); Manager/Super Administrator keep
+// exactly the same set they always had,
 // EXCEPT Reset Daily Values (Super Administrator only — tightened along
 // with the top nav in app-shell.js, the /api/daily-reset* routes, and
 // the /reset-daily-values.html page guard; this quick-action link was
@@ -669,7 +671,7 @@ function correctionRow(entry){
 // page's own existing role checks.
 function renderQuickActions(role){
   const card = document.getElementById('quickActionsCard');
-  if(role === 'viewer'){
+  if(role === 'viewer' || role === 'accountant'){
     card.classList.add('hidden');
     return;
   }

@@ -24,6 +24,7 @@
   var ROLE_LABELS = {
     super_admin: 'Super Administrator',
     manager: 'Manager',
+    accountant: 'Accountant',
     operator: 'Operator',
     viewer: 'Viewer',
   };
@@ -143,7 +144,7 @@
     if (role === 'super_admin' && enabled(flags, 'daily_figures')) {
       items.push({ key: 'reset_daily_values', label: 'Reset Daily Values', href: '/reset-daily-values.html' });
     }
-    if (role === 'manager' || role === 'super_admin') {
+    if (role === 'manager' || role === 'super_admin' || role === 'accountant') {
       items.push({ key: 'requests', label: 'Requests', href: '/requests.html', badge: 'pendingRequests' });
     }
     if (role === 'super_admin') items.push({ key: 'admin', label: 'Admin', href: '/admin.html' });
@@ -340,14 +341,15 @@
     var homeHref = resolveLanding(session.user.role, flags);
     var pageKey = currentPageKey();
 
-    // Pending correction-request count — Manager/Super Admin only (the
-    // backend route itself is also role-gated; this is purely "who do we
-    // even bother asking"). Drives both the in-nav red badge (the
-    // guaranteed fallback) and the PWA app-icon badge where the platform
-    // supports it (see setAppIconBadge() below) — same authoritative
-    // backend number for both, never guessed from visible rows.
+    // Pending correction-request count — Manager/Super Admin/Accountant
+    // only (the backend route itself is also role-gated; this is purely
+    // "who do we even bother asking"). Drives both the in-nav red badge
+    // (the guaranteed fallback) and the PWA app-icon badge where the
+    // platform supports it (see setAppIconBadge() below) — same
+    // authoritative backend number for both, never guessed from visible
+    // rows.
     var pendingCount = 0;
-    if (session.user.role === 'manager' || session.user.role === 'super_admin') {
+    if (session.user.role === 'manager' || session.user.role === 'super_admin' || session.user.role === 'accountant') {
       var pendingData = await apiGet('/api/correction-requests/pending-count');
       pendingCount = (pendingData && typeof pendingData.count === 'number') ? pendingData.count : 0;
     }

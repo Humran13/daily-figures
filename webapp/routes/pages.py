@@ -21,7 +21,7 @@ reachable regardless of any flag's state.
 from flask import Blueprint, Response, current_app, redirect
 
 from webapp.auth import current_user
-from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
+from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import feature_flag_service as ffs
 
 pages_bp = Blueprint("pages", __name__)
@@ -34,6 +34,7 @@ pages_bp = Blueprint("pages", __name__)
 FIRST_AUTHORIZED_PAGE = {
     ROLE_SUPER_ADMIN: "/dashboard.html",
     ROLE_MANAGER: "/dashboard.html",
+    ROLE_ACCOUNTANT: "/dashboard.html",
     ROLE_VIEWER: "/dashboard.html",
 }
 
@@ -142,7 +143,7 @@ def production_page():
 
 @pages_bp.route("/dashboard.html")
 def dashboard_page():
-    return _guard_page("dashboard.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_VIEWER), module_key="dashboard")
+    return _guard_page("dashboard.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_VIEWER), module_key="dashboard")
 
 
 @pages_bp.route("/admin.html")
@@ -171,10 +172,8 @@ def history_page():
 
 @pages_bp.route("/requests.html")
 def requests_page():
-    # Full targeted Operator correction/void/requests/notification
-    # package — the new top-level Requests destination (correction-
-    # request review, moved here from the removed internal tab inside
-    # history.html) is Manager-or-Super-Administrator only, exactly like
-    # the underlying /api/correction-requests* review endpoints
+    # Manager/Super Administrator, plus Accountant (request-review
+    # authority added alongside the Accountant role) — exactly like the
+    # underlying /api/correction-requests* review endpoints
     # (approve/reject/pending-count).
-    return _guard_page("requests.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER))
+    return _guard_page("requests.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT))

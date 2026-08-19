@@ -11,7 +11,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from webapp.auth import current_user, roles_required, feature_required
 from webapp.extensions import db
-from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_VIEWER
+from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import branding_service, stock_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -102,7 +102,7 @@ def _recipient_totals_args():
 
 
 @reports_bp.route("/recipient-totals", methods=["GET"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_VIEWER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_VIEWER)
 @feature_required("reporting")
 def recipient_totals():
     """

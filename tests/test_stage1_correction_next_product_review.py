@@ -160,7 +160,7 @@ def test_editable_workflow_handlers_unchanged():
 # branches on three separately-negated permission flags.
 
 def test_is_fully_read_only_depends_only_on_opening_editability_and_permission():
-    match = re.search(r"const isFullyReadOnly = isViewer \|\| !\((.*?)\);", INDEX_HTML)
+    match = re.search(r"const isFullyReadOnly = isViewer \|\| isAccountant \|\| !\((.*?)\);", INDEX_HTML)
     assert match
     condition = match.group(1)
     assert condition == "showOpeningInputs && canEditOpening"

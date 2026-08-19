@@ -605,6 +605,12 @@ async function renderEntryCard(){
   const rule = view.packaging_rule;
 
   const isViewer = role === 'viewer';
+  // Accountant is a read-only-plus-Requests role, same as Viewer for
+  // every operational Daily Figures action — never editable, never able
+  // to mark No Activity (backend also refuses both server-side; see
+  // webapp/routes/daily_entry_status.py and daily_figures.py's role
+  // gates, which never included accountant in the first place).
+  const isAccountant = role === 'accountant';
 
   // Ownership/completion (Stage 7 section 1): an Operator asking for this
   // entry actually acquires the lock (or learns it's contested/completed)
@@ -633,11 +639,11 @@ async function renderEntryCard(){
   // stock_service.upsert_daily_figure()) — so the input shows for them
   // regardless of view.opening_editable.
   const showOpeningInputs = view.opening_editable || isElevated;
-  const isFullyReadOnly = isViewer || !(showOpeningInputs && canEditOpening);
+  const isFullyReadOnly = isViewer || isAccountant || !(showOpeningInputs && canEditOpening);
   // No Activity Today is available to anyone who could otherwise act on
   // this entry, whether or not Opening Stock itself happens to be
   // editable right now — see Stage 7 section 6.
-  const canMarkNoActivity = !isViewer && !isCompleted && !blockedByOther;
+  const canMarkNoActivity = !isViewer && !isAccountant && !isCompleted && !blockedByOther;
 
   card.innerHTML = `
     <div class="card">

@@ -515,11 +515,14 @@ def test_requests_page_uses_kampala_formatted_labels_not_raw_timestamps():
     assert "r.completed_at_label" in REQUESTS_HTML
 
 
-def test_app_shell_nav_includes_requests_for_manager_and_super_admin_only():
+def test_app_shell_nav_includes_requests_for_manager_super_admin_and_accountant():
+    # Accountant request-review authority: the Requests nav entry (and its
+    # badge) is now also shown to Accountant, alongside the unchanged
+    # Manager/Super Admin behavior.
     assert "items.push({ key: 'requests', label: 'Requests', href: '/requests.html', badge: 'pendingRequests' });" in APP_SHELL_JS
     idx = APP_SHELL_JS.index("items.push({ key: 'requests'")
     guard_line = APP_SHELL_JS[max(0, idx - 150):idx]
-    assert "role === 'manager' || role === 'super_admin'" in guard_line
+    assert "role === 'manager' || role === 'super_admin' || role === 'accountant'" in guard_line
 
 
 def test_app_shell_badge_hidden_when_count_is_zero():
@@ -530,7 +533,10 @@ def test_app_shell_badge_hidden_when_count_is_zero():
 
 
 def test_operator_and_viewer_never_fetch_pending_count_in_app_shell():
-    idx = APP_SHELL_JS.index("if (session.user.role === 'manager' || session.user.role === 'super_admin') {")
+    # Accountant added to this guard alongside Manager/Super Admin —
+    # Operator/Viewer remain excluded (this guard is the only place that
+    # decides who even asks the backend for the count).
+    idx = APP_SHELL_JS.index("if (session.user.role === 'manager' || session.user.role === 'super_admin' || session.user.role === 'accountant') {")
     end = APP_SHELL_JS.index("\n    }\n", idx)
     body = APP_SHELL_JS[idx:end]
     assert "/api/correction-requests/pending-count" in body

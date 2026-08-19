@@ -4,9 +4,10 @@ from webapp.extensions import db
 
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MANAGER = "manager"
+ROLE_ACCOUNTANT = "accountant"
 ROLE_OPERATOR = "operator"
 ROLE_VIEWER = "viewer"
-ROLES = [ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_OPERATOR, ROLE_VIEWER]
+ROLES = [ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_OPERATOR, ROLE_VIEWER]
 
 
 def _utcnow():

@@ -5,7 +5,7 @@ from webapp.extensions import db
 from webapp.models.daily_figure import DailyFigure, StockAdjustment
 from webapp.models.dispatch import SHIFTS
 from webapp.models.product import Product
-from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
+from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import branding_service
 from webapp.services import daily_entry_status_service as entry_status_svc
 from webapp.services import operator_permissions_service as permissions_svc
@@ -325,7 +325,7 @@ def list_adjustments():
 @feature_required("daily_figures")
 def create_adjustment():
     user = current_user()
-    if user.role == ROLE_VIEWER:
+    if user.role in (ROLE_VIEWER, ROLE_ACCOUNTANT):
         return jsonify({"error": "forbidden"}), 403
     if user.role == ROLE_OPERATOR and not permissions_svc.get_permissions().can_create_adjustments:
         return jsonify({"error": "you do not have permission to create stock adjustments"}), 403
