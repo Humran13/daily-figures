@@ -412,13 +412,23 @@ function renderPreviewSection(containerEl, items, rowFn, opts){
   }
 }
 
+// Explicitly Africa/Kampala, never the viewer's own device timezone — a
+// user opening this dashboard from a different timezone must still see
+// the company's own Kampala business time for these snapshot/activity
+// timestamps, exactly like every other timestamp in this app.
+function formatKampala(iso){
+  return new Date(iso + 'Z').toLocaleString(undefined, {
+    timeZone: 'Africa/Kampala', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit',
+  });
+}
+
 async function loadDashboard(){
   const date = document.getElementById('dateInput').value || todayStr();
   const {data} = await api('/api/dashboard?date='+date);
   dashboardData = data;
 
   document.getElementById('lastUpdated').textContent = data.generated_at
-    ? `Generated ${new Date(data.generated_at + 'Z').toLocaleString()} — a snapshot, not a live feed.` : '';
+    ? `Generated ${formatKampala(data.generated_at)} — a snapshot, not a live feed.` : '';
 
   // ---- 2. Daily activity ----
   const activity = data.activity || {};
@@ -433,7 +443,7 @@ async function loadDashboard(){
   // stock formula, reports, ledger calculations all still use
   // activity.production / production_by_shift, unchanged).
   document.getElementById('lastActivityAt').textContent = activity.last_activity_at
-    ? `Last recorded activity for this date: ${new Date(activity.last_activity_at + 'Z').toLocaleString()}`
+    ? `Last recorded activity for this date: ${formatKampala(activity.last_activity_at)}`
     : 'No recorded activity for this date yet.';
   // "Customers" here means unique recipients of a FINALIZED dispatch on
   // THIS selected date (COUNT DISTINCT recipient_id) — never the

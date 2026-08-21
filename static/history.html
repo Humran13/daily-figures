@@ -241,6 +241,9 @@
 let currentUser = null;
 let productsCache = [];
 let salesCategoriesCache = [];
+// Africa/Kampala date from /api/session — see static/dispatch.html's
+// identical variable and dateStr()/quick-filter uses below.
+let businessToday = null;
 
 async function api(path, opts){
   const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
@@ -312,8 +315,29 @@ function statusPill(status){
   return `<span class="pill pill-${status}">${status}</span>`;
 }
 function dateStr(offsetDays){
-  const d = new Date();
-  d.setDate(d.getDate()+offsetDays);
+  // Anchors on the Africa/Kampala business date (from /api/session) when
+  // available, never new Date().toISOString() alone — that shifts to UTC
+  // and can land on the wrong calendar day for roughly the first three
+  // hours after midnight Kampala time, regardless of the viewer's own
+  // device timezone. Falls back to the old browser-local computation
+  // only in the narrow window before boot's session fetch resolves.
+  let base;
+  if(businessToday){
+    const [y,m,d] = businessToday.split('-').map(Number);
+    base = new Date(y, m-1, d);
+  } else {
+    base = new Date();
+  }
+  base.setDate(base.getDate()+offsetDays);
+  const yy = base.getFullYear(), mm = String(base.getMonth()+1).padStart(2,'0'), dd = String(base.getDate()).padStart(2,'0');
+  return `${yy}-${mm}-${dd}`;
+}
+function firstOfMonthStr(){
+  if(businessToday){
+    const [y,m] = businessToday.split('-').map(Number);
+    return `${y}-${String(m).padStart(2,'0')}-01`;
+  }
+  const d = new Date(); d.setDate(1);
   return d.toISOString().slice(0,10);
 }
 
@@ -454,7 +478,7 @@ document.querySelectorAll('[data-quick]').forEach(btn=>{
     if(q==='today'){ document.getElementById('fDateFrom').value = dateStr(0); document.getElementById('fDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('fDateFrom').value = dateStr(-1); document.getElementById('fDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('fDateFrom').value = dateStr(-6); document.getElementById('fDateTo').value = dateStr(0); }
-    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('fDateFrom').value = d.toISOString().slice(0,10); document.getElementById('fDateTo').value = dateStr(0); }
+    if(q==='month'){ document.getElementById('fDateFrom').value = firstOfMonthStr(); document.getElementById('fDateTo').value = dateStr(0); }
     loadDispatchHistory();
   });
 });
@@ -581,7 +605,7 @@ document.querySelectorAll('[data-rquick]').forEach(btn=>{
     if(q==='today'){ document.getElementById('rDateFrom').value = dateStr(0); document.getElementById('rDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('rDateFrom').value = dateStr(-1); document.getElementById('rDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('rDateFrom').value = dateStr(-6); document.getElementById('rDateTo').value = dateStr(0); }
-    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('rDateFrom').value = d.toISOString().slice(0,10); document.getElementById('rDateTo').value = dateStr(0); }
+    if(q==='month'){ document.getElementById('rDateFrom').value = firstOfMonthStr(); document.getElementById('rDateTo').value = dateStr(0); }
     loadReturnsHistory();
   });
 });
@@ -674,7 +698,7 @@ document.querySelectorAll('[data-pquick]').forEach(btn=>{
     if(q==='today'){ document.getElementById('pDateFrom').value = dateStr(0); document.getElementById('pDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('pDateFrom').value = dateStr(-1); document.getElementById('pDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('pDateFrom').value = dateStr(-6); document.getElementById('pDateTo').value = dateStr(0); }
-    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('pDateFrom').value = d.toISOString().slice(0,10); document.getElementById('pDateTo').value = dateStr(0); }
+    if(q==='month'){ document.getElementById('pDateFrom').value = firstOfMonthStr(); document.getElementById('pDateTo').value = dateStr(0); }
     loadProductionHistory();
   });
 });
@@ -783,7 +807,7 @@ document.querySelectorAll('[data-hquick]').forEach(btn=>{
     if(q==='today'){ document.getElementById('hDateFrom').value = dateStr(0); document.getElementById('hDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('hDateFrom').value = dateStr(-1); document.getElementById('hDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('hDateFrom').value = dateStr(-6); document.getElementById('hDateTo').value = dateStr(0); }
-    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('hDateFrom').value = d.toISOString().slice(0,10); document.getElementById('hDateTo').value = dateStr(0); }
+    if(q==='month'){ document.getElementById('hDateFrom').value = firstOfMonthStr(); document.getElementById('hDateTo').value = dateStr(0); }
     renderDailyFiguresHistory();
   });
 });
@@ -837,6 +861,7 @@ function applyDailyFiguresFiltersFromUrl(q){
     return;
   }
   currentUser = data.user;
+  businessToday = data.business_today || null;
   document.getElementById('appShell').classList.remove('hidden');
 
   const {data: products} = await api('/api/admin/products');

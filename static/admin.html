@@ -572,7 +572,7 @@ async function loadUsers(){
         </select>
       </td>
       <td><span class="pill ${u.active?'pill-active':'pill-inactive'}">${u.active?'Active':'Disabled'}</span></td>
-      <td class="small">${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'never'}</td>
+      <td class="small">${u.last_login_at ? new Date(u.last_login_at + 'Z').toLocaleString(undefined, {timeZone:'Africa/Kampala', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'}) : 'never'}</td>
       <td>
         <button class="btn-ghost" data-save="${u.id}">Save</button>
         <button class="btn-ghost" data-reset-password="${u.id}" data-username="${escapeHtml(u.username)}">Reset password</button>

@@ -18,15 +18,25 @@ data with no decorative branding rows.
 """
 import csv
 import io
-from datetime import datetime, timezone
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from fpdf import FPDF
 
+from webapp.services.business_calendar import format_kampala_report_timestamp
 
-def _utcnow_str():
-    return datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
+
+def _generated_at_str():
+    """
+    User-facing "Generated ..." header for every export format — Africa/
+    Kampala local time, labeled EAT, via the one centralized Kampala
+    helper (business_calendar.py). Previously rendered raw server UTC
+    (e.g. "2026-08-21 06:17 UTC") directly into every report regardless
+    of format — the exact bug this fixes; every export's own on-disk
+    canonical storage is untouched, this only changes what's PRINTED on
+    the generated-at line.
+    """
+    return format_kampala_report_timestamp()
 
 
 def _filters_line(filters):
@@ -40,7 +50,7 @@ def build_csv(*, title, filters, generated_by, columns, rows, totals=None):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([title])
-    writer.writerow([f"Generated {_utcnow_str()} by {generated_by}"])
+    writer.writerow([f"Generated {_generated_at_str()} by {generated_by}"])
     writer.writerow([_filters_line(filters)])
     writer.writerow([])
     writer.writerow([label for _, label in columns])
@@ -65,7 +75,7 @@ def build_xlsx(*, title, filters, generated_by, columns, rows, totals=None, comp
 
     bold = Font(bold=True)
     ws.append([title]); ws["A1"].font = bold
-    ws.append([f"Generated {_utcnow_str()} by {generated_by}"])
+    ws.append([f"Generated {_generated_at_str()} by {generated_by}"])
     ws.append([_filters_line(filters)])
     ws.append([])
 
@@ -120,7 +130,7 @@ def build_pdf(*, title, filters, generated_by, columns, rows, totals=None, compa
     pdf.set_font("Helvetica", "B", 14)
     pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, f"Generated {_utcnow_str()} by {generated_by}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, f"Generated {_generated_at_str()} by {generated_by}", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 5, _filters_line(filters), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 

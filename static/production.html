@@ -248,6 +248,7 @@
 <script>
 let currentUser = null;
 let serverNow = null; // full instant from /api/session — see static/dispatch.html's identical variable and openDetail()'s 24-hour edit-window check
+let businessToday = null; // Africa/Kampala date from /api/session — see static/dispatch.html's identical variable and todayStr() below
 let productsCache = [];
 let currentLines = [];
 let editingProductionId = null;
@@ -259,7 +260,7 @@ function toast(msg){
   t.textContent = msg; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'), 2200);
 }
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }
 async function api(path, opts){
   const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
   const data = await res.json().catch(()=>({}));
@@ -999,7 +1000,17 @@ document.getElementById('deleteConfirmBtn').addEventListener('click', async ()=>
     return;
   }
   currentUser = data.user;
-  serverNow = data.server_now || null;
+  // Naive-UTC ISO from the server (no offset suffix) — appending 'Z' here,
+  // once, at capture time is what makes new Date(serverNow) below parse
+  // it as the true UTC instant it is, matching data.created_at's own
+  // '+ Z' treatment; without it, the browser's Date constructor treats a
+  // bare (no 'Z'/offset) ISO string as LOCAL time, silently shifting the
+  // 24-hour edit-window comparison by the viewer's own UTC offset. Purely
+  // a UX convenience either way — the /correct route re-derives this
+  // exact check itself, server-side, so this was never a real permission
+  // bypass, just a client-side display/button-timing mismatch.
+  serverNow = data.server_now ? data.server_now + 'Z' : null;
+  businessToday = data.business_today || null;
   const isOperatorOrViewer = ['operator','viewer'].includes(data.user.role);
   await applyFeatureFlags();
   document.getElementById('appShell').classList.remove('hidden');

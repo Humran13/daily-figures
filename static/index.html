@@ -356,8 +356,11 @@ let currentUser = null;
 // (not on every render) — see fetchOperatorPermissions(). Manager/Super
 // Admin never consult this; Viewer is never granted anything from it.
 let operatorPermissions = {can_edit_opening:false, can_edit_production:false, can_edit_returns:false, can_create_adjustments:false};
+// Africa/Kampala date from /api/session — see static/dispatch.html's
+// identical variable and todayStr() below.
+let businessToday = null;
 
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -795,9 +798,12 @@ function releaseLockIfOwned(product, date, shift){
   // network round trip, and a lock nobody renews naturally expires anyway.
   apiDelete('/api/daily-entry-status/lock', {product_id: product.id, date, shift}).catch(()=>{});
 }
+// Explicitly Africa/Kampala, never the viewer's own device timezone — a
+// user opening this app from a different timezone must still see the
+// company's own Kampala business time for these entry/review timestamps.
 function formatEntryTime(iso){
   if(!iso) return '';
-  return new Date(iso + 'Z').toLocaleString(undefined, {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+  return new Date(iso + 'Z').toLocaleString(undefined, {timeZone:'Africa/Kampala', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
 }
 function renderStatusBanner(entryStatus, isCompleted, blockedByOther, isElevated){
   if(isCompleted){
@@ -987,7 +993,7 @@ async function showReviewScreen(date, shift){
       ? `Opening ${qtyLabel(view.opening, view.packaging_rule)} · Production ${qtyLabel(view.production, view.packaging_rule)} · Returns ${qtyLabel(view.return_, view.packaging_rule)} · Issued ${qtyLabel(view.issued, view.packaging_rule)} · Closing ${qtyLabel(view.closing, view.packaging_rule)}`
       : (row.validation_error || '');
     let attribution = '';
-    if(row.completed_by) attribution += `Entered by ${escapeHtml(row.completed_by)}${row.completed_at ? ' at ' + escapeHtml(new Date(row.completed_at).toLocaleString()) : ''}. `;
+    if(row.completed_by) attribution += `Entered by ${escapeHtml(row.completed_by)}${row.completed_at ? ' at ' + escapeHtml(formatEntryTime(row.completed_at)) : ''}. `;
     if(row.source_changed_since_review || row.daily_figure_changed_since_review) attribution += 'This product changed while you were reviewing it. Reload the current figures before submitting.';
     return `
       <div class="review-row">
@@ -1005,7 +1011,7 @@ async function showReviewScreen(date, shift){
     <div class="card">
       <h2>Daily Figures review — ${escapeHtml(shift)}, ${escapeHtml(date)}</h2>
       ${submitted
-        ? `<p class="hint">Daily Figures review submitted by ${escapeHtml(session.submitted_by_username || '')} at ${escapeHtml(session.submitted_at ? new Date(session.submitted_at).toLocaleString() : '')}.</p>`
+        ? `<p class="hint">Daily Figures review submitted by ${escapeHtml(session.submitted_by_username || '')} at ${escapeHtml(session.submitted_at ? formatEntryTime(session.submitted_at) : '')}.</p>`
         : `<p class="hint">Review in progress — nothing is submitted until you explicitly confirm below.</p>`}
       <div class="review-summary">
         <div class="stat"><div class="n">${summary.reviewed_count} / ${summary.total}</div><div class="l">reviewed</div></div>
@@ -1497,7 +1503,10 @@ async function boot(user){
 
 (async function init(){
   const s = await apiGet('/api/session');
-  if(s && s.authed){ await boot(s.user); }
+  if(s && s.authed){
+    businessToday = s.business_today || null;
+    await boot(s.user);
+  }
 })();
 </script>
 <script src="/pwa.js" defer></script>
