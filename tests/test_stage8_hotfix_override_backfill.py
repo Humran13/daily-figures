@@ -85,8 +85,11 @@ def _finalize_production(client, product_id, date_str, shift, cartons, packs=0, 
 
 
 def _finalize_return(client, product_id, date_str, cartons, packs=0, pieces=0):
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     r = client.post("/api/returns", json={
-        "date": date_str,
+        "date": date_str, "customer_id": customer_id,
         "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
     }).get_json()
     res = client.post(f"/api/returns/{r['id']}/finalize")

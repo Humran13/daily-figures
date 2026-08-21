@@ -160,7 +160,7 @@ def test_dispatch_csv_has_no_decorative_branding_row(client, setup):
 def test_returns_and_production_csv_also_have_no_decorative_branding_row(client, setup):
     client.patch("/api/admin/company-settings", json={"display_name": "Acme Tissue Co."})
     created = client.post("/api/returns", json={
-        "date": "2026-07-28",
+        "date": "2026-07-28", "customer_id": setup["customer"]["id"],
         "lines": [{"product_id": setup["product"]["id"], "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{created['id']}/finalize")

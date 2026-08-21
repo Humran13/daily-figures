@@ -107,17 +107,22 @@ def export_returns(fmt):
     query, filters_applied = _filtered_return_query(request.args)
     records = query.order_by(ReturnRecord.date.desc(), ReturnRecord.id.desc()).limit(5000).all()
 
+    # Simplified business-facing shape: Returned By (who brought the goods
+    # back) / Received By (the staff who received it — reuses the existing
+    # signed_by_name field, previously labeled "Name & Sign"; see
+    # returns_service._resolve_signed_by_name()). The old received_by/
+    # verified_by integer-user-id columns are no longer printed/exported —
+    # they remain untouched in the database as internal audit fields (see
+    # ReturnRecord.received_by/verified_by), just no longer duplicated
+    # here alongside Received By.
     columns = [
         ("date", "Date"), ("returned_by", "Returned By"), ("received_by", "Received By"),
-        ("verified_by", "Verified By"), ("signed_by_name", "Name & Sign"), ("status", "Status"),
-        ("product_name", "Product"), ("quantity", "Quantity"),
+        ("status", "Status"), ("product_name", "Product"), ("quantity", "Quantity"),
         ("posted_to_stock", "Posted to Stock"), ("remarks", "Remarks"),
     ]
     rows = []
     for r in records:
         returned_by = r.returned_by_name_snapshot or (r.returned_by_customer.name if r.returned_by_customer else "")
-        received_by_user = db.session.get(User, r.received_by) if r.received_by else None
-        verified_by_user = db.session.get(User, r.verified_by) if r.verified_by else None
         # Every row is still exported — this is the same "record activity"
         # export it always was — Posted to Stock just makes the Metro
         # Sales Monday-only distinction visible (svc.is_return_stock_
@@ -126,9 +131,7 @@ def export_returns(fmt):
         for line in r.lines:
             rows.append({
                 "date": r.date, "returned_by": returned_by,
-                "received_by": received_by_user.username if received_by_user else "",
-                "verified_by": verified_by_user.username if verified_by_user else "",
-                "signed_by_name": r.signed_by_name or "",
+                "received_by": r.signed_by_name or "",
                 "status": r.status, "product_name": line.product.name if line.product else "",
                 "quantity": qty_label(line.cartons, line.packs, line.pieces, line.packaging_rule),
                 "posted_to_stock": posted_to_stock,
@@ -227,7 +230,7 @@ def update_return(return_id):
         )
     except ReturnError as e:
         db.session.rollback()
-        return _error(e)
+        return _error(e, 409 if "already exists for" in str(e) else 400)
 
     record_audit(user, "update", "return", entity_id=record.id, before=before, after=record.to_dict())
     db.session.commit()
@@ -490,7 +493,7 @@ def correct(return_id):
         return _error(e, 409)
     except (RecordCorrectionError, ReturnError, PackagingError) as e:
         db.session.rollback()
-        return _error(e)
+        return _error(e, 409 if "already exists for" in str(e) else 400)
 
     db.session.commit()
     return jsonify({"return": record.to_dict(), "correction": summary})

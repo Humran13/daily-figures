@@ -88,8 +88,12 @@ def _insert_legacy_daily_figure(app, product_id, date, shift, *, opening, return
 
 
 def _finalize_return(client, product_id, date, cartons=0, packs=0, pieces=0):
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     created = client.post("/api/returns", json={
-        "date": date, "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
+        "date": date, "customer_id": customer_id,
+        "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
     }).get_json()
     client.post(f"/api/returns/{created['id']}/finalize")
     return created

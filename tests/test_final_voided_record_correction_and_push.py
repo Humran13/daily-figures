@@ -72,7 +72,8 @@ def _void_dispatch(client, setup, number="VRC-D1", cartons=5, reason="customer c
 
 def _void_return(client, setup, cartons=2, reason="wrong recipient"):
     r = client.post("/api/returns", json={
-        "date": "2020-01-01", "lines": [{"product_id": setup["product"]["id"], "cartons": cartons, "packs": 0, "pieces": 0}],
+        "date": "2020-01-01", "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": cartons, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     res = client.post(f"/api/returns/{r['id']}/void", json={"reason": reason})

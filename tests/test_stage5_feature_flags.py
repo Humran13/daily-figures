@@ -116,8 +116,12 @@ def test_daily_figures_reflects_finalized_data_even_after_its_source_module_is_d
     showing a Return/Production total that was finalized before the
     Returns/Production module was switched off."""
     pid = setup["product"]["id"]
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     created = client.post("/api/returns", json={
-        "date": "2026-07-28", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+        "date": "2026-07-28", "customer_id": customer_id,
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{created['id']}/finalize")
 
@@ -129,8 +133,12 @@ def test_daily_figures_reflects_finalized_data_even_after_its_source_module_is_d
 
 def test_reenabling_returns_restores_full_access_without_data_loss(client, setup):
     pid = setup["product"]["id"]
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     created = client.post("/api/returns", json={
-        "date": "2026-07-28", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+        "date": "2026-07-28", "customer_id": customer_id,
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{created['id']}/finalize")
 

@@ -118,15 +118,32 @@
      gains horizontal overflow, since the scroll container is this wrapper
      alone. */
   .op-swipe-hint{ display:none; font-size:10px; color:var(--ink-soft); text-align:right; margin:0 0 4px; }
-  .op-table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
+  /* overflow-y:auto + max-height make this wrapper (not the page/window)
+     the genuine scrolling container the table's sticky th cells stick
+     relative to — sticky positions relative to its nearest scrolling
+     ancestor, and without a bounded height here this element never
+     itself scrolled (its box just grew to fit the table), so the page
+     did the real scrolling instead and "sticky" top:0 had no visible
+     effect. Mirrors static/dashboard.html's identical .dfig-table-wrap
+     fix for the Dashboard's own Daily Figures table. */
+  .op-table-wrap{ overflow-x:auto; overflow-y:auto; max-height:60vh; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
   table.op-table{ border-collapse:collapse; width:100%; min-width:600px; font-size:12px; }
-  table.op-table thead{ position:sticky; top:0; background:var(--paper-dim); z-index:1; }
-  table.op-table th{ text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); padding:9px 10px; white-space:nowrap; }
-  table.op-table th:first-child{ text-align:left; min-width:150px; }
+  table.op-table th{ position:sticky; top:0; z-index:1; background:var(--paper-dim); text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); padding:9px 10px; white-space:nowrap; }
+  /* Product column: content-aware, not a huge fixed share of the table —
+     min-width is the floor, max-width is the ceiling one unusually long
+     name can't push past (see static/dashboard.html's identical .dfig-
+     table comment for the full rationale). th:first-child is ALSO
+     sticky left (inherits position:sticky/top:0 from the base th rule
+     above), making the top-left Product header cell dual-sticky with a
+     higher z-index than both the ordinary sticky headers and the sticky
+     first body column, so it never gets visually overtaken scrolling
+     diagonally. */
+  table.op-table th:first-child{ text-align:left; min-width:150px; max-width:180px; left:0; z-index:2; }
   table.op-table th:not(:first-child){ min-width:85px; }
   table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:9px 10px; border-top:1px solid var(--line); white-space:nowrap; }
-  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); white-space:normal; word-break:break-word; }
+  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); white-space:normal; word-break:break-word; max-width:180px; position:sticky; left:0; z-index:1; background:white; }
   table.op-table tbody tr:nth-child(even){ background:var(--paper-dim); }
+  table.op-table tbody tr:nth-child(even) td:first-child{ background:var(--paper-dim); }
   table.op-table td.op-closing{ font-weight:800; font-size:13px; }
   table.op-table td.op-closing.op-negative{ color:var(--red); background:#F3E4E4; }
   .op-empty{ text-align:center; padding:36px 20px; color:var(--ink-soft); }

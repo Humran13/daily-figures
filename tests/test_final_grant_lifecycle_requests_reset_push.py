@@ -137,7 +137,8 @@ def test_grant_does_not_carry_to_a_different_record_type(client, app, setup, log
     login_as("glc_op_type", "password123", "operator")
     d = _historical_dispatch(client, app, setup, number="GLC-TYPE-1")
     r = client.post("/api/returns", json={
-        "date": "2020-01-01", "lines": [{"product_id": setup["product"]["id"], "cartons": 2, "packs": 0, "pieces": 0}],
+        "date": "2020-01-01", "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 2, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     with app.app_context():

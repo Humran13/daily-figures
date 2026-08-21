@@ -158,7 +158,7 @@
           <div class="autocomplete-list hidden" id="returnedByResults"></div>
           <div class="hint" id="returnedByHint"></div>
         </div>
-        <div class="field"><label>Name &amp; Sign <span style="font-weight:400;">(digital signature)</span></label><input id="rSignedByName" placeholder="Typed name standing in for a signature"></div>
+        <div class="field"><label>Received By <span style="font-weight:400;">(staff who received this return)</span></label><input id="rSignedByName" placeholder="Defaults to your account"></div>
         <div class="field"><label>Remarks <span style="font-weight:400;">(optional)</span></label><textarea id="rRemarks"></textarea></div>
       </div>
 
@@ -191,7 +191,7 @@
 
       <!-- Correct Record / Request Correction — dual-mode, see
            static/dispatch.html's identical panel for the full rationale.
-           Return Date/Returned By/Name & Sign mirror the same fields the
+           Return Date/Returned By/Received By mirror the same fields the
            New Return form already collects (see #rDate/#rReturnedBySearch/
            #rSignedByName above), just with a correct-prefixed id/handler
            set so both forms can coexist on this page. -->
@@ -205,7 +205,7 @@
           <div class="autocomplete-list hidden" id="correctReturnedByResults"></div>
           <div class="hint" id="correctReturnedByHint"></div>
         </div>
-        <div class="field"><label>Name &amp; Sign <span style="font-weight:400;">(digital signature)</span></label><input id="correctSignedByName" placeholder="Typed name standing in for a signature"></div>
+        <div class="field"><label>Received By <span style="font-weight:400;">(staff who received this return)</span></label><input id="correctSignedByName" placeholder="Defaults to your account"></div>
         <div id="correctLineList"></div>
         <div class="row">
           <div style="flex:1;"><label>Add a product</label>
@@ -487,20 +487,23 @@ function resetForm(){
   applyViewerReadOnly();
 }
 
-// Name & Sign defaults to the logged-in account's own identity — never a
+// Received By defaults to the logged-in account's own identity — never a
 // manually-typed browser value — matching the authenticated session,
 // exactly like created_by/finalized_by everywhere else in this app. An
-// Operator's signer is always themselves: the field is locked (server
+// Operator's Received By is always themselves: the field is locked (server
 // enforces this regardless, but the UI should not invite typing a value
 // that will be silently overridden). Manager/Super Administrator start
 // with their own name too but may override it when the existing business
-// workflow requires recording another authorized person.
+// workflow requires recording another authorized person as the receiver.
+// Reuses the same signed_by_name field/column this was always stored in
+// (a typed name, never a drawn/image signature) — only the business
+// label changed, not the data shape.
 function applySignerDefault(){
   const input = document.getElementById('rSignedByName');
   if(!currentUser){ input.value = ''; return; }
   input.value = currentUser.username;
   input.readOnly = currentUser.role === 'operator';
-  input.title = input.readOnly ? 'Signed as your own account — Operators cannot sign as someone else.' : '';
+  input.title = input.readOnly ? 'Received by your own account — Operators cannot record someone else as receiver.' : '';
 }
 
 function applyViewerReadOnly(){
@@ -514,6 +517,22 @@ function applyViewerReadOnly(){
 async function saveReturn(finalize){
   const msg = document.getElementById('saveMsg');
   if(currentLines.length===0){ msg.textContent='Add at least one product.'; msg.className='msg err'; return; }
+
+  // Backend enforces this too (returns_service.finalize_return()) — this
+  // check only saves a save-then-fail round trip for the common case of
+  // finalizing straight from the entry form; a Draft may still be saved
+  // completely empty here, and the Finalize action from the list/detail
+  // view (which never runs this function) is caught by the backend alone.
+  // Typed-but-not-selected text is deliberately NOT enough — selecting an
+  // autocomplete result is the only thing that sets selectedCustomer (see
+  // the #rReturnedBySearch results-click handler above), which is the
+  // only way a real returned_by_customer_id ever gets sent.
+  if(finalize && !selectedCustomer){
+    msg.textContent = 'Please select Returned By from the customer list.';
+    msg.className = 'msg err';
+    document.getElementById('rReturnedBySearch').focus();
+    return;
+  }
 
   const draftBtn = document.getElementById('saveDraftBtn');
   const finalizeBtn = document.getElementById('finalizeBtn');
@@ -746,7 +765,7 @@ async function loadList(){
               <span class="num">Return #${r.id}</span>
               ${statusPill(r.status)}${metroStockBadge(r)}
             </div>
-            <div class="meta">${escapeHtml(r.returned_by_name||'—')}${r.signed_by_name ? ' · signed '+escapeHtml(r.signed_by_name) : ''} · Entered ${escapeHtml(r.created_at_label || '—')}</div>
+            <div class="meta">${escapeHtml(r.returned_by_name||'—')}${r.signed_by_name ? ' · received by '+escapeHtml(r.signed_by_name) : ''} · Entered ${escapeHtml(r.created_at_label || '—')}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -796,10 +815,8 @@ async function openDetail(id){
     </div>
     <div class="hint">${data.date}</div>
     <div class="hint">Time Entered: ${escapeHtml(data.created_at_label || '—')}</div>
-    <div style="margin-top:8px;"><strong>${escapeHtml(data.returned_by_name||'—')}</strong></div>
-    ${data.signed_by_name ? `<div class="hint">Signed: ${escapeHtml(data.signed_by_name)}</div>` : ''}
-    <div class="hint">Received by: ${escapeHtml(data.received_by_username||'—')}</div>
-    <div class="hint">Verified by: ${escapeHtml(data.verified_by_username||'—')}</div>
+    <div style="margin-top:8px;">Returned By: <strong>${escapeHtml(data.returned_by_name||'—')}</strong></div>
+    <div class="hint">Received By: ${escapeHtml(data.signed_by_name || '—')}</div>
     ${data.remarks ? `<div class="hint" style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(data.remarks)}</div>` : ''}
     ${data.void_reason ? `<div class="hint" style="color:var(--red);margin-top:6px;">Voided: ${escapeHtml(data.void_reason)}</div>` : ''}
   `;

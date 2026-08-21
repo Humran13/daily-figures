@@ -66,7 +66,8 @@ def _make_dispatch(client, setup, dispatch_number="SDW-D1", cartons=1):
 
 def _make_return(client, setup, cartons=1):
     r = client.post("/api/returns", json={
-        "date": "2020-01-01", "lines": [{"product_id": setup["product"]["id"], "cartons": cartons, "packs": 0, "pieces": 0}],
+        "date": "2020-01-01", "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": cartons, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     return r

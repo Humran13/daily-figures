@@ -22,6 +22,7 @@ Figures behavior is touched by any of this.
 """
 import json
 import pathlib
+import uuid
 
 import pytest
 
@@ -206,6 +207,24 @@ def test_rename_duplicate_can_proceed_with_explicit_confirmation(client, setup):
 
 def _create_return(client, product_id, cartons=1, **kwargs):
     body = {"date": "2026-08-01", "lines": [{"product_id": product_id, "cartons": cartons, "packs": 0, "pieces": 0}]}
+    # Returned By must resolve to a real SELECTED customer before finalize
+    # (free text alone is no longer sufficient — see returns_service.
+    # finalize_return()) — default to a fresh throwaway customer (unique
+    # per call, so repeat calls on this helper's fixed date never collide
+    # with the duplicate-Returns rule) so every existing caller that
+    # doesn't care about the recipient still finalizes cleanly. A caller
+    # passing its own customer_id/returned_by_name via kwargs overrides
+    # this via body.update() below, same as before.
+    if "customer_id" not in kwargs and "returned_by_name" not in kwargs:
+        # Non-fatal: a caller logged in as a role that can't create
+        # customers falls through with no customer_id — the return-
+        # creation call right below then fails for that same role reason
+        # anyway, which is what those permission tests actually assert on.
+        cust_res = client.post("/api/admin/customers", json={
+            "name": f"Auto Returner {uuid.uuid4().hex[:8]}", "confirm_not_duplicate": True,
+        })
+        if cust_res.status_code == 201:
+            body["customer_id"] = cust_res.get_json()["id"]
     body.update(kwargs)
     return client.post("/api/returns", json=body)
 
@@ -1291,8 +1310,12 @@ def test_manager_can_change_return_signer_via_correction(client, setup, super_ad
 
 def test_manager_can_change_returned_by_recipient_via_correction(client, setup, super_admin):
     pid = setup["product"]["id"]
-    created = _create_return(client, pid, returned_by_name="Truck 9").get_json()
-    client.post(f"/api/returns/{created['id']}/finalize")
+    wrong_customer = client.post("/api/admin/customers", json={
+        "name": "TUX Wrong Recipient", "confirm_not_duplicate": True,
+    }).get_json()
+    created = _create_return(client, pid, customer_id=wrong_customer["id"]).get_json()
+    fin = client.post(f"/api/returns/{created['id']}/finalize")
+    assert fin.status_code == 200
     res = client.post(f"/api/returns/{created['id']}/correct", json={
         "reason": "wrong recipient recorded", "notes": None, "customer_id": setup["customer"]["id"],
         "lines": [{"id": created["lines"][0]["id"], "product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],

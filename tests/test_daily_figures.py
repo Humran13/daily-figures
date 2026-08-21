@@ -27,8 +27,12 @@ def _finalize_return(client, product_id, date, cartons, packs, pieces):
     """As of Stage 5, Return is sourced from the finalized Returns Book, not
     from the daily-figures POST — see webapp/services/stock_service.py's
     return_base_qty()."""
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     created = client.post("/api/returns", json={
-        "date": date, "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
+        "date": date, "customer_id": customer_id,
+        "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}],
     }).get_json()
     client.post(f"/api/returns/{created['id']}/finalize")
     return created

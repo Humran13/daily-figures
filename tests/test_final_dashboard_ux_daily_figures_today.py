@@ -76,7 +76,8 @@ def test_production_activity_includes_product(client, setup):
 def test_returns_activity_includes_product(client, setup):
     p = _make_product(client, "DFT Returns Activity")
     r = client.post("/api/returns", json={
-        "date": "2026-07-28", "lines": [{"product_id": p["id"], "cartons": 2, "packs": 0, "pieces": 0}],
+        "date": "2026-07-28", "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": p["id"], "cartons": 2, "packs": 0, "pieces": 0}],
     }).get_json()
     res = client.post(f"/api/returns/{r['id']}/finalize")
     assert res.status_code == 200, res.get_json()

@@ -608,13 +608,40 @@ def test_is_metro_sales_return_uses_sales_category_relationship_not_name(client,
 
 
 def test_free_text_returned_by_is_never_metro_sales(client, setup, app):
+    # A follow-up round (see tests/test_returns_recipient_selection_
+    # required.py) now requires a selected canonical customer before a
+    # Return can finalize through the normal API — a free-text-only
+    # Return can no longer reach FINALIZED that way. The property this
+    # test actually proves — is_metro_sales_return()/is_return_stock_
+    # posting_eligible() never misclassify a record with no linked
+    # customer as Metro Sales, so it posts its full quantity normally —
+    # is still a real, live code path (a pre-existing historical row can
+    # still have customer_id=None), so it's proven directly against the
+    # service functions/DB here instead of through create+finalize.
     pid = setup["product"]["id"]
-    res = client.post("/api/returns", json={
-        "date": WEDNESDAY, "returned_by_name": "Random Truck",
-        "lines": [{"product_id": pid, "cartons": 3, "packs": 0, "pieces": 0}],
-    })
-    r = res.get_json()
-    _finalize(client, r["id"])
+    with app.app_context():
+        from datetime import datetime, timezone
+        from webapp.extensions import db
+        from webapp.models.product import Product
+        from webapp.models.return_record import STATUS_FINALIZED, ReturnLine, ReturnRecord
+        from webapp.services import returns_service
+
+        record = ReturnRecord(
+            date=WEDNESDAY, returned_by_customer_id=None,
+            returned_by_name_snapshot="Random Truck", status=STATUS_FINALIZED,
+            finalized_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        db.session.add(record)
+        db.session.flush()
+        rule = db.session.get(Product, pid).current_packaging_rule()
+        db.session.add(ReturnLine(
+            return_id=record.id, product_id=pid,
+            cartons=3, packs=0, pieces=0, base_unit_qty=300, packaging_rule_id=rule.id,
+        ))
+        db.session.commit()
+        assert returns_service.is_metro_sales_return(record) is False
+        assert returns_service.is_return_stock_posting_eligible(record) is True
+
     # No linked customer at all -> never Metro Sales -> posts normally.
     assert _return_base_qty(client, pid, WEDNESDAY) == 300
 

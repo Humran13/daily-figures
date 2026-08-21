@@ -5,6 +5,8 @@ audit, exports, and EXISTS-subquery product filtering (never a join, so a
 return with several lines for one product never multiplies the parent row
 — see webapp/routes/returns.py's _filtered_return_query).
 """
+import uuid
+
 import pytest
 
 
@@ -32,6 +34,26 @@ def setup(client, super_admin):
 
 def _create_return(client, product_id, cartons=1, packs=0, pieces=0, date="2026-07-28", **kwargs):
     body = {"date": date, "lines": [{"product_id": product_id, "cartons": cartons, "packs": packs, "pieces": pieces}]}
+    # Returned By must resolve to a real SELECTED customer before finalize
+    # (free text alone is no longer sufficient — see returns_service.
+    # finalize_return()) — default to a fresh throwaway customer here so
+    # every existing caller that doesn't care about the recipient still
+    # finalizes cleanly. A caller passing its own customer_id/
+    # returned_by_name via kwargs overrides this via body.update() below,
+    # same as before (e.g. test_create_return_accepts_free_text_returned_by,
+    # which deliberately tests DRAFT-time free-text creation — it never
+    # finalizes, so the stricter rule doesn't apply to it).
+    if "customer_id" not in kwargs and "returned_by_name" not in kwargs:
+        # Non-fatal: a caller logged in as a role that can't create
+        # customers (e.g. Viewer, in permission tests) falls through with
+        # no customer_id — the return-creation call right below then fails
+        # for that same role reason anyway, which is what those tests
+        # actually assert on.
+        cust_res = client.post("/api/admin/customers", json={
+            "name": f"Auto Returner {uuid.uuid4().hex[:8]}", "confirm_not_duplicate": True,
+        })
+        if cust_res.status_code == 201:
+            body["customer_id"] = cust_res.get_json()["id"]
     body.update(kwargs)
     return client.post("/api/returns", json=body)
 

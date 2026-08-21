@@ -333,3 +333,32 @@ def test_operator_dashboard_access_unchanged_by_this_layout_fix(client, login_as
 def test_operator_table_in_index_html_is_untouched_by_this_fix():
     assert "modal-panel--wide" not in INDEX_HTML
     assert "Per-product Daily Figures" not in INDEX_HTML
+
+
+# =====================================================================
+# Follow-up targeted fix: compact / content-aware Product column (see
+# tests/test_operator_table_sticky_and_compact_layout.py for the
+# Operator table's identical companion fix).
+# =====================================================================
+
+def test_dfig_product_column_no_longer_unbounded_width():
+    th_block = _block("table.dfig-table th:first-child{")
+    assert "max-width:" in th_block
+    m_min = re.search(r"min-width:\s*(\d+)px", th_block)
+    m_max = re.search(r"max-width:\s*(\d+)px", th_block)
+    assert m_min and m_max
+    assert int(m_max.group(1)) > int(m_min.group(1))
+
+
+def test_dfig_product_column_capped_consistently_on_header_and_body():
+    th_max = re.search(r"max-width:\s*(\d+)px", _block("table.dfig-table th:first-child{")).group(1)
+    td_max = re.search(r"max-width:\s*(\d+)px", _block("table.dfig-table td:first-child{")).group(1)
+    assert th_max == td_max
+
+
+def test_dfig_product_names_never_truncated_or_hidden():
+    td_block = _block("table.dfig-table td:first-child{")
+    assert "white-space:normal" in td_block
+    assert "word-break:break-word" in td_block
+    assert "text-overflow" not in td_block
+    assert "overflow:hidden" not in td_block

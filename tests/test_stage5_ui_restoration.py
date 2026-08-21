@@ -144,8 +144,12 @@ def test_returns_and_production_have_no_input_fields_in_the_entry_card():
 
 def test_returns_and_production_view_fields_derive_from_stock_service(client, setup):
     pid = setup["product"]["id"]
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     ret = client.post("/api/returns", json={
-        "date": "2026-07-30", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+        "date": "2026-07-30", "customer_id": customer_id,
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{ret['id']}/finalize")
     prod = client.post("/api/production", json={
@@ -240,8 +244,12 @@ def test_closing_stock_formula_value_matches_opening_plus_production_plus_return
         "product_id": pid, "date": "2026-07-30", "shift": "Day",
         "opening": {"cartons": 10, "packs": 0, "pieces": 0},
     })
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     ret = client.post("/api/returns", json={
-        "date": "2026-07-30", "lines": [{"product_id": pid, "cartons": 0, "packs": 5, "pieces": 0}],
+        "date": "2026-07-30", "customer_id": customer_id,
+        "lines": [{"product_id": pid, "cartons": 0, "packs": 5, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{ret['id']}/finalize")
     prod = client.post("/api/production", json={

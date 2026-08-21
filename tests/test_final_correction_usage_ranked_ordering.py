@@ -53,8 +53,12 @@ def _finalize_dispatch_for(client, product_id, customer_id, number, date_str="20
 
 
 def _finalize_return_for(client, product_id, number_date="2026-07-01"):
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     r = client.post("/api/returns", json={
-        "date": number_date, "lines": [{"product_id": product_id, "cartons": 1, "packs": 0, "pieces": 0}],
+        "date": number_date, "customer_id": customer_id,
+        "lines": [{"product_id": product_id, "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     res = client.post(f"/api/returns/{r['id']}/finalize")
     assert res.status_code == 200, res.get_json()

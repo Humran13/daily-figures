@@ -202,7 +202,8 @@ def test_manager_void_return_zeroes_contribution(client, setup, super_admin):
     pid = setup["product"]["id"]
     date = business_today()
     r = client.post("/api/returns", json={
-        "date": date, "lines": [{"product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
+        "date": date, "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": pid, "cartons": 4, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     assert _figures(client, pid, date)["return_"]["base_qty"] == 400
@@ -272,7 +273,8 @@ def test_voiding_a_monday_metro_sales_return_removes_its_real_contribution(clien
 def test_returns_delete_still_separate_from_void(client, setup, super_admin, app):
     pid = setup["product"]["id"]
     r = client.post("/api/returns", json={
-        "date": business_today(), "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+        "date": business_today(), "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     res = client.delete(f"/api/returns/{r['id']}", json={"reason": "x", "confirm": True})

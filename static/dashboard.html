@@ -103,11 +103,21 @@
      forced columns to overflow their min-width rather than wrap — that
      overflow, squeezed inside the old 640px-capped modal, is what made
      "Closing Stock" read as partially cut off. */
-  table.dfig-table th:first-child{ text-align:left; min-width:170px; left:0; z-index:2; }
+  /* Product column: content-aware, not a huge fixed share of the table —
+     min-width is the floor a short name never shrinks below, max-width
+     is the ceiling ONE unusually long name can't stretch the whole
+     column past (table-layout:auto's width:100% redistribution was
+     otherwise giving this, the widest text column, a disproportionate
+     share of any leftover width, which is what left a large blank gap
+     after a short product name). A name that would exceed the cap wraps
+     onto a second line instead (white-space:normal below), never
+     stretches the column further — this also keeps the sticky column
+     from eating too much of a phone's viewport while panning. */
+  table.dfig-table th:first-child{ text-align:left; min-width:170px; max-width:220px; left:0; z-index:2; }
   table.dfig-table th:not(:first-child){ min-width:92px; }
   table.dfig-table th:last-child{ min-width:100px; }
   table.dfig-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:8px; border-top:1px solid var(--line); white-space:nowrap; }
-  table.dfig-table td:first-child{ text-align:left; font-family:var(--sans); white-space:normal; word-break:break-word; position:sticky; left:0; z-index:1; background:white; }
+  table.dfig-table td:first-child{ text-align:left; font-family:var(--sans); white-space:normal; word-break:break-word; max-width:220px; position:sticky; left:0; z-index:1; background:white; }
   table.dfig-table tbody tr:nth-child(even){ background:var(--paper-dim); }
   table.dfig-table tbody tr:nth-child(even) td:first-child{ background:var(--paper-dim); }
   table.dfig-table td.dfig-closing{ font-weight:800; font-size:13px; }

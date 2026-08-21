@@ -194,7 +194,7 @@ def _resolve_returned_by(customer_id, returned_by_name):
     return None, (returned_by_name or "").strip() or None
 
 
-def _find_active_duplicate_return(customer_id, date):
+def _find_active_duplicate_return(customer_id, date, exclude_id=None):
     """
     One active (draft or finalized — never void) Return per canonical
     recipient per business date. Resolves merges in both directions via
@@ -208,6 +208,12 @@ def _find_active_duplicate_return(customer_id, date):
     fragile name-based uniqueness rule for that case risks breaking
     legitimate historical/free-text records; existing behavior for that
     edge case is preserved unchanged.
+
+    exclude_id: the record currently being edited, if any — update_header()
+    below passes its own return_record.id so a draft being edited never
+    collides with itself (it is trivially "the same recipient/date" as
+    its own current values whenever those two fields aren't part of the
+    edit). create_return() has no id yet, so it never passes this.
     """
     if customer_id is None:
         return None
@@ -217,13 +223,14 @@ def _find_active_duplicate_return(customer_id, date):
     from webapp.services.customer_service import resolve_canonical, resolve_customer_ids_for_filter
     canonical = resolve_canonical(customer)
     candidate_ids = resolve_customer_ids_for_filter(canonical.id)
-    return (
-        ReturnRecord.query.filter(
-            ReturnRecord.date == date,
-            ReturnRecord.returned_by_customer_id.in_(candidate_ids),
-            ReturnRecord.status != STATUS_VOID,
-        ).first()
+    query = ReturnRecord.query.filter(
+        ReturnRecord.date == date,
+        ReturnRecord.returned_by_customer_id.in_(candidate_ids),
+        ReturnRecord.status != STATUS_VOID,
     )
+    if exclude_id is not None:
+        query = query.filter(ReturnRecord.id != exclude_id)
+    return query.first()
 
 
 def create_return(*, date, returned_by_customer_id=None, returned_by_name=None, signed_by_name=None,
@@ -289,12 +296,34 @@ def update_header(return_record, *, date=None, returned_by_customer_id=None, ret
     if return_record.status != STATUS_DRAFT:
         raise ReturnError("only a draft return's header can be edited directly — reopen it first")
 
+    # Reinforces the same one-active-Return-per-canonical-recipient-per-
+    # date rule create_return() already enforces — this was the actual
+    # gap that let an edited-then-finalized draft (via this route, or via
+    # record_correction_service.correct_record()'s "Correct Record" flow,
+    # which also delegates here) collide with an existing active Return
+    # for the same recipient/date without ever being caught: only the
+    # CREATE path checked before this. Resolves the recipient this update
+    # would leave the record with (its own current values for whichever
+    # of date/customer isn't being changed here) and excludes the record
+    # itself so a no-op re-save of its own existing recipient/date never
+    # self-collides.
+    new_date = date if date is not None else return_record.date
+    new_customer_id = return_record.returned_by_customer_id
+    new_name_snapshot = return_record.returned_by_name_snapshot
+    if returned_by_customer_id is not None or returned_by_name is not None:
+        new_customer_id, new_name_snapshot = _resolve_returned_by(returned_by_customer_id, returned_by_name)
+    duplicate = _find_active_duplicate_return(new_customer_id, new_date, exclude_id=return_record.id)
+    if duplicate is not None:
+        raise ReturnError(
+            f"A Return for {new_name_snapshot or 'this recipient'} already exists for {new_date}. "
+            "Open the existing Return and edit/correct it instead."
+        )
+
     if date is not None:
         return_record.date = date
     if returned_by_customer_id is not None or returned_by_name is not None:
-        customer_id, name_snapshot = _resolve_returned_by(returned_by_customer_id, returned_by_name)
-        return_record.returned_by_customer_id = customer_id
-        return_record.returned_by_name_snapshot = name_snapshot
+        return_record.returned_by_customer_id = new_customer_id
+        return_record.returned_by_name_snapshot = new_name_snapshot
     if signed_by_name is not None:
         return_record.signed_by_name = _resolve_signed_by_name(signed_by_name, user)
     if received_by is not None:
@@ -312,6 +341,24 @@ def finalize_return(return_record, user):
         raise ReturnError(f"Only a draft return can be finalized (this one is {return_record.status})")
     if not return_record.lines:
         raise ReturnError("Cannot finalize a return with no product lines")
+    # A draft may sit incomplete indefinitely (unchanged) — this only gates
+    # the FINALIZE transition. Tightened: free text alone is no longer
+    # sufficient — Returned By must resolve to a real, selected canonical
+    # Customer (returned_by_customer_id), never just returned_by_name_
+    # snapshot, so duplicate protection (which keys on customer_id) and
+    # Dispatch's own recipient linkage stay reliable. _resolve_returned_by()
+    # is the only place that ever SETS returned_by_customer_id, and it
+    # already refuses a nonexistent id — so reaching this check with a
+    # customer_id set means it's a real, existing customer.
+    #
+    # This never touches an already-finalized historical row (draft ->
+    # finalized is a one-way, one-time transition through this exact
+    # function) — a pre-existing free-text/no-recipient record stays
+    # exactly as it is, fully readable/printable/exportable, unless and
+    # until someone chooses to correct it, at which point the same rule
+    # applies to that correction like any other finalize.
+    if return_record.returned_by_customer_id is None:
+        raise ReturnError("Please select Returned By from the customer list.")
     return_record.status = STATUS_FINALIZED
     return_record.finalized_by = user.id
     return_record.finalized_at = _utcnow()

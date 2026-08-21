@@ -166,8 +166,12 @@ def test_review_workflow_creates_no_duplicate_production_record(client, login_as
 
 def test_review_workflow_creates_no_duplicate_returns_record(client, login_as, setup):
     pid = setup["product"]["id"]
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     r = client.post("/api/returns", json={
-        "date": "2026-08-01", "lines": [{"product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
+        "date": "2026-08-01", "customer_id": customer_id,
+        "lines": [{"product_id": pid, "cartons": 2, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     client.post("/api/daily-review/mark-reviewed", json={"date": "2026-08-01", "shift": "Day", "product_id": pid, "edited": False})

@@ -82,8 +82,12 @@ def test_finalized_dispatch_counts_as_usage(client, setup):
 
 def test_finalized_return_counts_as_usage(client, setup):
     pid = setup["products"]["Ranked A"]["id"]
+    customer_id = client.post("/api/admin/customers", json={
+        "name": f"Auto Returner {id(object())}", "confirm_not_duplicate": True,
+    }).get_json()["id"]
     r = client.post("/api/returns", json={
-        "date": "2026-07-01", "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
+        "date": "2026-07-01", "customer_id": customer_id,
+        "lines": [{"product_id": pid, "cartons": 1, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     assert "Ranked A" in _frequently_used_names(client)

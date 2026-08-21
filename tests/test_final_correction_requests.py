@@ -438,7 +438,8 @@ def test_full_audit_trail_for_create_reject(client, app, setup, login_as):
 def test_returns_correction_request_full_cycle(client, app, setup, login_as):
     login_as("cr_rop1", "password123", "operator")
     r = client.post("/api/returns", json={
-        "date": "2020-01-01", "lines": [{"product_id": setup["product"]["id"], "cartons": 3, "packs": 0, "pieces": 0}],
+        "date": "2020-01-01", "customer_id": setup["customer"]["id"],
+        "lines": [{"product_id": setup["product"]["id"], "cartons": 3, "packs": 0, "pieces": 0}],
     }).get_json()
     client.post(f"/api/returns/{r['id']}/finalize")
     with app.app_context():
