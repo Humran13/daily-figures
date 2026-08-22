@@ -284,14 +284,27 @@
   // Shown once per superseded session (a second device/login bumping this
   // user's session_version — see webapp/auth.py's _session_diagnosis()) —
   // guarded by sessionStorage so navigating through several pages after
-  // being signed out doesn't re-alert on every single one.
+  // being signed out doesn't re-alert on every single one. The REDIRECT
+  // below is deliberately NOT behind that same guard: only the alert is
+  // "once per tab" — every call must still send the user back to "/" (the
+  // only page with a login form), even on a later page load within the
+  // same tab where the alert was already shown once before. Without this
+  // split, a superseded device that dismissed the alert once, then later
+  // navigated straight to a gated page again (e.g. a bookmark or PWA
+  // shortcut) without ever completing a fresh login, would silently stop
+  // redirecting — stuck on that page's own static "Sign in from the main
+  // app first." text with no way forward.
   var SUPERSEDED_ALERT_KEY = 'appSessionSupersededShown';
   function warnSessionSuperseded(message) {
     try {
-      if (sessionStorage.getItem(SUPERSEDED_ALERT_KEY)) return;
-      sessionStorage.setItem(SUPERSEDED_ALERT_KEY, '1');
-    } catch (e) { /* private browsing / storage disabled — still show it once this load */ }
-    window.alert(message || 'Your account was signed in on another device.');
+      if (!sessionStorage.getItem(SUPERSEDED_ALERT_KEY)) {
+        sessionStorage.setItem(SUPERSEDED_ALERT_KEY, '1');
+        window.alert(message || 'Your account was signed in on another device.');
+      }
+    } catch (e) {
+      // private browsing / storage disabled — still show it once this load
+      window.alert(message || 'Your account was signed in on another device.');
+    }
     if (location.pathname !== '/' && location.pathname !== '/index.html') location.href = '/';
   }
 
@@ -328,7 +341,22 @@
     var session = await apiGet('/api/session');
     if (!session || !session.authed || !session.user) {
       AppShell.user = null;
-      if (session && session.session_superseded) warnSessionSuperseded(session.message);
+      if (session && session.session_superseded) {
+        // Alerts (once per tab) and always redirects to "/" — see
+        // warnSessionSuperseded() above.
+        warnSessionSuperseded(session.message);
+      } else if (location.pathname !== '/' && location.pathname !== '/index.html') {
+        // Never authenticated on THIS device at all — e.g. a fresh
+        // browser, an expired cookie, or a bookmark/PWA shortcut pointing
+        // straight at a secondary page instead of "/". No alert (this
+        // isn't an alarming "signed out" event, just the ordinary "please
+        // sign in" case every other page already redirects for
+        // server-side — see webapp/routes/pages.py's _guard_page()) —
+        // just send them to the one page with an actual login form,
+        // rather than leaving this page's own static "Sign in from the
+        // main app first." text as a dead end with no way forward.
+        location.href = '/';
+      }
       return; // login screen, an expired session, or a superseded one — nothing to render
     }
     AppShell.user = session.user;

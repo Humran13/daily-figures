@@ -137,6 +137,15 @@ def test_app_shell_shows_superseded_message_and_does_not_alert_repeatedly():
 
 
 def test_app_shell_never_shows_superseded_message_for_a_plain_logged_out_session():
+    # warnSessionSuperseded() (which alerts) is only ever reached through
+    # the session_superseded branch — a plain "never authenticated on this
+    # device" session (no session_superseded flag at all) takes the sibling
+    # else-branch instead, which redirects to "/" WITHOUT calling
+    # warnSessionSuperseded() and therefore without ever alerting.
     idx = APP_SHELL_JS.index("var session = await apiGet('/api/session');")
-    body = APP_SHELL_JS[idx:idx + 300]
-    assert "if (session && session.session_superseded) warnSessionSuperseded(session.message);" in body
+    end = APP_SHELL_JS.index("return; // login screen", idx)
+    body = APP_SHELL_JS[idx:end]
+    assert "if (session && session.session_superseded) {" in body
+    assert "warnSessionSuperseded(session.message);" in body
+    else_branch = body[body.index("} else if ("):]
+    assert "warnSessionSuperseded(" not in else_branch  # not even mentioned — the plain-unauthenticated path never alerts

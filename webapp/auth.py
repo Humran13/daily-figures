@@ -9,6 +9,7 @@ import os
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session
+from sqlalchemy import update
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from webapp.extensions import db
@@ -122,13 +123,25 @@ def login():
         db.session.commit()
         return jsonify({"ok": False, "error": "Invalid username or password"}), 401
 
-    # One active session per account (Stage 7 section 2): every successful
-    # login bumps session_version, so whatever session was previously
-    # stamped with the old value — on this device or any other — stops
+    # One active session per account, NEWEST login wins (Stage 7 section 2;
+    # reaffirmed for rapid/concurrent logins below): every successful login
+    # bumps session_version, so whatever session was previously stamped
+    # with the old value — on this device or any other — stops
     # authenticating on its very next request (see _session_diagnosis()
     # above). A failed login attempt never reaches this line, so it can
     # never invalidate the real, currently-valid session.
-    user.session_version = (user.session_version or 0) + 1
+    #
+    # The increment itself is an atomic UPDATE ... SET session_version =
+    # session_version + 1 (never a Python read-then-write of the ORM
+    # attribute) so that two logins for the same account arriving close
+    # together — e.g. Device B and Device C within the same second — can
+    # never both compute the same "next" value and both end up validly
+    # stamped; the database serializes the two increments, and only the
+    # session that reads back the LATEST value after its own increment is
+    # ever valid afterward. db.session.refresh() then pulls that
+    # authoritative value back into `user` for the cookie stamped below.
+    db.session.execute(update(User).where(User.id == user.id).values(session_version=User.session_version + 1))
+    db.session.refresh(user)
     session.clear()
     session["user_id"] = user.id
     session["session_version"] = user.session_version
