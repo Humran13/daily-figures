@@ -180,9 +180,10 @@ function renderRequestRow(r){
       <div class="meta">Time Entered: ${escapeHtml(snap.created_at_label || '—')}</div>
       <div class="meta">Requested: ${escapeHtml(r.created_at_label || '—')}</div>
       <div class="reason">${escapeHtml(r.reason)}</div>
-      ${isApproved ? `<div class="meta">Edit grant active until ${escapeHtml(r.grant_expires_at_label || '—')} — one correction only.</div>` : ''}
-      ${r.status === 'completed' ? `<div class="meta">Correction submitted ${escapeHtml(r.completed_at_label || '—')}.</div>` : ''}
-      ${!isPending && !isApproved && r.status !== 'completed' && r.status !== 'expired' ? `<div class="meta">Reviewed by ${escapeHtml(r.reviewed_by_username || '—')} · ${escapeHtml(r.reviewed_at_label || '—')}${r.review_note ? ` · ${escapeHtml(r.review_note)}` : ''}</div>` : ''}
+      ${isApproved ? `<div class="meta">Edit granted by ${escapeHtml(r.reviewed_by_username || '—')}</div><div class="meta">Active until ${escapeHtml(r.grant_expires_at_label || '—')} — one correction only.</div>` : ''}
+      ${r.status === 'expired' ? `<div class="meta">Edit granted by ${escapeHtml(r.reviewed_by_username || '—')}</div>` : ''}
+      ${r.status === 'completed' ? `<div class="meta">Reviewed by ${escapeHtml(r.reviewed_by_username || '—')} · ${escapeHtml(r.reviewed_at_label || '—')}</div><div class="meta">Correction submitted ${escapeHtml(r.completed_at_label || '—')}.</div>` : ''}
+      ${r.status === 'rejected' ? `<div class="meta">Reviewed by ${escapeHtml(r.reviewed_by_username || '—')} · ${escapeHtml(r.reviewed_at_label || '—')}${r.review_note ? ` · ${escapeHtml(r.review_note)}` : ''}</div>` : ''}
       ${isPending ? `
       <textarea class="review-note" id="reviewNote${r.id}" placeholder="Review note (optional for Approve, required for Reject)"></textarea>
       <div class="row-actions">
