@@ -125,10 +125,10 @@ def test_history_page_has_four_tabs_in_order():
         r'<div class="tabs">\s*<div class="tab active" data-tab="dispatch"[^>]*>Dispatch History</div>\s*'
         r'<div class="tab" data-tab="returns"[^>]*>Returns History</div>\s*'
         r'<div class="tab" data-tab="production"[^>]*>Production History</div>\s*'
-        r'<div class="tab" data-tab="daily-figures"[^>]*>Daily Figures History</div>',
+        r'<div class="tab" data-tab="daily-figures"[^>]*>Operations History</div>',
         HISTORY_HTML,
     )
-    assert match, "expected Dispatch/Returns/Production/Daily Figures History tabs in that order"
+    assert match, "expected Dispatch/Returns/Production/Operations History tabs in that order"
 
 
 def test_dispatch_history_tab_has_all_required_filters():
@@ -162,7 +162,7 @@ def test_dispatch_history_groups_by_date_with_collapsible_sections():
 
 def test_exports_reuse_existing_endpoints_and_include_filters():
     assert "'/api/dispatches/export.'+fmt+'?'+params.toString()" in HISTORY_HTML
-    assert "'/api/daily-figures/export.'+fmt+'?'+params.toString()" in HISTORY_HTML
+    assert "'/api/daily-figures/operations-history/export.'+fmt+'?'+params.toString()" in HISTORY_HTML
 
 
 def test_dispatch_row_click_navigates_to_dispatch_module_for_corrections():

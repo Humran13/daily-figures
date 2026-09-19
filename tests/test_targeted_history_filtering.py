@@ -210,16 +210,19 @@ def test_daily_figures_month_and_exact_product_match_screen_and_export(client, r
     assert "2026-08-31" not in exported
 
 
-def test_daily_figures_history_exposes_customer_and_database_category_filters():
+def test_operations_history_exposes_customer_and_database_category_filters():
     assert 'id="hCustomer"' in HISTORY_HTML
     assert 'id="hSalesCategory"' in HISTORY_HTML
     assert "selectedFilterId('hCustomer')" in HISTORY_HTML
     assert "params.set('customer_id', customerId)" in HISTORY_HTML
     assert "params.set('sales_category_id', salesCategoryId)" in HISTORY_HTML
     assert "salesCategoriesCache.map" in HISTORY_HTML
-    assert "'/api/daily-figures/issued-history?'" in HISTORY_HTML
-    assert "'/api/daily-figures/issued-history/export.'" in HISTORY_HTML
-    assert "Opening ${qtyLabel(e.opening, e.packaging_rule)}" in HISTORY_HTML
+    assert "Operations History" in HISTORY_HTML
+    assert "'/api/daily-figures/operations-history?'" in HISTORY_HTML
+    assert "'/api/daily-figures/operations-history/export.'" in HISTORY_HTML
+    assert 'id="hOperation"' in HISTORY_HTML
+    for operation in ("all", "production", "returns", "issued"):
+        assert f'value="{operation}"' in HISTORY_HTML
 
 
 def test_month_customer_and_category_reports_use_filtered_dispatch_activity(client, reporting_setup):
@@ -313,6 +316,59 @@ def test_issued_activity_report_does_not_change_daily_figure_stock_values(client
     assert after == before
 
 
+def test_operations_history_uses_canonical_movements_and_filter_scope(client, reporting_setup):
+    s = reporting_setup
+    production = client.post("/api/production", json={
+        "date": "2026-09-14", "shift": "Night", "lines": [_line(s["compact"]["id"])],
+    }).get_json()
+    assert client.post(f"/api/production/{production['id']}/finalize").status_code == 200
+    returned = client.post("/api/returns", json={
+        "date": "2026-09-14", "customer_id": s["derrick"]["id"], "lines": [_line(s["compact"]["id"])],
+    }).get_json()
+    assert client.post(f"/api/returns/{returned['id']}/finalize").status_code == 200
+    _dispatch(client, "OPS-ISSUED", "2026-09-14", s["dakar"]["id"], [_line(s["compact"]["id"])])
+    assert client.post("/api/daily-figures/adjustments", json={
+        "product_id": s["compact"]["id"], "date": "2026-09-14", "shift": "Day",
+        "delta_base_qty": 10, "reason": "verified adjustment",
+    }).status_code == 201
+
+    base = "date_from=2026-09-14&date_to=2026-09-14"
+    all_data = client.get(f"/api/daily-figures/operations-history?{base}").get_json()
+    assert {row["operation"] for row in all_data["records"]} == {"production", "returns", "issued"}
+    assert any(row["source_type"] == "stock_adjustment" for row in all_data["records"])
+    for summary in all_data["summaries"]:
+        assert sum(row["base_qty"] for row in all_data["records"] if row["operation"] == summary["operation"]) == sum(
+            product["base_qty"] for product in summary["products"]
+        )
+
+    customer_data = client.get(
+        f"/api/daily-figures/operations-history?{base}&customer_id={s['dakar']['id']}"
+    ).get_json()
+    assert {row["operation"] for row in customer_data["records"]} == {"production", "returns", "issued"}
+    assert all(row["customer_name"] == "Dakar" for row in customer_data["records"] if row["operation"] == "issued")
+    assert any(row["operation"] == "production" for row in customer_data["records"])
+    assert any(row["operation"] == "returns" for row in customer_data["records"])
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx", "pdf"])
+def test_operations_history_exports_use_screen_records(client, reporting_setup, monkeypatch, fmt):
+    s = reporting_setup
+    _dispatch(client, "OPS-EXPORT", "2026-09-18", s["dakar"]["id"], [_line(s["compact"]["id"])])
+    captured = {}
+
+    def capture_export(_fmt, **kwargs):
+        captured.update(format=_fmt, **kwargs)
+        return b"verified-export"
+
+    monkeypatch.setattr("webapp.routes.daily_figures.build_export", capture_export)
+    query = f"date_from=2026-09-18&date_to=2026-09-18&operation=issued&customer_id={s['dakar']['id']}"
+    screen = client.get(f"/api/daily-figures/operations-history?{query}").get_json()["records"]
+    response = client.get(f"/api/daily-figures/operations-history/export.{fmt}?{query}")
+    assert response.status_code == 200
+    assert captured["format"] == fmt
+    assert [row["source_label"] for row in captured["rows"]] == [row["source_label"] for row in screen]
+
+
 def test_arbitrary_month_controls_feed_the_same_screen_and_export_params():
     for field_id in ("fMonth", "rMonth", "pMonth", "hMonth"):
         assert f'id="{field_id}" type="month"' in HISTORY_HTML
@@ -321,7 +377,7 @@ def test_arbitrary_month_controls_feed_the_same_screen_and_export_params():
     assert 'id="hMonth" type="month"' in INDEX_HTML
     assert "historyMonthBounds" in INDEX_HTML
     assert "'/api/dispatches/export.'+fmt+'?'+params.toString()" in HISTORY_HTML
-    assert "'/api/daily-figures/export.'+fmt+'?'+params.toString()" in HISTORY_HTML
+    assert "'/api/daily-figures/operations-history/export.'+fmt+'?'+params.toString()" in HISTORY_HTML
 
 
 def test_no_dead_end_login_message_and_shared_shell_redirects_401():

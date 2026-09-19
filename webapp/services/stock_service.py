@@ -31,6 +31,7 @@ from webapp.models.daily_figure import (
 )
 from webapp.models.dispatch import SHIFT_DAY, SHIFT_NIGHT, STATUS_FINALIZED, Dispatch, DispatchLine
 from webapp.models.production_record import ProductionLine, ProductionRecord
+from webapp.models.product import Product
 from webapp.models.return_record import ReturnLine, ReturnRecord
 from webapp.models.sales_category import SalesCategory
 from webapp.services import returns_service
@@ -1161,6 +1162,147 @@ def recipient_totals(date_from, date_to, group_by, *, sales_category_id=None,
         })
     results.sort(key=lambda r: -r["total_issued_base_qty"])
     return results
+
+
+OPERATION_ALL = "all"
+OPERATION_PRODUCTION = "production"
+OPERATION_RETURNS = "returns"
+OPERATION_ISSUED = "issued"
+OPERATION_IDS = (OPERATION_ALL, OPERATION_PRODUCTION, OPERATION_RETURNS, OPERATION_ISSUED)
+
+
+def _operation_quantity_label(product, base_qty):
+    rule = product.current_packaging_rule()
+    if rule is None:
+        return f"{base_qty} pc"
+    parts = _split_or_none(base_qty, rule)
+    return qty_label(parts["cartons"], parts["packs"], parts["pieces"], rule)
+
+
+def operations_history(*, date_from=None, date_to=None, product_id=None,
+                       customer_id=None, sales_category_id=None, shift=None,
+                       operation=OPERATION_ALL):
+    """Canonical, line-level operational movements for Operations History.
+
+    This deliberately reads the same finalized source records used by stock
+    math instead of deriving movements from DailyFigure anchor rows. Customer
+    and sales-category filters apply only to Dispatch lines; Production and
+    stock-effective Returns are operationally independent of those fields.
+    """
+    if operation not in OPERATION_IDS:
+        raise ValueError("operation must be all, production, returns, or issued")
+    if shift and shift not in (SHIFT_DAY, SHIFT_NIGHT):
+        raise ValueError("shift must be Day or Night")
+
+    records = []
+    want = lambda key: operation in (OPERATION_ALL, key)
+
+    def period(query, model):
+        if date_from:
+            query = query.filter(model.date >= date_from)
+        if date_to:
+            query = query.filter(model.date <= date_to)
+        return query
+
+    def add_record(key, label, date, row_shift, product, base_qty, source_type,
+                   source_id, source_label, reason=None, customer_name=None,
+                   sales_category_name=None):
+        records.append({
+            "operation": key, "operation_label": label, "date": date,
+            "shift": row_shift, "product_id": product.id,
+            "product_name": product.name, "base_qty": int(base_qty),
+            "quantity_label": _operation_quantity_label(product, int(base_qty)),
+            "source_type": source_type, "source_id": source_id,
+            "source_label": source_label, "reason": reason,
+            "customer_name": customer_name,
+            "sales_category_name": sales_category_name,
+        })
+
+    if want(OPERATION_PRODUCTION):
+        query = db.session.query(ProductionRecord, ProductionLine).join(
+            ProductionLine, ProductionLine.production_id == ProductionRecord.id
+        ).filter(ProductionRecord.status == STATUS_FINALIZED)
+        query = period(query, ProductionRecord)
+        if product_id is not None:
+            query = query.filter(ProductionLine.product_id == product_id)
+        if shift:
+            query = query.filter(ProductionRecord.shift == shift)
+        for record, line in query.all():
+            add_record(OPERATION_PRODUCTION, "Production", record.date, record.shift,
+                       line.product, line.base_unit_qty, "production", record.id,
+                       f"Production #{record.id}", line.line_notes or record.remarks)
+
+    # Returns use the same centralized stock-posting predicate as Daily
+    # Figures, preserving Metro Sales' Monday-only contribution rule.
+    if want(OPERATION_RETURNS) and shift != SHIFT_NIGHT:
+        query = db.session.query(ReturnRecord, ReturnLine).join(
+            ReturnLine, ReturnLine.return_id == ReturnRecord.id
+        ).filter(returns_service.stock_posting_return_filter())
+        query = period(query, ReturnRecord)
+        if product_id is not None:
+            query = query.filter(ReturnLine.product_id == product_id)
+        for record, line in query.all():
+            add_record(OPERATION_RETURNS, "Return", record.date, SHIFT_DAY,
+                       line.product, line.base_unit_qty, "return", record.id,
+                       f"Return #{record.id}", line.line_notes or record.remarks,
+                       record.returned_by_name_snapshot or (
+                           record.returned_by_customer.name if record.returned_by_customer else None
+                       ))
+
+    # Dispatches and their StockAdjustment corrections together are the one
+    # canonical Issued definition. Both are Day-only reporting movements.
+    if want(OPERATION_ISSUED) and shift != SHIFT_NIGHT:
+        query = db.session.query(Dispatch, DispatchLine).join(
+            DispatchLine, DispatchLine.dispatch_id == Dispatch.id
+        ).filter(Dispatch.status == STATUS_FINALIZED, Dispatch.shift == SHIFT_DAY)
+        query = period(query, Dispatch)
+        if product_id is not None:
+            query = query.filter(DispatchLine.product_id == product_id)
+        if customer_id is not None:
+            query = query.filter(Dispatch.customer_id.in_(resolve_customer_ids_for_filter(customer_id)))
+        if sales_category_id is not None:
+            query = query.filter(Dispatch.sales_category_id == sales_category_id)
+        for dispatch, line in query.all():
+            add_record(OPERATION_ISSUED, "Issued", dispatch.date, SHIFT_DAY,
+                       line.product, line.base_unit_qty, "dispatch", dispatch.id,
+                       f"Dispatch #{dispatch.dispatch_number}", line.line_notes,
+                       dispatch.customer_name_snapshot or (
+                           dispatch.customer.name if dispatch.customer else None
+                       ), dispatch.sales_category_name_snapshot)
+
+        # An adjustment has no customer/category attribution, so it belongs
+        # in unscoped Issued only; including it under a customer/category
+        # would fabricate an attribution that the source data does not hold.
+        if customer_id is None and sales_category_id is None:
+            adjustments = StockAdjustment.query.filter(StockAdjustment.shift == SHIFT_DAY)
+            adjustments = period(adjustments, StockAdjustment)
+            if product_id is not None:
+                adjustments = adjustments.filter(StockAdjustment.product_id == product_id)
+            for adjustment in adjustments.all():
+                add_record(OPERATION_ISSUED, "Issued", adjustment.date, SHIFT_DAY,
+                           adjustment.product, adjustment.delta_base_qty,
+                           "stock_adjustment", adjustment.id,
+                           f"Stock adjustment #{adjustment.id}", adjustment.reason)
+
+    records.sort(key=lambda row: (row["date"], SHIFT_ORDER.get(row["shift"], 9), row["operation"], row["source_id"]), reverse=True)
+    summaries = []
+    for key, label in ((OPERATION_PRODUCTION, "Production"), (OPERATION_RETURNS, "Returns"), (OPERATION_ISSUED, "Issued")):
+        matching = [row for row in records if row["operation"] == key]
+        products = {}
+        for row in matching:
+            item = products.setdefault(row["product_id"], {
+                "product_id": row["product_id"], "product_name": row["product_name"], "base_qty": 0,
+            })
+            item["base_qty"] += row["base_qty"]
+        product_totals = []
+        for item in products.values():
+            product = db.session.get(Product, item["product_id"])
+            item["quantity_label"] = _operation_quantity_label(product, item["base_qty"])
+            product_totals.append(item)
+        product_totals.sort(key=lambda item: item["product_name"])
+        summaries.append({"operation": key, "operation_label": label,
+                          "record_count": len(matching), "products": product_totals})
+    return {"records": records, "summaries": summaries}
 
 
 def issued_detail(product, date, shift, sales_category_id=None, customer_id=None):

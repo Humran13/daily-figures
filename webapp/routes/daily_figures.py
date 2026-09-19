@@ -431,6 +431,84 @@ def history():
     return jsonify([svc.daily_figure_view(row.product, row.date, row.shift) for row in rows])
 
 
+def _operations_history_args(args):
+    exact_date = args.get("date")
+    date_from = args.get("date_from") or exact_date
+    date_to = args.get("date_to") or exact_date
+    values = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "operation": args.get("operation", svc.OPERATION_ALL),
+        "shift": args.get("shift") or None,
+    }
+    for name in ("product_id", "customer_id", "sales_category_id"):
+        if args.get(name):
+            values[name] = int(args[name])
+    return values
+
+
+def _operations_history_data(args):
+    values = _operations_history_args(args)
+    return values, svc.operations_history(**values)
+
+
+@daily_figures_bp.route("/operations-history", methods=["GET"])
+@login_required
+@feature_required("daily_figures")
+def operations_history():
+    try:
+        _, data = _operations_history_data(request.args)
+    except (TypeError, ValueError) as e:
+        return _error(e)
+    return jsonify(data)
+
+
+@daily_figures_bp.route("/operations-history/export.<fmt>", methods=["GET"])
+@login_required
+@feature_required("daily_figures")
+def export_operations_history(fmt):
+    try:
+        values, data = _operations_history_data(request.args)
+    except (TypeError, ValueError) as e:
+        return _error(e)
+
+    filters = {key: value for key, value in values.items() if value not in (None, "", svc.OPERATION_ALL)}
+    for name, model, label in (
+        ("product_id", Product, "product"),
+        ("customer_id", Customer, "customer"),
+        ("sales_category_id", SalesCategory, "sales_category"),
+    ):
+        if name in filters:
+            row = db.session.get(model, filters.pop(name))
+            filters[label] = row.name if row else values[name]
+    filters["operation_summaries"] = "; ".join(
+        f"{summary['operation_label']}: " + ", ".join(
+            f"{product['product_name']} {product['quantity_label']}" for product in summary["products"]
+        ) for summary in data["summaries"] if summary["products"]
+    ) or "No movements"
+    columns = [
+        ("operation_label", "Operation"), ("date", "Date"), ("shift", "Shift"),
+        ("product_name", "Product"), ("quantity", "Quantity"),
+        ("source_label", "Source"), ("customer_name", "Customer / Recipient"),
+        ("sales_category_name", "Sales Category"), ("reason", "Notes / Reason"),
+    ]
+    rows = [{**row, "quantity": row["quantity_label"]} for row in data["records"]]
+    try:
+        content = build_export(
+            fmt, title="Operations History", filters=filters,
+            generated_by=current_user().username, columns=columns, rows=rows,
+            **branding_service.export_kwargs(),
+        )
+    except ValueError as e:
+        return _error(e)
+    record_audit(current_user(), "export", "operations_history",
+                 after={"format": fmt, "filters": filters, "row_count": len(rows)})
+    db.session.commit()
+    return Response(content, mimetype=MIME_TYPES[fmt], headers={
+        "Content-Disposition": f"attachment; filename=operations_history.{fmt}",
+    })
+
+
 def _issued_history_args(args):
     date_from = args.get("date_from")
     date_to = args.get("date_to")

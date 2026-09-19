@@ -92,7 +92,7 @@
       <div class="tab active" data-tab="dispatch" data-module="dispatch">Dispatch History</div>
       <div class="tab" data-tab="returns" data-module="returns">Returns History</div>
       <div class="tab" data-tab="production" data-module="production">Production History</div>
-      <div class="tab" data-tab="daily-figures" data-module="daily_figures">Daily Figures History</div>
+      <div class="tab" data-tab="daily-figures" data-module="daily_figures">Operations History</div>
     </div>
   </header>
   <div id="appRoleNav"></div>
@@ -204,7 +204,7 @@
       <div id="productionList"></div>
     </div>
 
-    <!-- ================= DAILY FIGURES HISTORY ================= -->
+    <!-- ================= OPERATIONS HISTORY ================= -->
     <div id="tab-daily-figures" class="hidden">
       <div class="quick-filters">
         <button class="btn-ghost btn-small" data-hquick="today">Today</button>
@@ -222,11 +222,18 @@
           <option value="Day">Day</option>
           <option value="Night">Night</option>
         </select>
+        <select id="hOperation">
+          <option value="all">All</option>
+          <option value="production">Production</option>
+          <option value="returns">Returns</option>
+          <option value="issued">Issued</option>
+        </select>
         <div class="autocomplete-wrap"><input id="hProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="hProductResults"></div></div>
         <select id="hSalesCategory"><option value="">Any sales category</option></select>
         <div class="autocomplete-wrap"><input id="hCustomer" placeholder="Customer / Recipient" autocomplete="off"><div class="autocomplete-list hidden" id="hCustomerResults"></div></div>
         <button class="btn-ghost btn-small" id="hClearBtn">Clear all</button>
       </div>
+      <div id="operationSummaries" class="filters" style="margin-bottom:14px;"></div>
       <div class="export-row">
         <span class="hint">Export current results:</span>
         <a href="#" id="exportCsvBtn" class="btn-small btn-ghost" style="text-decoration:none;">CSV</a>
@@ -745,13 +752,19 @@ document.getElementById('pClearFiltersBtn').addEventListener('click', ()=>{
 
 function dailyFiguresFilterParams(){
   const params = new URLSearchParams();
-  params.set('limit', '200');
-  const map = {hDate: 'date', hDateFrom: 'date_from', hDateTo: 'date_to', hShift: 'shift'};
-  for(const [id, param] of Object.entries(map)){
-    const el = document.getElementById(id);
-    if(el && el.value) params.set(param, el.value);
+  const exactDate = document.getElementById('hDate').value;
+  const month = document.getElementById('hMonth').value;
+  if(exactDate){ params.set('date_from', exactDate); params.set('date_to', exactDate); }
+  else if(month) applyMonthFilter(params, 'hMonth');
+  else {
+    const from = document.getElementById('hDateFrom').value;
+    const to = document.getElementById('hDateTo').value;
+    if(from) params.set('date_from', from);
+    if(to) params.set('date_to', to);
   }
-  applyMonthFilter(params, 'hMonth');
+  const shift = document.getElementById('hShift').value;
+  if(shift) params.set('shift', shift);
+  params.set('operation', document.getElementById('hOperation').value || 'all');
   const productId = selectedFilterId('hProduct');
   if(productId) params.set('product_id', productId);
   const customerId = selectedFilterId('hCustomer');
@@ -769,35 +782,37 @@ function groupHistoryByDate(results){
 
 async function renderDailyFiguresHistory(){
   const params = dailyFiguresFilterParams();
-  const issuedMode = params.has('customer_id') || params.has('sales_category_id');
-  const endpoint = issuedMode ? '/api/daily-figures/issued-history?' : '/api/daily-figures/history?';
-  const rows = await api(endpoint + params.toString());
-  const results = Array.isArray(rows.data) ? rows.data : [];
+  const {data} = await api('/api/daily-figures/operations-history?' + params.toString());
+  const records = Array.isArray(data.records) ? data.records : [];
+  const summaries = Array.isArray(data.summaries) ? data.summaries : [];
   const list = document.getElementById('histList');
+  const summaryHost = document.getElementById('operationSummaries');
+  const selectedOperation = params.get('operation') || 'all';
 
   ['exportCsvBtn','exportXlsxBtn','exportPdfBtn'].forEach((id,i)=>{
     const fmt = ['csv','xlsx','pdf'][i];
-    document.getElementById(id).href = issuedMode
-      ? '/api/daily-figures/issued-history/export.'+fmt+'?'+params.toString()
-      : '/api/daily-figures/export.'+fmt+'?'+params.toString();
+    document.getElementById(id).href = '/api/daily-figures/operations-history/export.'+fmt+'?'+params.toString();
   });
 
-  if(results.length===0){
+  summaryHost.innerHTML = summaries.filter(summary => selectedOperation === 'all' || summary.operation === selectedOperation).map(summary => `
+    <button class="btn-ghost" data-operation-card="${summary.operation}" style="text-align:left;min-width:170px;"><strong>${summary.operation_label}</strong><br><span class="hint">${summary.products.length ? summary.products.map(product => `${escapeHtml(product.product_name)}: ${escapeHtml(product.quantity_label)}`).join('<br>') : 'No movements'}</span></button>`).join('');
+  summaryHost.querySelectorAll('[data-operation-card]').forEach(card => card.addEventListener('click', ()=>{
+    document.getElementById('hOperation').value = card.dataset.operation;
+    renderDailyFiguresHistory();
+  }));
+
+  if(records.length===0){
     list.innerHTML = '<div class="empty-state">No entries match these filters.</div>';
     return;
   }
 
-  if(issuedMode){
-    const groupLabel = params.has('customer_id') ? 'Customer / Recipient' : 'Sales Category';
-    list.innerHTML = `<div class="hint" style="margin-bottom:8px;">Issued activity by ${groupLabel}. Stock totals remain product/date based.</div>` + results.map(group => `
-      <div class="date-group">
-        <div class="date-group-head"><div><div class="date">${escapeHtml(group.group_name)}</div><div class="summary">${group.dispatch_count} dispatch${group.dispatch_count===1?'':'es'}</div></div></div>
-        <div class="date-group-body">
-          ${(group.products||[]).map(product => `<div class="entry-row"><div class="name">${escapeHtml(product.product_name)}</div><div class="nums">Issued ${escapeHtml(product.quantity_label)}</div></div>`).join('')}
-        </div>
-      </div>`).join('');
-    return;
-  }
+  list.innerHTML = records.map(row => `
+    <div class="entry-row">
+      <div class="meta">${escapeHtml(row.operation_label)} · ${escapeHtml(row.date)} · ${escapeHtml(row.shift)}</div>
+      <div class="name">${escapeHtml(row.product_name)}</div>
+      <div class="nums">${escapeHtml(row.quantity_label)} · ${escapeHtml(row.source_label)}${row.customer_name ? ` · ${escapeHtml(row.customer_name)}` : ''}${row.sales_category_name ? ` · ${escapeHtml(row.sales_category_name)}` : ''}${row.reason ? ` · ${escapeHtml(row.reason)}` : ''}</div>
+    </div>`).join('');
+  return;
 
   // Collapsed by default (global History UX rule) — see loadDispatchHistory() above.
   const groups = groupHistoryByDate(results);
@@ -812,7 +827,7 @@ async function renderDailyFiguresHistory(){
           <div class="entry-row">
             <div class="meta">${e.shift}</div>
             <div class="name">${escapeHtml(e.product_name)}</div>
-            <div class="nums">Opening ${qtyLabel(e.opening, e.packaging_rule)} · Prod ${qtyLabel(e.production, e.packaging_rule)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued, e.packaging_rule)}</span> · Returns ${qtyLabel(e.return_, e.packaging_rule)} · Closing ${qtyLabel(e.closing, e.packaging_rule)}</div>
+            <div class="nums">Prod ${qtyLabel(e.production, e.packaging_rule)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued, e.packaging_rule)}</span> · Returns ${qtyLabel(e.return_, e.packaging_rule)}</div>
           </div>`).join('')}
       </div>
     </div>`).join('');
@@ -850,13 +865,13 @@ document.querySelectorAll('[data-hquick]').forEach(btn=>{
     renderDailyFiguresHistory();
   });
 });
-['hMonth','hDate','hDateFrom','hDateTo','hShift','hSalesCategory'].forEach(id=>{
+['hMonth','hDate','hDateFrom','hDateTo','hShift','hOperation','hSalesCategory'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>renderDailyFiguresHistory());
   document.getElementById(id).addEventListener('change', ()=>renderDailyFiguresHistory());
 });
 document.getElementById('hClearBtn').addEventListener('click', ()=>{
   document.getElementById('hMonth').value=''; document.getElementById('hDate').value=''; document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value='';
-  document.getElementById('hShift').value=''; document.getElementById('hSalesCategory').value='';
+  document.getElementById('hShift').value=''; document.getElementById('hOperation').value='all'; document.getElementById('hSalesCategory').value='';
   clearFilterAutocomplete('hProduct'); clearFilterAutocomplete('hCustomer');
   document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.remove('active'));
   renderDailyFiguresHistory();
