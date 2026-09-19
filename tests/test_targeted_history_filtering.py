@@ -56,10 +56,13 @@ def test_filter_option_endpoints_search_database_after_one_character(client, rep
     assert {row["name"] for row in products} >= {"Compact Standard", "Compact Corporate"}
     assert all(row["active"] for row in products)
 
+    categories = client.get("/api/reports/filter-options/sales-categories").get_json()
+    assert {row["name"] for row in categories} >= {"Metro Sales", "Corporate"}
+
 
 def test_history_uses_one_reusable_id_backed_autocomplete_everywhere():
-    assert HISTORY_HTML.count("createFilterAutocomplete({inputId:") == 6
-    for input_id in ("fCustomer", "rReturnedBy", "fProduct", "rProduct", "pProduct", "hProduct"):
+    assert HISTORY_HTML.count("createFilterAutocomplete({inputId:") == 7
+    for input_id in ("fCustomer", "rReturnedBy", "fProduct", "rProduct", "pProduct", "hProduct", "hCustomer"):
         assert f"inputId:'{input_id}'" in HISTORY_HTML
     assert '<script src="/filter-autocomplete.js"></script>' in HISTORY_HTML
     assert '<script src="/filter-autocomplete.js"></script>' in INDEX_HTML
@@ -205,6 +208,109 @@ def test_daily_figures_month_and_exact_product_match_screen_and_export(client, r
     assert "2026-09-02" in exported and "Compact Standard" in exported
     assert "Napkins Standard" not in exported
     assert "2026-08-31" not in exported
+
+
+def test_daily_figures_history_exposes_customer_and_database_category_filters():
+    assert 'id="hCustomer"' in HISTORY_HTML
+    assert 'id="hSalesCategory"' in HISTORY_HTML
+    assert "selectedFilterId('hCustomer')" in HISTORY_HTML
+    assert "params.set('customer_id', customerId)" in HISTORY_HTML
+    assert "params.set('sales_category_id', salesCategoryId)" in HISTORY_HTML
+    assert "salesCategoriesCache.map" in HISTORY_HTML
+    assert "'/api/daily-figures/issued-history?'" in HISTORY_HTML
+    assert "'/api/daily-figures/issued-history/export.'" in HISTORY_HTML
+    assert "Opening ${qtyLabel(e.opening, e.packaging_rule)}" in HISTORY_HTML
+
+
+def test_month_customer_and_category_reports_use_filtered_dispatch_activity(client, reporting_setup):
+    s = reporting_setup
+    _dispatch(client, "METRO-SEPT-COMPACT", "2026-09-01", s["dakar"]["id"], [_line(s["compact"]["id"])])
+    _dispatch(client, "METRO-SEPT-NAPKINS", "2026-09-30", s["dakar"]["id"], [_line(s["napkins"]["id"])])
+    _dispatch(client, "CORP-SEPT", "2026-09-15", s["derrick"]["id"], [_line(s["compact"]["id"])])
+    _dispatch(client, "METRO-AUG", "2026-08-31", s["dakar"]["id"], [_line(s["compact"]["id"])])
+    _dispatch(client, "METRO-OCT", "2026-10-01", s["dakar"]["id"], [_line(s["compact"]["id"])])
+
+    month = "date_from=2026-09-01&date_to=2026-09-30"
+    customer_rows = client.get(
+        f"/api/daily-figures/issued-history?{month}&customer_id={s['dakar']['id']}"
+    ).get_json()
+    assert [row["group_name"] for row in customer_rows] == ["Dakar"]
+    assert customer_rows[0]["dispatch_count"] == 2
+    assert {p["product_name"] for p in customer_rows[0]["products"]} == {"Compact Standard", "Napkins Standard"}
+
+    category_rows = client.get(
+        f"/api/daily-figures/issued-history?{month}&sales_category_id={s['metro']['id']}"
+        f"&product_id={s['compact']['id']}"
+    ).get_json()
+    assert [row["group_name"] for row in category_rows] == ["Metro Sales"]
+    assert category_rows[0]["dispatch_count"] == 1
+    assert [p["product_name"] for p in category_rows[0]["products"]] == ["Compact Standard"]
+
+
+def test_customer_and_category_filters_are_combined_with_and_logic(client, reporting_setup):
+    s = reporting_setup
+    _dispatch(client, "DAKAR-METRO", "2026-09-12", s["dakar"]["id"], [_line(s["compact"]["id"])])
+
+    base = f"date_from=2026-09-01&date_to=2026-09-30&customer_id={s['dakar']['id']}"
+    matching = client.get(
+        f"/api/daily-figures/issued-history?{base}&sales_category_id={s['metro']['id']}"
+    ).get_json()
+    mismatching = client.get(
+        f"/api/daily-figures/issued-history?{base}&sales_category_id={s['corporate']['id']}"
+    ).get_json()
+    assert [row["group_name"] for row in matching] == ["Dakar"]
+    assert mismatching == []
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx", "pdf"])
+def test_daily_figures_issued_activity_exports_receive_the_same_filters(
+    client, reporting_setup, monkeypatch, fmt,
+):
+    s = reporting_setup
+    _dispatch(client, "METRO-EXPORT", "2026-09-15", s["dakar"]["id"], [_line(s["compact"]["id"])])
+    _dispatch(client, "CORP-EXPORT", "2026-09-15", s["derrick"]["id"], [_line(s["napkins"]["id"])])
+    captured = {}
+
+    def capture_export(_fmt, **kwargs):
+        captured.update(format=_fmt, **kwargs)
+        return b"verified-export"
+
+    monkeypatch.setattr("webapp.routes.daily_figures.build_export", capture_export)
+    response = client.get(
+        f"/api/daily-figures/issued-history/export.{fmt}"
+        f"?date_from=2026-09-01&date_to=2026-09-30"
+        f"&customer_id={s['dakar']['id']}&sales_category_id={s['metro']['id']}"
+        f"&product_id={s['compact']['id']}"
+    )
+
+    assert response.status_code == 200
+    assert captured["format"] == fmt
+    assert captured["filters"] == {
+        "date_from": "2026-09-01", "date_to": "2026-09-30",
+        "customer": "Dakar", "sales_category": "Metro Sales", "product": "Compact Standard",
+    }
+    assert [(row["group_name"], row["product_name"]) for row in captured["rows"]] == [
+        ("Dakar", "Compact Standard"),
+    ]
+
+
+def test_issued_activity_report_does_not_change_daily_figure_stock_values(client, reporting_setup):
+    s = reporting_setup
+    created = client.post("/api/daily-figures", json={
+        "product_id": s["compact"]["id"], "date": "2026-09-20", "shift": "Day",
+        "opening": {"cartons": 2, "packs": 0, "pieces": 0},
+    })
+    assert created.status_code in (200, 201)
+    _dispatch(client, "STOCK-UNCHANGED", "2026-09-20", s["dakar"]["id"], [_line(s["compact"]["id"])])
+
+    url = f"/api/daily-figures/history?date=2026-09-20&product_id={s['compact']['id']}"
+    before = client.get(url).get_json()
+    client.get(
+        f"/api/daily-figures/issued-history?date_from=2026-09-01&date_to=2026-09-30"
+        f"&customer_id={s['dakar']['id']}"
+    )
+    after = client.get(url).get_json()
+    assert after == before
 
 
 def test_arbitrary_month_controls_feed_the_same_screen_and_export_params():

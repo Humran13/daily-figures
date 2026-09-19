@@ -4,7 +4,9 @@ from webapp.auth import current_user, login_required, roles_required, feature_re
 from webapp.extensions import db
 from webapp.models.daily_figure import DailyFigure, StockAdjustment
 from webapp.models.dispatch import SHIFTS
+from webapp.models.customer import Customer
 from webapp.models.product import Product
+from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import branding_service
 from webapp.services import daily_entry_status_service as entry_status_svc
@@ -427,6 +429,103 @@ def history():
     limit = min(int(request.args.get("limit", 60)), 500)
     rows = query.order_by(DailyFigure.date.desc(), DailyFigure.shift, DailyFigure.id.desc()).limit(limit).all()
     return jsonify([svc.daily_figure_view(row.product, row.date, row.shift) for row in rows])
+
+
+def _issued_history_args(args):
+    date_from = args.get("date_from")
+    date_to = args.get("date_to")
+    exact_date = args.get("date")
+    if exact_date and not date_from and not date_to:
+        date_from = date_to = exact_date
+    if not date_from or not date_to:
+        raise ValueError("date_from and date_to are required")
+
+    values = {}
+    for name in ("sales_category_id", "customer_id", "product_id"):
+        if args.get(name):
+            values[name] = int(args[name])
+    if not values.get("sales_category_id") and not values.get("customer_id"):
+        raise ValueError("sales_category_id or customer_id is required")
+    shift = args.get("shift")
+    if shift and shift not in SHIFTS:
+        raise ValueError(f"shift must be one of {SHIFTS}")
+    values["shift"] = shift
+    values["date"] = exact_date
+    values["group_by"] = "recipient" if values.get("customer_id") else "category"
+    return date_from, date_to, values
+
+
+def _issued_history_data(args):
+    date_from, date_to, values = _issued_history_args(args)
+    rows = svc.recipient_totals(date_from, date_to, **values)
+    return date_from, date_to, values, rows
+
+
+@daily_figures_bp.route("/issued-history", methods=["GET"])
+@login_required
+@feature_required("daily_figures")
+def issued_history():
+    """Filtered issued activity shown beside stock-based Daily Figures history."""
+    try:
+        _, _, _, rows = _issued_history_data(request.args)
+    except (TypeError, ValueError) as e:
+        return _error(e)
+    return jsonify(rows)
+
+
+@daily_figures_bp.route("/issued-history/export.<fmt>", methods=["GET"])
+@login_required
+@feature_required("daily_figures")
+def export_issued_history(fmt):
+    try:
+        date_from, date_to, values, groups = _issued_history_data(request.args)
+    except (TypeError, ValueError) as e:
+        return _error(e)
+
+    group_label = "Customer / Recipient" if values["group_by"] == "recipient" else "Sales Category"
+    columns = [
+        ("group_name", group_label), ("dispatch_count", "Dispatch Count"),
+        ("product_name", "Product"), ("quantity", "Issued"),
+    ]
+    rows = [
+        {
+            "group_name": group["group_name"],
+            "dispatch_count": group["dispatch_count"],
+            "product_name": product["product_name"],
+            "quantity": product["quantity_label"],
+        }
+        for group in groups for product in group["products"]
+    ]
+    filters = {"date_from": date_from, "date_to": date_to}
+    if values.get("date"):
+        filters["date"] = values["date"]
+    if values.get("customer_id"):
+        customer = db.session.get(Customer, values["customer_id"])
+        filters["customer"] = customer.name if customer else values["customer_id"]
+    if values.get("sales_category_id"):
+        category = db.session.get(SalesCategory, values["sales_category_id"])
+        filters["sales_category"] = category.name if category else values["sales_category_id"]
+    if values.get("product_id"):
+        product = db.session.get(Product, values["product_id"])
+        filters["product"] = product.name if product else values["product_id"]
+    if values.get("shift"):
+        filters["shift"] = values["shift"]
+
+    try:
+        content = build_export(
+            fmt, title="Daily Figures Issued Activity", filters=filters,
+            generated_by=current_user().username, columns=columns, rows=rows,
+            **branding_service.export_kwargs(),
+        )
+    except ValueError as e:
+        return _error(e)
+
+    record_audit(current_user(), "export", "daily_figure_issued_activity",
+                 after={"format": fmt, "filters": filters, "row_count": len(rows)})
+    db.session.commit()
+    return Response(content, mimetype=MIME_TYPES[fmt], headers={
+        "Content-Disposition": f"attachment; filename=daily_figures_issued_activity.{fmt}",
+    })
 
 
 def _qty_str(part, rule):

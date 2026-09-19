@@ -1045,7 +1045,8 @@ def date_range_summary(date_from, date_to):
     return results
 
 
-def recipient_totals(date_from, date_to, group_by):
+def recipient_totals(date_from, date_to, group_by, *, sales_category_id=None,
+                     customer_id=None, product_id=None, shift=None, date=None):
     """
     Total Issued (finalized dispatches only) and dispatch count, grouped
     either by sales category or by recipient. Recipient grouping resolves
@@ -1073,12 +1074,22 @@ def recipient_totals(date_from, date_to, group_by):
     if group_by not in ("category", "recipient"):
         raise ValueError("group_by must be 'category' or 'recipient'")
 
-    rows = (
+    query = (
         db.session.query(Dispatch, DispatchLine)
         .join(DispatchLine, DispatchLine.dispatch_id == Dispatch.id)
         .filter(Dispatch.status == STATUS_FINALIZED, Dispatch.date >= date_from, Dispatch.date <= date_to)
-        .all()
     )
+    if sales_category_id is not None:
+        query = query.filter(Dispatch.sales_category_id == sales_category_id)
+    if customer_id is not None:
+        query = query.filter(Dispatch.customer_id.in_(resolve_customer_ids_for_filter(customer_id)))
+    if product_id is not None:
+        query = query.filter(DispatchLine.product_id == product_id)
+    if shift:
+        query = query.filter(Dispatch.shift == shift)
+    if date:
+        query = query.filter(Dispatch.date == date)
+    rows = query.all()
 
     groups = {}
     if group_by == "category":

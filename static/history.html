@@ -223,6 +223,8 @@
           <option value="Night">Night</option>
         </select>
         <div class="autocomplete-wrap"><input id="hProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="hProductResults"></div></div>
+        <select id="hSalesCategory"><option value="">Any sales category</option></select>
+        <div class="autocomplete-wrap"><input id="hCustomer" placeholder="Customer / Recipient" autocomplete="off"><div class="autocomplete-list hidden" id="hCustomerResults"></div></div>
         <button class="btn-ghost btn-small" id="hClearBtn">Clear all</button>
       </div>
       <div class="export-row">
@@ -524,6 +526,9 @@ function loadFilterCategoryOptions(){
   const select = document.getElementById('fSalesCategory');
   select.innerHTML = '<option value="">Any sales category</option>' +
     salesCategoriesCache.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  const historySelect = document.getElementById('hSalesCategory');
+  historySelect.innerHTML = '<option value="">Any sales category</option>' +
+    salesCategoriesCache.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
 }
 
 async function applyDispatchFiltersFromUrl(q){
@@ -749,6 +754,10 @@ function dailyFiguresFilterParams(){
   applyMonthFilter(params, 'hMonth');
   const productId = selectedFilterId('hProduct');
   if(productId) params.set('product_id', productId);
+  const customerId = selectedFilterId('hCustomer');
+  if(customerId) params.set('customer_id', customerId);
+  const salesCategoryId = document.getElementById('hSalesCategory').value;
+  if(salesCategoryId) params.set('sales_category_id', salesCategoryId);
   return params;
 }
 
@@ -760,17 +769,33 @@ function groupHistoryByDate(results){
 
 async function renderDailyFiguresHistory(){
   const params = dailyFiguresFilterParams();
-  const rows = await api('/api/daily-figures/history?' + params.toString());
+  const issuedMode = params.has('customer_id') || params.has('sales_category_id');
+  const endpoint = issuedMode ? '/api/daily-figures/issued-history?' : '/api/daily-figures/history?';
+  const rows = await api(endpoint + params.toString());
   const results = Array.isArray(rows.data) ? rows.data : [];
   const list = document.getElementById('histList');
 
   ['exportCsvBtn','exportXlsxBtn','exportPdfBtn'].forEach((id,i)=>{
     const fmt = ['csv','xlsx','pdf'][i];
-    document.getElementById(id).href = '/api/daily-figures/export.'+fmt+'?'+params.toString();
+    document.getElementById(id).href = issuedMode
+      ? '/api/daily-figures/issued-history/export.'+fmt+'?'+params.toString()
+      : '/api/daily-figures/export.'+fmt+'?'+params.toString();
   });
 
   if(results.length===0){
     list.innerHTML = '<div class="empty-state">No entries match these filters.</div>';
+    return;
+  }
+
+  if(issuedMode){
+    const groupLabel = params.has('customer_id') ? 'Customer / Recipient' : 'Sales Category';
+    list.innerHTML = `<div class="hint" style="margin-bottom:8px;">Issued activity by ${groupLabel}. Stock totals remain product/date based.</div>` + results.map(group => `
+      <div class="date-group">
+        <div class="date-group-head"><div><div class="date">${escapeHtml(group.group_name)}</div><div class="summary">${group.dispatch_count} dispatch${group.dispatch_count===1?'':'es'}</div></div></div>
+        <div class="date-group-body">
+          ${(group.products||[]).map(product => `<div class="entry-row"><div class="name">${escapeHtml(product.product_name)}</div><div class="nums">Issued ${escapeHtml(product.quantity_label)}</div></div>`).join('')}
+        </div>
+      </div>`).join('');
     return;
   }
 
@@ -787,7 +812,7 @@ async function renderDailyFiguresHistory(){
           <div class="entry-row">
             <div class="meta">${e.shift}</div>
             <div class="name">${escapeHtml(e.product_name)}</div>
-            <div class="nums">Prod ${qtyLabel(e.production, e.packaging_rule)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued, e.packaging_rule)}</span> · Returns ${qtyLabel(e.return_, e.packaging_rule)} · Closing ${qtyLabel(e.closing, e.packaging_rule)}</div>
+            <div class="nums">Opening ${qtyLabel(e.opening, e.packaging_rule)} · Prod ${qtyLabel(e.production, e.packaging_rule)} · <span class="issued-link" data-drill="${e.product_id}|${e.date}|${e.shift}">Issued ${qtyLabel(e.issued, e.packaging_rule)}</span> · Returns ${qtyLabel(e.return_, e.packaging_rule)} · Closing ${qtyLabel(e.closing, e.packaging_rule)}</div>
           </div>`).join('')}
       </div>
     </div>`).join('');
@@ -825,13 +850,14 @@ document.querySelectorAll('[data-hquick]').forEach(btn=>{
     renderDailyFiguresHistory();
   });
 });
-['hMonth','hDate','hDateFrom','hDateTo','hShift'].forEach(id=>{
+['hMonth','hDate','hDateFrom','hDateTo','hShift','hSalesCategory'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>renderDailyFiguresHistory());
   document.getElementById(id).addEventListener('change', ()=>renderDailyFiguresHistory());
 });
 document.getElementById('hClearBtn').addEventListener('click', ()=>{
   document.getElementById('hMonth').value=''; document.getElementById('hDate').value=''; document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value='';
-  document.getElementById('hShift').value=''; clearFilterAutocomplete('hProduct');
+  document.getElementById('hShift').value=''; document.getElementById('hSalesCategory').value='';
+  clearFilterAutocomplete('hProduct'); clearFilterAutocomplete('hCustomer');
   document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.remove('active'));
   renderDailyFiguresHistory();
 });
@@ -887,6 +913,7 @@ function initializeFilterAutocompletes(){
   createFilterAutocomplete({inputId:'rProduct', resultsId:'rProductResults', source:productFilterOptions, onChange:loadReturnsHistory});
   createFilterAutocomplete({inputId:'pProduct', resultsId:'pProductResults', source:productFilterOptions, onChange:loadProductionHistory});
   createFilterAutocomplete({inputId:'hProduct', resultsId:'hProductResults', source:productFilterOptions, onChange:renderDailyFiguresHistory});
+  createFilterAutocomplete({inputId:'hCustomer', resultsId:'hCustomerResults', source:customerFilterOptions, onChange:renderDailyFiguresHistory});
 }
 
 // ---------- boot ----------
