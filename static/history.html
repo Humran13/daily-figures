@@ -36,6 +36,12 @@
   .filters .field-labeled{ display:flex; flex-direction:column; gap:3px; flex:1; min-width:130px; }
   .filters .field-labeled label{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin:0; }
   .filters .field-labeled input{ width:100%; min-width:0; }
+  .autocomplete-wrap{ position:relative; flex:1; min-width:130px; }
+  .autocomplete-wrap input{ width:100%; min-width:0; }
+  .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:30; box-shadow:0 8px 18px rgba(27,36,48,.14); }
+  .autocomplete-item{ padding:10px; font-size:13px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
+  .autocomplete-item:last-child{ border-bottom:0; }
+  .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
   /* "Any sales category" is the longest option text in this row — give it
      enough room instead of squeezing to the shared 110px minimum. */
   #fSalesCategory{ flex:1 1 170px; min-width:150px; }
@@ -77,8 +83,6 @@
 </head>
 <body>
 
-<div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Sign in from the main app first.</div>
-
 <div class="shell hidden" id="appShell">
   <div id="appIdentityBar"></div>
   <header>
@@ -103,12 +107,13 @@
         <button class="btn-ghost btn-small" data-quick="month">This month</button>
       </div>
       <div class="filters">
+        <div class="field-labeled"><label>Month</label><input id="fMonth" type="month"></div>
         <div class="field-labeled"><label>Exact Date</label><input id="fDate" type="date"></div>
         <div class="field-labeled"><label>From Date</label><input id="fDateFrom" type="date"></div>
         <div class="field-labeled"><label>To Date</label><input id="fDateTo" type="date"></div>
         <select id="fSalesCategory"><option value="">Any sales category</option></select>
-        <input id="fCustomer" placeholder="Customer">
-        <input id="fProduct" placeholder="Product">
+        <div class="autocomplete-wrap"><input id="fCustomer" placeholder="Customer" autocomplete="off"><div class="autocomplete-list hidden" id="fCustomerResults"></div></div>
+        <div class="autocomplete-wrap"><input id="fProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="fProductResults"></div></div>
         <input id="fNumber" placeholder="Dispatch #">
         <input id="fInvoice" placeholder="Invoice #">
         <!-- No shift filter — Dispatch is Day-only, so filtering by shift
@@ -140,11 +145,12 @@
         <button class="btn-ghost btn-small" data-rquick="month">This month</button>
       </div>
       <div class="filters">
+        <div class="field-labeled"><label>Month</label><input id="rMonth" type="month"></div>
         <div class="field-labeled"><label>Exact Date</label><input id="rDate" type="date"></div>
         <div class="field-labeled"><label>From Date</label><input id="rDateFrom" type="date"></div>
         <div class="field-labeled"><label>To Date</label><input id="rDateTo" type="date"></div>
-        <input id="rReturnedBy" placeholder="Returned by">
-        <input id="rProduct" placeholder="Product">
+        <div class="autocomplete-wrap"><input id="rReturnedBy" placeholder="Returned by" autocomplete="off"><div class="autocomplete-list hidden" id="rReturnedByResults"></div></div>
+        <div class="autocomplete-wrap"><input id="rProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="rProductResults"></div></div>
         <select id="rStatus">
           <option value="">All statuses</option>
           <option value="draft">Draft</option>
@@ -171,6 +177,7 @@
         <button class="btn-ghost btn-small" data-pquick="month">This month</button>
       </div>
       <div class="filters">
+        <div class="field-labeled"><label>Month</label><input id="pMonth" type="month"></div>
         <div class="field-labeled"><label>Exact Date</label><input id="pDate" type="date"></div>
         <div class="field-labeled"><label>From Date</label><input id="pDateFrom" type="date"></div>
         <div class="field-labeled"><label>To Date</label><input id="pDateTo" type="date"></div>
@@ -179,7 +186,7 @@
           <option value="Day">Day</option>
           <option value="Night">Night</option>
         </select>
-        <input id="pProduct" placeholder="Product">
+        <div class="autocomplete-wrap"><input id="pProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="pProductResults"></div></div>
         <select id="pStatus">
           <option value="">All statuses</option>
           <option value="draft">Draft</option>
@@ -206,6 +213,7 @@
         <button class="btn-ghost btn-small" data-hquick="month">This month</button>
       </div>
       <div class="filters">
+        <div class="field-labeled"><label>Month</label><input id="hMonth" type="month"></div>
         <div class="field-labeled"><label>Exact Date</label><input id="hDate" type="date"></div>
         <div class="field-labeled"><label>From Date</label><input id="hDateFrom" type="date"></div>
         <div class="field-labeled"><label>To Date</label><input id="hDateTo" type="date"></div>
@@ -214,7 +222,7 @@
           <option value="Day">Day</option>
           <option value="Night">Night</option>
         </select>
-        <input id="hProduct" placeholder="Product">
+        <div class="autocomplete-wrap"><input id="hProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="hProductResults"></div></div>
         <button class="btn-ghost btn-small" id="hClearBtn">Clear all</button>
       </div>
       <div class="export-row">
@@ -237,12 +245,11 @@
 </div>
 
 <script src="/quantity_format.js"></script>
+<script src="/filter-autocomplete.js"></script>
 <script>
 let currentUser = null;
 let productsCache = [];
 let salesCategoriesCache = [];
-// Africa/Kampala date from /api/session — see static/dispatch.html's
-// identical variable and dateStr()/quick-filter uses below.
 let businessToday = null;
 
 async function api(path, opts){
@@ -315,30 +322,45 @@ function statusPill(status){
   return `<span class="pill pill-${status}">${status}</span>`;
 }
 function dateStr(offsetDays){
-  // Anchors on the Africa/Kampala business date (from /api/session) when
-  // available, never new Date().toISOString() alone — that shifts to UTC
-  // and can land on the wrong calendar day for roughly the first three
-  // hours after midnight Kampala time, regardless of the viewer's own
-  // device timezone. Falls back to the old browser-local computation
-  // only in the narrow window before boot's session fetch resolves.
-  let base;
-  if(businessToday){
-    const [y,m,d] = businessToday.split('-').map(Number);
-    base = new Date(y, m-1, d);
-  } else {
-    base = new Date();
-  }
-  base.setDate(base.getDate()+offsetDays);
-  const yy = base.getFullYear(), mm = String(base.getMonth()+1).padStart(2,'0'), dd = String(base.getDate()).padStart(2,'0');
-  return `${yy}-${mm}-${dd}`;
+  const d = businessToday ? new Date(`${businessToday}T12:00:00`) : new Date();
+  d.setDate(d.getDate()+offsetDays);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
-function firstOfMonthStr(){
-  if(businessToday){
-    const [y,m] = businessToday.split('-').map(Number);
-    return `${y}-${String(m).padStart(2,'0')}-01`;
-  }
-  const d = new Date(); d.setDate(1);
-  return d.toISOString().slice(0,10);
+
+function monthBounds(month){
+  const parts = String(month || '').split('-');
+  if(parts.length !== 2) return null;
+  const year = Number(parts[0]);
+  const monthNumber = Number(parts[1]);
+  if(!year || monthNumber < 1 || monthNumber > 12) return null;
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  return {from: `${parts[0]}-${parts[1]}-01`, to: `${parts[0]}-${parts[1]}-${String(lastDay).padStart(2,'0')}`};
+}
+
+function applyMonthFilter(params, inputId){
+  const bounds = monthBounds(document.getElementById(inputId).value);
+  if(bounds){ params.set('date_from', bounds.from); params.set('date_to', bounds.to); }
+}
+
+function setCurrentMonthRange(fromId, toId){
+  const bounds = monthBounds(dateStr(0).slice(0, 7));
+  document.getElementById(fromId).value = bounds.from;
+  document.getElementById(toId).value = bounds.to;
+}
+
+// One reusable, database-backed selector for every Customer/Recipient and
+// Product filter on this page. The selected canonical id lives on the input;
+// any subsequent typing clears it before the report reloads, preventing a
+// visible name from ever being paired with a stale id.
+const autocompleteControls = {};
+function createFilterAutocomplete(options){
+  autocompleteControls[options.inputId] = FilterAutocomplete.create(options);
+}
+
+function selectedFilterId(inputId){ return autocompleteControls[inputId] ? autocompleteControls[inputId].selectedId() : ''; }
+function clearFilterAutocomplete(inputId){
+  if(autocompleteControls[inputId]) autocompleteControls[inputId].clear();
+  else { const input=document.getElementById(inputId); input.value=''; input.dataset.selectedId=''; }
 }
 
 // ---------- top-level tabs ----------
@@ -356,10 +378,8 @@ function switchTab(name){
 document.querySelectorAll('.tabs .tab[data-tab]').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
 
 // ================= DISPATCH HISTORY =================
-// Reuses GET /api/dispatches (same filters as dispatch.html's own list tab,
-// plus server-side customer_name search — see below) and
-// GET /api/dispatches/export.<fmt> verbatim — no new backend logic beyond
-// that one added search parameter.
+// Reuses GET /api/dispatches and GET /api/dispatches/export.<fmt> with the
+// same canonical customer/product ids and date filters for screen + export.
 
 function dispatchFilterParams(){
   const params = new URLSearchParams();
@@ -373,17 +393,13 @@ function dispatchFilterParams(){
     const el = document.getElementById(id);
     if(el && el.value) params.set(param, el.value);
   }
-  const productText = document.getElementById('fProduct').value.trim().toLowerCase();
-  if(productText){
-    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
-    if(matches.length===1) params.set('product_id', matches[0].id);
-  }
-  // Server-side, full-result-set search (partial, case-insensitive, covers
-  // both historical/temporary-customer snapshots and current customer
-  // names) — sent to the backend, not filtered against whatever page of
-  // results happens to already be loaded.
-  const customerText = document.getElementById('fCustomer').value.trim();
-  if(customerText) params.set('customer_name', customerText);
+  applyMonthFilter(params, 'fMonth');
+  const productId = selectedFilterId('fProduct');
+  if(productId) params.set('product_id', productId);
+  // A typed label is never treated as an exact customer. Only an explicit
+  // database-backed selection contributes the canonical customer_id.
+  const customerId = selectedFilterId('fCustomer');
+  if(customerId) params.set('customer_id', customerId);
   return params;
 }
 
@@ -457,7 +473,7 @@ async function loadDispatchHistory(){
   list.querySelectorAll('[data-customer]').forEach(el=>{
     el.addEventListener('click', (e)=>{
       e.stopPropagation();
-      document.getElementById('fCustomer').value = el.textContent.trim();
+      autocompleteControls.fCustomer.set(el.dataset.customer, el.textContent.trim());
       loadDispatchHistory();
     });
   });
@@ -473,30 +489,23 @@ async function loadDispatchHistory(){
 document.querySelectorAll('[data-quick]').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('[data-quick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('fMonth').value = '';
     document.getElementById('fDate').value = '';
     const q = btn.dataset.quick;
     if(q==='today'){ document.getElementById('fDateFrom').value = dateStr(0); document.getElementById('fDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('fDateFrom').value = dateStr(-1); document.getElementById('fDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('fDateFrom').value = dateStr(-6); document.getElementById('fDateTo').value = dateStr(0); }
-    if(q==='month'){ document.getElementById('fDateFrom').value = firstOfMonthStr(); document.getElementById('fDateTo').value = dateStr(0); }
+    if(q==='month') setCurrentMonthRange('fDateFrom', 'fDateTo');
     loadDispatchHistory();
   });
 });
-['fDate','fDateFrom','fDateTo','fProduct','fNumber','fInvoice','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
+['fMonth','fDate','fDateFrom','fDateTo','fNumber','fInvoice','fStatus','fCreatedBy','fSalesCategory'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>loadDispatchHistory());
   document.getElementById(id).addEventListener('change', ()=>loadDispatchHistory());
 });
-// Customer search now hits the server on every keystroke (full-result-set
-// search, not a client-side filter of the loaded page) — debounced so
-// normal typing doesn't fire a request per character.
-let customerSearchTimer;
-document.getElementById('fCustomer').addEventListener('input', ()=>{
-  clearTimeout(customerSearchTimer);
-  customerSearchTimer = setTimeout(()=>loadDispatchHistory(), 250);
-});
-document.getElementById('fCustomer').addEventListener('change', ()=>loadDispatchHistory());
 document.getElementById('clearFiltersBtn').addEventListener('click', ()=>{
-  ['fDate','fDateFrom','fDateTo','fCustomer','fProduct','fNumber','fInvoice'].forEach(id=>document.getElementById(id).value='');
+  ['fMonth','fDate','fDateFrom','fDateTo','fNumber','fInvoice'].forEach(id=>document.getElementById(id).value='');
+  clearFilterAutocomplete('fCustomer'); clearFilterAutocomplete('fProduct');
   document.getElementById('fStatus').value=''; document.getElementById('fCreatedBy').value='';
   document.getElementById('fSalesCategory').value='';
   document.querySelectorAll('[data-quick]').forEach(b=>b.classList.remove('active'));
@@ -517,8 +526,12 @@ function loadFilterCategoryOptions(){
     salesCategoriesCache.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
 }
 
-function applyDispatchFiltersFromUrl(q){
-  if(q.get('customer_name')) document.getElementById('fCustomer').value = q.get('customer_name');
+async function applyDispatchFiltersFromUrl(q){
+  if(q.get('customer_name')){
+    const matches = await customerFilterOptions(q.get('customer_name'));
+    const customer = matches.find(c=>c.name.toLowerCase()===q.get('customer_name').toLowerCase());
+    if(customer) autocompleteControls.fCustomer.set(customer.id, customer.name);
+  }
   if(q.get('dispatch_number')) document.getElementById('fNumber').value = q.get('dispatch_number');
   if(q.get('date')) document.getElementById('fDate').value = q.get('date');
   if(q.get('invoice_number')) document.getElementById('fInvoice').value = q.get('invoice_number');
@@ -532,16 +545,16 @@ function applyDispatchFiltersFromUrl(q){
 
 function returnsFilterParams(){
   const params = new URLSearchParams();
-  const map = {rDate: 'date', rDateFrom: 'date_from', rDateTo: 'date_to', rStatus: 'status', rReturnedBy: 'returned_by'};
+  const map = {rDate: 'date', rDateFrom: 'date_from', rDateTo: 'date_to', rStatus: 'status'};
   for(const [id, param] of Object.entries(map)){
     const el = document.getElementById(id);
     if(el && el.value) params.set(param, el.value);
   }
-  const productText = document.getElementById('rProduct').value.trim().toLowerCase();
-  if(productText){
-    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
-    if(matches.length===1) params.set('product_id', matches[0].id);
-  }
+  applyMonthFilter(params, 'rMonth');
+  const productId = selectedFilterId('rProduct');
+  const customerId = selectedFilterId('rReturnedBy');
+  if(productId) params.set('product_id', productId);
+  if(customerId) params.set('customer_id', customerId);
   return params;
 }
 
@@ -600,21 +613,23 @@ async function loadReturnsHistory(){
 document.querySelectorAll('[data-rquick]').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('[data-rquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('rMonth').value = '';
     document.getElementById('rDate').value = '';
     const q = btn.dataset.rquick;
     if(q==='today'){ document.getElementById('rDateFrom').value = dateStr(0); document.getElementById('rDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('rDateFrom').value = dateStr(-1); document.getElementById('rDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('rDateFrom').value = dateStr(-6); document.getElementById('rDateTo').value = dateStr(0); }
-    if(q==='month'){ document.getElementById('rDateFrom').value = firstOfMonthStr(); document.getElementById('rDateTo').value = dateStr(0); }
+    if(q==='month') setCurrentMonthRange('rDateFrom', 'rDateTo');
     loadReturnsHistory();
   });
 });
-['rDate','rDateFrom','rDateTo','rReturnedBy','rProduct','rStatus'].forEach(id=>{
+['rMonth','rDate','rDateFrom','rDateTo','rStatus'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>loadReturnsHistory());
   document.getElementById(id).addEventListener('change', ()=>loadReturnsHistory());
 });
 document.getElementById('rClearFiltersBtn').addEventListener('click', ()=>{
-  ['rDate','rDateFrom','rDateTo','rReturnedBy','rProduct'].forEach(id=>document.getElementById(id).value='');
+  ['rMonth','rDate','rDateFrom','rDateTo'].forEach(id=>document.getElementById(id).value='');
+  clearFilterAutocomplete('rReturnedBy'); clearFilterAutocomplete('rProduct');
   document.getElementById('rStatus').value='';
   document.querySelectorAll('[data-rquick]').forEach(b=>b.classList.remove('active'));
   loadReturnsHistory();
@@ -631,11 +646,9 @@ function productionFilterParams(){
     const el = document.getElementById(id);
     if(el && el.value) params.set(param, el.value);
   }
-  const productText = document.getElementById('pProduct').value.trim().toLowerCase();
-  if(productText){
-    const matches = productsCache.filter(p=>p.name.toLowerCase().includes(productText));
-    if(matches.length===1) params.set('product_id', matches[0].id);
-  }
+  applyMonthFilter(params, 'pMonth');
+  const productId = selectedFilterId('pProduct');
+  if(productId) params.set('product_id', productId);
   return params;
 }
 
@@ -693,21 +706,23 @@ async function loadProductionHistory(){
 document.querySelectorAll('[data-pquick]').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('[data-pquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('pMonth').value = '';
     document.getElementById('pDate').value = '';
     const q = btn.dataset.pquick;
     if(q==='today'){ document.getElementById('pDateFrom').value = dateStr(0); document.getElementById('pDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('pDateFrom').value = dateStr(-1); document.getElementById('pDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('pDateFrom').value = dateStr(-6); document.getElementById('pDateTo').value = dateStr(0); }
-    if(q==='month'){ document.getElementById('pDateFrom').value = firstOfMonthStr(); document.getElementById('pDateTo').value = dateStr(0); }
+    if(q==='month') setCurrentMonthRange('pDateFrom', 'pDateTo');
     loadProductionHistory();
   });
 });
-['pDate','pDateFrom','pDateTo','pShift','pProduct','pStatus'].forEach(id=>{
+['pMonth','pDate','pDateFrom','pDateTo','pShift','pStatus'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>loadProductionHistory());
   document.getElementById(id).addEventListener('change', ()=>loadProductionHistory());
 });
 document.getElementById('pClearFiltersBtn').addEventListener('click', ()=>{
-  ['pDate','pDateFrom','pDateTo','pProduct'].forEach(id=>document.getElementById(id).value='');
+  ['pMonth','pDate','pDateFrom','pDateTo'].forEach(id=>document.getElementById(id).value='');
+  clearFilterAutocomplete('pProduct');
   document.getElementById('pShift').value=''; document.getElementById('pStatus').value='';
   document.querySelectorAll('[data-pquick]').forEach(b=>b.classList.remove('active'));
   loadProductionHistory();
@@ -731,11 +746,9 @@ function dailyFiguresFilterParams(){
     const el = document.getElementById(id);
     if(el && el.value) params.set(param, el.value);
   }
-  const productText = document.getElementById('hProduct').value.trim().toLowerCase();
-  if(productText){
-    const match = productsCache.find(p=>p.name.toLowerCase().includes(productText));
-    if(match) params.set('product_id', match.id);
-  }
+  applyMonthFilter(params, 'hMonth');
+  const productId = selectedFilterId('hProduct');
+  if(productId) params.set('product_id', productId);
   return params;
 }
 
@@ -802,22 +815,23 @@ async function renderDailyFiguresHistory(){
 document.querySelectorAll('[data-hquick]').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('hMonth').value = '';
     document.getElementById('hDate').value = '';
     const q = btn.dataset.hquick;
     if(q==='today'){ document.getElementById('hDateFrom').value = dateStr(0); document.getElementById('hDateTo').value = dateStr(0); }
     if(q==='yesterday'){ document.getElementById('hDateFrom').value = dateStr(-1); document.getElementById('hDateTo').value = dateStr(-1); }
     if(q==='week'){ document.getElementById('hDateFrom').value = dateStr(-6); document.getElementById('hDateTo').value = dateStr(0); }
-    if(q==='month'){ document.getElementById('hDateFrom').value = firstOfMonthStr(); document.getElementById('hDateTo').value = dateStr(0); }
+    if(q==='month') setCurrentMonthRange('hDateFrom', 'hDateTo');
     renderDailyFiguresHistory();
   });
 });
-['hDate','hDateFrom','hDateTo','hShift','hProduct'].forEach(id=>{
+['hMonth','hDate','hDateFrom','hDateTo','hShift'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>renderDailyFiguresHistory());
   document.getElementById(id).addEventListener('change', ()=>renderDailyFiguresHistory());
 });
 document.getElementById('hClearBtn').addEventListener('click', ()=>{
-  document.getElementById('hDate').value=''; document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value='';
-  document.getElementById('hShift').value=''; document.getElementById('hProduct').value='';
+  document.getElementById('hMonth').value=''; document.getElementById('hDate').value=''; document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value='';
+  document.getElementById('hShift').value=''; clearFilterAutocomplete('hProduct');
   document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.remove('active'));
   renderDailyFiguresHistory();
 });
@@ -850,29 +864,55 @@ document.getElementById('issuedModalClose').addEventListener('click', ()=>{
 });
 
 function applyDailyFiguresFiltersFromUrl(q){
-  if(q.get('product')) document.getElementById('hProduct').value = q.get('product');
+  if(q.get('product')){
+    const product = productsCache.find(p=>p.name.toLowerCase()===q.get('product').toLowerCase());
+    if(product) autocompleteControls.hProduct.set(product.id, product.name);
+  }
+}
+
+async function productFilterOptions(q){
+  const {data} = await api(`/api/reports/filter-options/products?q=${encodeURIComponent(q)}`);
+  return Array.isArray(data) ? data : [];
+}
+
+async function customerFilterOptions(q){
+  const {data} = await api(`/api/reports/filter-options/customers?q=${encodeURIComponent(q)}`);
+  return Array.isArray(data) ? data : [];
+}
+
+function initializeFilterAutocompletes(){
+  createFilterAutocomplete({inputId:'fCustomer', resultsId:'fCustomerResults', source:customerFilterOptions, onChange:loadDispatchHistory});
+  createFilterAutocomplete({inputId:'fProduct', resultsId:'fProductResults', source:productFilterOptions, onChange:loadDispatchHistory});
+  createFilterAutocomplete({inputId:'rReturnedBy', resultsId:'rReturnedByResults', source:customerFilterOptions, onChange:loadReturnsHistory});
+  createFilterAutocomplete({inputId:'rProduct', resultsId:'rProductResults', source:productFilterOptions, onChange:loadReturnsHistory});
+  createFilterAutocomplete({inputId:'pProduct', resultsId:'pProductResults', source:productFilterOptions, onChange:loadProductionHistory});
+  createFilterAutocomplete({inputId:'hProduct', resultsId:'hProductResults', source:productFilterOptions, onChange:renderDailyFiguresHistory});
 }
 
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
   if(!data.authed || !['super_admin','manager','accountant','operator','viewer'].includes((data.user||{}).role)){
-    document.getElementById('gate').classList.remove('hidden');
+    if(data.session_superseded){
+      try{ sessionStorage.setItem('appLoginMessage', data.message || 'You were signed out because this account was signed in on another device.'); }catch(e){}
+    }
+    window.location.replace('/');
     return;
   }
   currentUser = data.user;
-  businessToday = data.business_today || null;
+  businessToday = data.business_today;
   document.getElementById('appShell').classList.remove('hidden');
 
-  const {data: products} = await api('/api/admin/products');
+  const {data: products} = await api('/api/reports/filter-options/products');
   productsCache = Array.isArray(products) ? products : [];
-  const {data: categories} = await api('/api/admin/sales-categories');
+  const {data: categories} = await api('/api/reports/filter-options/sales-categories');
   salesCategoriesCache = Array.isArray(categories) ? categories : [];
+  initializeFilterAutocompletes();
   loadFilterCategoryOptions();
   await loadUserFilterOptions();
 
   const q = new URLSearchParams(window.location.search);
-  applyDispatchFiltersFromUrl(q);
+  await applyDispatchFiltersFromUrl(q);
   applyDailyFiguresFiltersFromUrl(q);
 
   const requestedTab = q.get('tab');

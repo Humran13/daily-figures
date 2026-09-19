@@ -118,32 +118,15 @@
      gains horizontal overflow, since the scroll container is this wrapper
      alone. */
   .op-swipe-hint{ display:none; font-size:10px; color:var(--ink-soft); text-align:right; margin:0 0 4px; }
-  /* overflow-y:auto + max-height make this wrapper (not the page/window)
-     the genuine scrolling container the table's sticky th cells stick
-     relative to — sticky positions relative to its nearest scrolling
-     ancestor, and without a bounded height here this element never
-     itself scrolled (its box just grew to fit the table), so the page
-     did the real scrolling instead and "sticky" top:0 had no visible
-     effect. Mirrors static/dashboard.html's identical .dfig-table-wrap
-     fix for the Dashboard's own Daily Figures table. */
-  .op-table-wrap{ overflow-x:auto; overflow-y:auto; max-height:60vh; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
+  .op-table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; -webkit-overflow-scrolling:touch; }
   table.op-table{ border-collapse:collapse; width:100%; min-width:600px; font-size:12px; }
-  table.op-table th{ position:sticky; top:0; z-index:1; background:var(--paper-dim); text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); padding:9px 10px; white-space:nowrap; }
-  /* Product column: content-aware, not a huge fixed share of the table —
-     min-width is the floor, max-width is the ceiling one unusually long
-     name can't push past (see static/dashboard.html's identical .dfig-
-     table comment for the full rationale). th:first-child is ALSO
-     sticky left (inherits position:sticky/top:0 from the base th rule
-     above), making the top-left Product header cell dual-sticky with a
-     higher z-index than both the ordinary sticky headers and the sticky
-     first body column, so it never gets visually overtaken scrolling
-     diagonally. */
-  table.op-table th:first-child{ text-align:left; min-width:150px; max-width:180px; left:0; z-index:2; }
+  table.op-table thead{ position:sticky; top:0; background:var(--paper-dim); z-index:1; }
+  table.op-table th{ text-align:right; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); padding:9px 10px; white-space:nowrap; }
+  table.op-table th:first-child{ text-align:left; min-width:150px; }
   table.op-table th:not(:first-child){ min-width:85px; }
   table.op-table td{ text-align:right; font-family:var(--mono); font-weight:600; padding:9px 10px; border-top:1px solid var(--line); white-space:nowrap; }
-  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); white-space:normal; word-break:break-word; max-width:180px; position:sticky; left:0; z-index:1; background:white; }
+  table.op-table td:first-child{ text-align:left; font-family:var(--sans); font-weight:700; color:var(--ink); white-space:normal; word-break:break-word; }
   table.op-table tbody tr:nth-child(even){ background:var(--paper-dim); }
-  table.op-table tbody tr:nth-child(even) td:first-child{ background:var(--paper-dim); }
   table.op-table td.op-closing{ font-weight:800; font-size:13px; }
   table.op-table td.op-closing.op-negative{ color:var(--red); background:#F3E4E4; }
   .op-empty{ text-align:center; padding:36px 20px; color:var(--ink-soft); }
@@ -193,6 +176,12 @@
   .adjust-confirm-row .v{ font-weight:700; font-family:var(--mono); }
   .filters{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
   .filters input{ width:auto; flex:1; min-width:110px; font-size:13px; padding:9px 8px; border:1.5px solid var(--line); border-radius:8px; }
+  .autocomplete-wrap{ position:relative; flex:1; min-width:130px; }
+  .autocomplete-wrap input{ width:100%; min-width:0; }
+  .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:30; box-shadow:0 8px 18px rgba(27,36,48,.14); }
+  .autocomplete-item{ padding:10px; font-size:13px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
+  .autocomplete-item:last-child{ border-bottom:0; }
+  .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
   .quick-filters{ display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
   .quick-filters button.active{ background:var(--teal); color:white; }
   .export-row{ display:flex; align-items:center; gap:8px; margin-top:12px; flex-wrap:wrap; }
@@ -274,9 +263,10 @@
         <button class="btn-ghost btn-small" data-hquick="month">This month</button>
       </div>
       <div class="filters">
+        <input id="hMonth" type="month" title="Month">
         <input id="hDateFrom" type="date" title="From date">
         <input id="hDateTo" type="date" title="To date">
-        <input id="hProduct" placeholder="Product">
+        <div class="autocomplete-wrap"><input id="hProduct" placeholder="Product" autocomplete="off"><div class="autocomplete-list hidden" id="hProductResults"></div></div>
         <button class="btn-ghost btn-small" id="hClearBtn">Clear all</button>
       </div>
       <div class="hist-summary" id="histSummary"></div>
@@ -347,20 +337,20 @@
 </div>
 
 <script src="/quantity_format.js"></script>
+<script src="/filter-autocomplete.js"></script>
 <script>
 let products = [];
 let currentIdx = 0;
 let sessionValues = {};
 let currentUser = null;
+let businessToday = null;
+let historyProductAutocomplete = null;
 // Role-wide Operator Daily-Figures permission flags, fetched once at boot
 // (not on every render) — see fetchOperatorPermissions(). Manager/Super
 // Admin never consult this; Viewer is never granted anything from it.
 let operatorPermissions = {can_edit_opening:false, can_edit_production:false, can_edit_returns:false, can_create_adjustments:false};
-// Africa/Kampala date from /api/session — see static/dispatch.html's
-// identical variable and todayStr() below.
-let businessToday = null;
 
-function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
 function escapeHtml(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -625,12 +615,6 @@ async function renderEntryCard(){
   const rule = view.packaging_rule;
 
   const isViewer = role === 'viewer';
-  // Accountant is a read-only-plus-Requests role, same as Viewer for
-  // every operational Daily Figures action — never editable, never able
-  // to mark No Activity (backend also refuses both server-side; see
-  // webapp/routes/daily_entry_status.py and daily_figures.py's role
-  // gates, which never included accountant in the first place).
-  const isAccountant = role === 'accountant';
 
   // Ownership/completion (Stage 7 section 1): an Operator asking for this
   // entry actually acquires the lock (or learns it's contested/completed)
@@ -659,11 +643,11 @@ async function renderEntryCard(){
   // stock_service.upsert_daily_figure()) — so the input shows for them
   // regardless of view.opening_editable.
   const showOpeningInputs = view.opening_editable || isElevated;
-  const isFullyReadOnly = isViewer || isAccountant || !(showOpeningInputs && canEditOpening);
+  const isFullyReadOnly = isViewer || !(showOpeningInputs && canEditOpening);
   // No Activity Today is available to anyone who could otherwise act on
   // this entry, whether or not Opening Stock itself happens to be
   // editable right now — see Stage 7 section 6.
-  const canMarkNoActivity = !isViewer && !isAccountant && !isCompleted && !blockedByOther;
+  const canMarkNoActivity = !isViewer && !isCompleted && !blockedByOther;
 
   card.innerHTML = `
     <div class="card">
@@ -798,12 +782,9 @@ function releaseLockIfOwned(product, date, shift){
   // network round trip, and a lock nobody renews naturally expires anyway.
   apiDelete('/api/daily-entry-status/lock', {product_id: product.id, date, shift}).catch(()=>{});
 }
-// Explicitly Africa/Kampala, never the viewer's own device timezone — a
-// user opening this app from a different timezone must still see the
-// company's own Kampala business time for these entry/review timestamps.
 function formatEntryTime(iso){
   if(!iso) return '';
-  return new Date(iso + 'Z').toLocaleString(undefined, {timeZone:'Africa/Kampala', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+  return new Date(iso + 'Z').toLocaleString(undefined, {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
 }
 function renderStatusBanner(entryStatus, isCompleted, blockedByOther, isElevated){
   if(isCompleted){
@@ -993,7 +974,7 @@ async function showReviewScreen(date, shift){
       ? `Opening ${qtyLabel(view.opening, view.packaging_rule)} · Production ${qtyLabel(view.production, view.packaging_rule)} · Returns ${qtyLabel(view.return_, view.packaging_rule)} · Issued ${qtyLabel(view.issued, view.packaging_rule)} · Closing ${qtyLabel(view.closing, view.packaging_rule)}`
       : (row.validation_error || '');
     let attribution = '';
-    if(row.completed_by) attribution += `Entered by ${escapeHtml(row.completed_by)}${row.completed_at ? ' at ' + escapeHtml(formatEntryTime(row.completed_at)) : ''}. `;
+    if(row.completed_by) attribution += `Entered by ${escapeHtml(row.completed_by)}${row.completed_at ? ' at ' + escapeHtml(new Date(row.completed_at).toLocaleString()) : ''}. `;
     if(row.source_changed_since_review || row.daily_figure_changed_since_review) attribution += 'This product changed while you were reviewing it. Reload the current figures before submitting.';
     return `
       <div class="review-row">
@@ -1011,7 +992,7 @@ async function showReviewScreen(date, shift){
     <div class="card">
       <h2>Daily Figures review — ${escapeHtml(shift)}, ${escapeHtml(date)}</h2>
       ${submitted
-        ? `<p class="hint">Daily Figures review submitted by ${escapeHtml(session.submitted_by_username || '')} at ${escapeHtml(session.submitted_at ? formatEntryTime(session.submitted_at) : '')}.</p>`
+        ? `<p class="hint">Daily Figures review submitted by ${escapeHtml(session.submitted_by_username || '')} at ${escapeHtml(session.submitted_at ? new Date(session.submitted_at).toLocaleString() : '')}.</p>`
         : `<p class="hint">Review in progress — nothing is submitted until you explicitly confirm below.</p>`}
       <div class="review-summary">
         <div class="stat"><div class="n">${summary.reviewed_count} / ${summary.total}</div><div class="l">reviewed</div></div>
@@ -1263,35 +1244,51 @@ function historyFilterParams(){
   params.set('limit', '200');
   if(document.getElementById('hDateFrom').value) params.set('date_from', document.getElementById('hDateFrom').value);
   if(document.getElementById('hDateTo').value) params.set('date_to', document.getElementById('hDateTo').value);
-  const productText = document.getElementById('hProduct').value.trim().toLowerCase();
-  if(productText){
-    const match = products.find(p=>p.name.toLowerCase().includes(productText));
-    if(match) params.set('product_id', match.id);
+  const month = document.getElementById('hMonth').value;
+  if(month){
+    const bounds = historyMonthBounds(month);
+    params.set('date_from', bounds.from);
+    params.set('date_to', bounds.to);
   }
+  const productId = historyProductAutocomplete ? historyProductAutocomplete.selectedId() : '';
+  if(productId) params.set('product_id', productId);
   return params;
 }
 
+function historyMonthBounds(month){
+  const [year, monthNumber] = month.split('-').map(Number);
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  return {from:`${month}-01`, to:`${month}-${String(lastDay).padStart(2,'0')}`};
+}
+
 function hDateStr(offsetDays){
-  const d = new Date(); d.setDate(d.getDate()+offsetDays);
-  return d.toISOString().slice(0,10);
+  const d = businessToday ? new Date(`${businessToday}T12:00:00`) : new Date();
+  d.setDate(d.getDate()+offsetDays);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 document.querySelectorAll('[data-hquick]').forEach(btn=>{
   btn.addEventListener('click', ()=>{
     document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.toggle('active', b===btn));
+    document.getElementById('hMonth').value = '';
     const q = btn.dataset.hquick;
     if(q==='today'){ document.getElementById('hDateFrom').value = hDateStr(0); document.getElementById('hDateTo').value = hDateStr(0); }
     if(q==='yesterday'){ document.getElementById('hDateFrom').value = hDateStr(-1); document.getElementById('hDateTo').value = hDateStr(-1); }
     if(q==='week'){ document.getElementById('hDateFrom').value = hDateStr(-6); document.getElementById('hDateTo').value = hDateStr(0); }
-    if(q==='month'){ const d=new Date(); d.setDate(1); document.getElementById('hDateFrom').value = d.toISOString().slice(0,10); document.getElementById('hDateTo').value = hDateStr(0); }
+    if(q==='month'){
+      const bounds = historyMonthBounds(hDateStr(0).slice(0,7));
+      document.getElementById('hDateFrom').value = bounds.from;
+      document.getElementById('hDateTo').value = bounds.to;
+    }
     renderHistory();
   });
 });
 document.getElementById('hClearBtn').addEventListener('click', ()=>{
-  document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value=''; document.getElementById('hProduct').value='';
+  document.getElementById('hMonth').value=''; document.getElementById('hDateFrom').value=''; document.getElementById('hDateTo').value='';
+  if(historyProductAutocomplete) historyProductAutocomplete.clear();
   document.querySelectorAll('[data-hquick]').forEach(b=>b.classList.remove('active'));
   renderHistory();
 });
-['hDateFrom','hDateTo','hProduct'].forEach(id=>{
+['hMonth','hDateFrom','hDateTo'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>renderHistory());
   document.getElementById(id).addEventListener('change', ()=>renderHistory());
 });
@@ -1398,6 +1395,10 @@ async function attemptLogin(){
     document.getElementById('loginErr').textContent = data.error || 'Invalid username or password';
     return;
   }
+  try{
+    sessionStorage.removeItem('appSessionSupersededShown');
+    sessionStorage.removeItem('appLoginMessage');
+  }catch(e){}
   let flags = {};
   try{
     const flagsRes = await fetch('/api/feature-flags');
@@ -1492,21 +1493,29 @@ async function boot(user){
   // product-name filter (shared by every role) depends on this list;
   // only the ENTRY tab's rendering branches by role, below.
   await loadProducts();
+  historyProductAutocomplete = FilterAutocomplete.create({
+    inputId:'hProduct', resultsId:'hProductResults', onChange:renderHistory,
+    source: async q=>products.filter(p=>p.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
+  });
   renderCurrentView();
 
   const q = new URLSearchParams(window.location.search);
   if(q.get('tab') === 'history'){
-    if(q.get('product')) document.getElementById('hProduct').value = q.get('product');
+    if(q.get('product')){
+      const product = products.find(p=>p.name.toLowerCase()===q.get('product').toLowerCase());
+      if(product) historyProductAutocomplete.set(product.id, product.name);
+    }
     switchTab('history');
   }
 }
 
 (async function init(){
+  try{
+    const loginMessage = sessionStorage.getItem('appLoginMessage');
+    if(loginMessage) document.getElementById('loginErr').textContent = loginMessage;
+  }catch(e){}
   const s = await apiGet('/api/session');
-  if(s && s.authed){
-    businessToday = s.business_today || null;
-    await boot(s.user);
-  }
+  if(s && s.authed){ businessToday = s.business_today; await boot(s.user); }
 })();
 </script>
 <script src="/pwa.js" defer></script>

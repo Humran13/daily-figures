@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 auth_bp = Blueprint("auth", __name__, url_prefix="/api")
 
 
-SESSION_SUPERSEDED_MESSAGE = "Your account was signed in on another device."
+SESSION_SUPERSEDED_MESSAGE = "You were signed out because this account was signed in on another device."
 
 
 def _session_diagnosis():

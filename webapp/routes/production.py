@@ -78,6 +78,7 @@ def list_production():
 def export_production(fmt):
     query, filters_applied = _filtered_production_query(request.args)
     records = query.order_by(ProductionRecord.date.desc(), ProductionRecord.id.desc()).limit(5000).all()
+    selected_product_id = int(request.args["product_id"]) if request.args.get("product_id") else None
 
     columns = [
         ("date", "Date"), ("shift", "Shift"), ("status", "Status"),
@@ -86,6 +87,8 @@ def export_production(fmt):
     rows = []
     for r in records:
         for line in r.lines:
+            if selected_product_id is not None and line.product_id != selected_product_id:
+                continue
             rows.append({
                 "date": r.date, "shift": r.shift, "status": r.status,
                 "product_name": line.product.name if line.product else "",

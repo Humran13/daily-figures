@@ -24,7 +24,6 @@
   var ROLE_LABELS = {
     super_admin: 'Super Administrator',
     manager: 'Manager',
-    accountant: 'Accountant',
     operator: 'Operator',
     viewer: 'Viewer',
   };
@@ -144,7 +143,7 @@
     if (role === 'super_admin' && enabled(flags, 'daily_figures')) {
       items.push({ key: 'reset_daily_values', label: 'Reset Daily Values', href: '/reset-daily-values.html' });
     }
-    if (role === 'manager' || role === 'super_admin' || role === 'accountant') {
+    if (role === 'manager' || role === 'super_admin') {
       items.push({ key: 'requests', label: 'Requests', href: '/requests.html', badge: 'pendingRequests' });
     }
     if (role === 'super_admin') items.push({ key: 'admin', label: 'Admin', href: '/admin.html' });
@@ -284,29 +283,37 @@
   // Shown once per superseded session (a second device/login bumping this
   // user's session_version — see webapp/auth.py's _session_diagnosis()) —
   // guarded by sessionStorage so navigating through several pages after
-  // being signed out doesn't re-alert on every single one. The REDIRECT
-  // below is deliberately NOT behind that same guard: only the alert is
-  // "once per tab" — every call must still send the user back to "/" (the
-  // only page with a login form), even on a later page load within the
-  // same tab where the alert was already shown once before. Without this
-  // split, a superseded device that dismissed the alert once, then later
-  // navigated straight to a gated page again (e.g. a bookmark or PWA
-  // shortcut) without ever completing a fresh login, would silently stop
-  // redirecting — stuck on that page's own static "Sign in from the main
-  // app first." text with no way forward.
+  // being signed out doesn't re-alert on every single one.
   var SUPERSEDED_ALERT_KEY = 'appSessionSupersededShown';
+  var LOGIN_MESSAGE_KEY = 'appLoginMessage';
   function warnSessionSuperseded(message) {
+    var text = message || 'You were signed out because this account was signed in on another device.';
     try {
-      if (!sessionStorage.getItem(SUPERSEDED_ALERT_KEY)) {
-        sessionStorage.setItem(SUPERSEDED_ALERT_KEY, '1');
-        window.alert(message || 'Your account was signed in on another device.');
-      }
-    } catch (e) {
-      // private browsing / storage disabled — still show it once this load
-      window.alert(message || 'Your account was signed in on another device.');
+      sessionStorage.setItem(SUPERSEDED_ALERT_KEY, '1');
+      sessionStorage.setItem(LOGIN_MESSAGE_KEY, text);
+    } catch (e) { /* private browsing / storage disabled — still show it once this load */ }
+    if (location.pathname === '/' || location.pathname === '/index.html') {
+      var loginError = document.getElementById('loginErr');
+      if (loginError) loginError.textContent = text;
+      return;
     }
-    if (location.pathname !== '/' && location.pathname !== '/index.html') location.href = '/';
+    location.replace('/');
   }
+
+  // Return any protected page to the normal login screen on the first API
+  // request rejected because its session expired or was superseded.
+  var nativeFetch = window.fetch.bind(window);
+  window.fetch = async function () {
+    var response = await nativeFetch.apply(window, arguments);
+    var onLoginPage = location.pathname === '/' || location.pathname === '/index.html';
+    if (response.status === 401 && !onLoginPage) {
+      var body = null;
+      try { body = await response.clone().json(); } catch (e) { /* non-JSON 401 */ }
+      if (body && body.session_superseded) warnSessionSuperseded(body.error || body.message);
+      else location.replace('/');
+    }
+    return response;
+  };
 
   // ---------- PWA app-icon badge (Badging API) ----------
   // Standards-based, NOT assumed to be identical across iOS/Android/
@@ -341,22 +348,7 @@
     var session = await apiGet('/api/session');
     if (!session || !session.authed || !session.user) {
       AppShell.user = null;
-      if (session && session.session_superseded) {
-        // Alerts (once per tab) and always redirects to "/" — see
-        // warnSessionSuperseded() above.
-        warnSessionSuperseded(session.message);
-      } else if (location.pathname !== '/' && location.pathname !== '/index.html') {
-        // Never authenticated on THIS device at all — e.g. a fresh
-        // browser, an expired cookie, or a bookmark/PWA shortcut pointing
-        // straight at a secondary page instead of "/". No alert (this
-        // isn't an alarming "signed out" event, just the ordinary "please
-        // sign in" case every other page already redirects for
-        // server-side — see webapp/routes/pages.py's _guard_page()) —
-        // just send them to the one page with an actual login form,
-        // rather than leaving this page's own static "Sign in from the
-        // main app first." text as a dead end with no way forward.
-        location.href = '/';
-      }
+      if (session && session.session_superseded) warnSessionSuperseded(session.message);
       return; // login screen, an expired session, or a superseded one — nothing to render
     }
     AppShell.user = session.user;
@@ -369,15 +361,14 @@
     var homeHref = resolveLanding(session.user.role, flags);
     var pageKey = currentPageKey();
 
-    // Pending correction-request count — Manager/Super Admin/Accountant
-    // only (the backend route itself is also role-gated; this is purely
-    // "who do we even bother asking"). Drives both the in-nav red badge
-    // (the guaranteed fallback) and the PWA app-icon badge where the
-    // platform supports it (see setAppIconBadge() below) — same
-    // authoritative backend number for both, never guessed from visible
-    // rows.
+    // Pending correction-request count — Manager/Super Admin only (the
+    // backend route itself is also role-gated; this is purely "who do we
+    // even bother asking"). Drives both the in-nav red badge (the
+    // guaranteed fallback) and the PWA app-icon badge where the platform
+    // supports it (see setAppIconBadge() below) — same authoritative
+    // backend number for both, never guessed from visible rows.
     var pendingCount = 0;
-    if (session.user.role === 'manager' || session.user.role === 'super_admin' || session.user.role === 'accountant') {
+    if (session.user.role === 'manager' || session.user.role === 'super_admin') {
       var pendingData = await apiGet('/api/correction-requests/pending-count');
       pendingCount = (pendingData && typeof pendingData.count === 'number') ? pendingData.count : 0;
     }

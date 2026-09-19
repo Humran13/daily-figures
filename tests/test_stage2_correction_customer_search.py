@@ -196,18 +196,22 @@ def test_viewer_can_search_but_still_cannot_create_dispatch(client, login_as, se
 
 # ---------- history.html sends the search to the backend ----------
 
-def test_history_html_sends_customer_search_param_to_backend():
+def test_history_html_sends_selected_customer_id_to_backend():
     from pathlib import Path
     source = (Path(__file__).resolve().parent.parent / "static" / "history.html").read_text(encoding="utf-8")
-    assert "params.set('customer_name', customerText)" in source
+    assert "params.set('customer_id', customerId)" in source
+    assert "/api/reports/filter-options/customers?q=" in source
     assert "results.filter(d => (d.customer_name" not in source, "client-side substring filter must be removed"
 
 
-def test_history_html_debounces_customer_search_input():
+def test_history_html_debounces_reusable_autocomplete_search():
     from pathlib import Path
-    source = (Path(__file__).resolve().parent.parent / "static" / "history.html").read_text(encoding="utf-8")
-    assert "customerSearchTimer" in source
-    assert "setTimeout(()=>loadDispatchHistory(), 250)" in source
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    source = (static_dir / "history.html").read_text(encoding="utf-8")
+    shared = (static_dir / "filter-autocomplete.js").read_text(encoding="utf-8")
+    assert "function createFilterAutocomplete(" in source
+    assert '<script src="/filter-autocomplete.js"></script>' in source
+    assert "timer = setTimeout(search, 150)" in shared
 
 
 # ---------- unauthenticated access to /history.html ----------

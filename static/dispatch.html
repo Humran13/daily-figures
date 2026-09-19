@@ -108,7 +108,7 @@
 </head>
 <body>
 
-<div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Sign in from the main app first.</div>
+<div id="gate" class="hidden" style="padding:60px 20px;text-align:center;color:white;">Returning to sign in&hellip;</div>
 
 <div class="shell hidden" id="appShell">
   <div id="appIdentityBar" class="no-print"></div>
@@ -1494,7 +1494,8 @@ document.getElementById('deleteConfirmBtn').addEventListener('click', async ()=>
 (async function init(){
   const {data} = await api('/api/session');
   if(!data.authed || !['super_admin','manager','operator','viewer'].includes((data.user||{}).role)){
-    document.getElementById('gate').classList.remove('hidden');
+    if(data.session_superseded){ try{ sessionStorage.setItem('appLoginMessage', data.message); }catch(e){} }
+    window.location.replace('/');
     return;
   }
   currentUser = data.user;

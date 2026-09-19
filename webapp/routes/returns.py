@@ -106,6 +106,7 @@ def list_returns():
 def export_returns(fmt):
     query, filters_applied = _filtered_return_query(request.args)
     records = query.order_by(ReturnRecord.date.desc(), ReturnRecord.id.desc()).limit(5000).all()
+    selected_product_id = int(request.args["product_id"]) if request.args.get("product_id") else None
 
     # Simplified business-facing shape: Returned By (who brought the goods
     # back) / Received By (the staff who received it — reuses the existing
@@ -129,6 +130,8 @@ def export_returns(fmt):
         # posting_eligible() is THE central rule, never re-derived here).
         posted_to_stock = "Yes" if svc.is_return_stock_posting_eligible(r) else "No"
         for line in r.lines:
+            if selected_product_id is not None and line.product_id != selected_product_id:
+                continue
             rows.append({
                 "date": r.date, "returned_by": returned_by,
                 "received_by": r.signed_by_name or "",

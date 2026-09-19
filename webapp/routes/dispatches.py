@@ -125,6 +125,7 @@ def list_dispatches():
 def export_dispatches(fmt):
     query, filters_applied = _filtered_dispatch_query(request.args)
     dispatches = query.order_by(Dispatch.date.desc(), Dispatch.id.desc()).limit(5000).all()
+    selected_product_id = int(request.args["product_id"]) if request.args.get("product_id") else None
 
     # A single business-friendly "Quantity" column per line — cartons+packs+
     # pieces per that product's own configured packaging (e.g. "3c 2p 5pc"
@@ -152,6 +153,11 @@ def export_dispatches(fmt):
         customer_name = d.customer_name_snapshot or (d.customer.name if d.customer else "")
         category_name = d.sales_category_name_snapshot or "Uncategorized"
         for line in d.lines:
+            # The parent query's EXISTS decides which dispatches match. The
+            # export is line-shaped, so keep only the selected product's
+            # lines instead of expanding every sibling line on that record.
+            if selected_product_id is not None and line.product_id != selected_product_id:
+                continue
             rows.append({
                 "date": d.date, "shift": d.shift, "dispatch_number": d.dispatch_number,
                 "invoice_number": d.invoice_number or "", "sales_category": category_name,

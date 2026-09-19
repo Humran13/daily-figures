@@ -98,15 +98,6 @@ def _guard_page(filename, allowed_roles, module_key=None):
     return current_app.send_static_file(filename)
 
 
-def _guard_flag_only(filename, module_key):
-    # "/dispatch.html" has never required a session at the page level (it
-    # shows its own client-side "sign in" gate) — only the feature flag is
-    # enforced at this layer; auth is enforced by every API this page calls.
-    if not ffs.is_enabled(module_key):
-        return _module_disabled_response(module_key)
-    return current_app.send_static_file(filename)
-
-
 def _guard_flag_and_auth(filename, module_key):
     user = current_user()
     if user is None:
@@ -128,17 +119,17 @@ def _guard_flag_and_auth(filename, module_key):
 
 @pages_bp.route("/dispatch.html")
 def dispatch_page():
-    return _guard_flag_only("dispatch.html", "dispatch")
+    return _guard_flag_and_auth("dispatch.html", "dispatch")
 
 
 @pages_bp.route("/returns.html")
 def returns_page():
-    return _guard_flag_only("returns.html", "returns")
+    return _guard_flag_and_auth("returns.html", "returns")
 
 
 @pages_bp.route("/production.html")
 def production_page():
-    return _guard_flag_only("production.html", "production")
+    return _guard_flag_and_auth("production.html", "production")
 
 
 @pages_bp.route("/dashboard.html")

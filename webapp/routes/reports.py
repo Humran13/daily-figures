@@ -9,8 +9,11 @@ by sales category or by recipient.
 """
 from flask import Blueprint, Response, jsonify, request
 
-from webapp.auth import current_user, roles_required, feature_required
+from webapp.auth import current_user, feature_required, login_required, roles_required
 from webapp.extensions import db
+from webapp.models.customer import Customer
+from webapp.models.product import Product
+from webapp.models.sales_category import SalesCategory
 from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import branding_service, stock_service as svc
 from webapp.services.audit_service import record_audit
@@ -21,6 +24,39 @@ reports_bp = Blueprint("reports", __name__, url_prefix="/api/reports")
 
 def _error(e, status=400):
     return jsonify({"error": str(e)}), status
+
+
+@reports_bp.route("/filter-options/products", methods=["GET"])
+@login_required
+@feature_required("history_exports")
+def product_filter_options():
+    """Active database products for the shared History autocomplete."""
+    q = (request.args.get("q") or "").strip()
+    query = Product.query.filter_by(active=True)
+    if q:
+        query = query.filter(Product.name.ilike(f"%{q}%"))
+    return jsonify([p.to_dict() for p in query.order_by(Product.display_order, Product.name).limit(50).all()])
+
+
+@reports_bp.route("/filter-options/customers", methods=["GET"])
+@login_required
+@feature_required("history_exports")
+def customer_filter_options():
+    """Active canonical customers for exact Customer/Recipient filters."""
+    q = (request.args.get("q") or "").strip()
+    query = Customer.query.filter_by(active=True).filter(Customer.merged_into_id.is_(None))
+    if q:
+        query = query.filter(Customer.name.ilike(f"%{q}%"))
+    return jsonify([c.to_dict() for c in query.order_by(Customer.name).limit(50).all()])
+
+
+@reports_bp.route("/filter-options/sales-categories", methods=["GET"])
+@login_required
+@feature_required("history_exports")
+def sales_category_filter_options():
+    """Active configured SalesCategory rows; names are never hardcoded."""
+    rows = SalesCategory.query.filter_by(active=True).order_by(SalesCategory.display_order, SalesCategory.name).all()
+    return jsonify([row.to_dict() for row in rows])
 
 
 @reports_bp.route("/summary", methods=["GET"])
@@ -102,7 +138,7 @@ def _recipient_totals_args():
 
 
 @reports_bp.route("/recipient-totals", methods=["GET"])
-@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_VIEWER)
+@roles_required(ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_VIEWER)
 @feature_required("reporting")
 def recipient_totals():
     """

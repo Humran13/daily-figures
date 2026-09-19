@@ -172,7 +172,7 @@
 </head>
 <body>
 
-<div id="gate" class="gate hidden">Sign in from the main app first.</div>
+<div id="gate" class="gate hidden">Returning to sign in&hellip;</div>
 
 <script src="/quantity_format.js"></script>
 
@@ -775,7 +775,8 @@ document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
 (async function init(){
   const {data} = await api('/api/session');
   if(!data.authed || !data.user){
-    document.getElementById('gate').classList.remove('hidden');
+    if(data.session_superseded){ try{ sessionStorage.setItem('appLoginMessage', data.message); }catch(e){} }
+    window.location.replace('/');
     return;
   }
   currentUser = data.user;
