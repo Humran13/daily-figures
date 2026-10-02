@@ -13,7 +13,9 @@ from sqlalchemy import update
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from webapp.extensions import db
+from webapp.models.section import SECTION_FINISHED_GOODS, Section
 from webapp.models.user import ROLES, User
+from webapp.services import section_access_service
 from webapp.services.audit_service import record_audit
 from webapp.services.business_calendar import business_today, utcnow
 
@@ -90,6 +92,49 @@ def roles_required(*allowed_roles):
     return decorator
 
 
+def active_section():
+    """The section code stamped into the current session at login, or None
+    for a session established before sections existed (treated as
+    finished_goods by enforce_section below, never as "no section")."""
+    return session.get("active_section")
+
+
+def section_required(*section_codes):
+    def decorator(view):
+        @functools.wraps(view)
+        def wrapped(*args, **kwargs):
+            user = current_user()
+            if user is None:
+                return _unauthorized_response()
+            if (active_section() or SECTION_FINISHED_GOODS) not in section_codes:
+                return jsonify({"error": "forbidden_section"}), 403
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def enforce_section(*section_codes):
+    """
+    Blueprint-level `before_request` hook for the smallest centralized
+    section gate across many routes at once (see webapp/__init__.py's
+    registration of this against each Finished-Goods-only blueprint). A
+    no-op when unauthenticated — the route's own login_required/
+    roles_required still produces the existing 401 — this only blocks an
+    authenticated session whose active section doesn't match.
+
+    A session with no active_section at all (every session that existed
+    before this feature shipped, until that device logs in again) is
+    treated as finished_goods: every pre-existing account/session
+    belongs to what was, until now, the only application there was.
+    """
+    user = current_user()
+    if user is None:
+        return None
+    if (active_section() or SECTION_FINISHED_GOODS) not in section_codes:
+        return jsonify({"error": "forbidden_section"}), 403
+    return None
+
+
 def feature_required(module_key):
     """
     Blocks a route when its module has been disabled via Company Settings
@@ -116,12 +161,33 @@ def login():
     data = request.get_json(force=True) or {}
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
+    # Defaults to finished_goods when omitted — every caller that predates
+    # the section-selection screen (existing tests, any stale client bundle
+    # still cached in a browser/PWA) keeps logging straight into the one
+    # section that existed before this feature shipped, with zero behavior
+    # change for every current user/role.
+    section_code = (data.get("section") or SECTION_FINISHED_GOODS).strip()
 
     user = User.query.filter_by(username=username).first()
     if user is None or not user.active or not check_password_hash(user.password_hash, password):
         record_audit(None, "login_failed", "user", entity_id=username or None)
         db.session.commit()
         return jsonify({"ok": False, "error": "Invalid username or password"}), 401
+
+    section_access_service.ensure_seeded()
+    section = Section.query.filter_by(code=section_code, active=True).first()
+    if section is None:
+        return jsonify({"ok": False, "error": "Unknown section"}), 400
+
+    # Section authorization is checked BEFORE any session mutation below —
+    # a correct password for a section this account isn't granted must
+    # never bump session_version (that would silently sign the user's OWN
+    # other, currently-valid device out for no reason), and must never
+    # create an authenticated session of its own.
+    if not section_access_service.user_has_section_access(user, section):
+        record_audit(user, "login_section_denied", "user", entity_id=user.id, after={"section": section.code})
+        db.session.commit()
+        return jsonify({"ok": False, "error": f"Your account does not have access to {section.name}."}), 403
 
     # One active session per account, NEWEST login wins (Stage 7 section 2;
     # reaffirmed for rapid/concurrent logins below): every successful login
@@ -145,6 +211,7 @@ def login():
     session.clear()
     session["user_id"] = user.id
     session["session_version"] = user.session_version
+    session["active_section"] = section.code
     session.permanent = True
     user.last_login_at = datetime.now(timezone.utc).replace(tzinfo=None)
     record_audit(user, "login_success", "user", entity_id=user.id)
@@ -156,6 +223,7 @@ def login():
 def check_session():
     status, user = _session_diagnosis()
     body = {"authed": status == "ok", "user": user.to_dict() if user else None}
+    body["active_section"] = (active_section() or SECTION_FINISHED_GOODS) if status == "ok" else None
     if status == "superseded":
         body["session_superseded"] = True
         body["message"] = SESSION_SUPERSEDED_MESSAGE

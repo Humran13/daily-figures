@@ -3,10 +3,18 @@ from werkzeug.security import generate_password_hash
 
 from webapp.auth import current_user, roles_required
 from webapp.extensions import db
+from webapp.models.section import SECTION_FINISHED_GOODS
 from webapp.models.user import ROLES, ROLE_SUPER_ADMIN, User
+from webapp.services import section_access_service
 from webapp.services.audit_service import record_audit
 
 admin_users_bp = Blueprint("admin_users", __name__, url_prefix="/api/admin/users")
+
+
+def _user_dict_with_sections(user):
+    d = user.to_dict()
+    d["sections"] = section_access_service.get_section_codes_for_user(user)
+    return d
 
 
 def _is_last_active_super_admin(user):
@@ -18,7 +26,7 @@ def _is_last_active_super_admin(user):
 @admin_users_bp.route("", methods=["GET"])
 @roles_required(ROLE_SUPER_ADMIN)
 def list_users():
-    return jsonify([u.to_dict() for u in User.query.order_by(User.username).all()])
+    return jsonify([_user_dict_with_sections(u) for u in User.query.order_by(User.username).all()])
 
 
 @admin_users_bp.route("", methods=["POST"])
@@ -28,6 +36,11 @@ def create_user():
     username = (d.get("username") or "").strip()
     password = d.get("password") or ""
     role = d.get("role")
+    # Defaults to finished_goods — every account created the way this
+    # endpoint already worked before section access existed should keep
+    # getting into the one section that existed before this feature
+    # shipped, with no behavior change for callers that don't pass it.
+    sections = d.get("sections", [SECTION_FINISHED_GOODS])
 
     if not username or not password:
         return jsonify({"error": "username and password are required"}), 400
@@ -37,13 +50,21 @@ def create_user():
         return jsonify({"error": f"role must be one of {ROLES}"}), 400
     if User.query.filter_by(username=username).first():
         return jsonify({"error": "a user with this username already exists"}), 409
+    if not isinstance(sections, list):
+        return jsonify({"error": "sections must be a list"}), 400
 
     user = User(username=username, password_hash=generate_password_hash(password), role=role, active=True)
     db.session.add(user)
     db.session.flush()
-    record_audit(current_user(), "create", "user", entity_id=user.id, after={"username": username, "role": role})
+    actor = current_user()
+    try:
+        section_access_service.set_sections_for_user(user, sections, actor)
+    except section_access_service.SectionAccessError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+    record_audit(actor, "create", "user", entity_id=user.id, after={"username": username, "role": role})
     db.session.commit()
-    return jsonify(user.to_dict()), 201
+    return jsonify(_user_dict_with_sections(user)), 201
 
 
 @admin_users_bp.route("/<int:user_id>", methods=["PATCH"])
@@ -78,6 +99,8 @@ def update_user(user_id):
         return jsonify({"error": f"role must be one of {ROLES}"}), 400
     if "active" in d and not isinstance(d["active"], bool):
         return jsonify({"error": "active must be true or false"}), 400
+    if "sections" in d and not isinstance(d["sections"], list):
+        return jsonify({"error": "sections must be a list"}), 400
 
     if user.id == actor.id and "role" in d and d["role"] != ROLE_SUPER_ADMIN:
         return jsonify({"error": "you cannot demote your own account"}), 400
@@ -98,9 +121,16 @@ def update_user(user_id):
     if "active" in d:
         user.active = bool(d["active"])
 
+    if "sections" in d:
+        try:
+            section_access_service.set_sections_for_user(user, d["sections"], actor)
+        except section_access_service.SectionAccessError as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 400
+
     record_audit(actor, "update", "user", entity_id=user.id, before=before, after=user.to_dict())
     db.session.commit()
-    return jsonify(user.to_dict())
+    return jsonify(_user_dict_with_sections(user))
 
 
 @admin_users_bp.route("/<int:user_id>/reset-password", methods=["POST"])

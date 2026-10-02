@@ -101,13 +101,17 @@
               <option value="super_admin">Super Administrator</option>
             </select>
           </div>
+          <div><label>Section Access</label>
+            <label class="small" style="display:block;font-weight:normal;"><input type="checkbox" id="newUserSectionFinishedGoods" checked> Finished Goods</label>
+            <label class="small" style="display:block;font-weight:normal;"><input type="checkbox" id="newUserSectionSpareParts"> Spare Parts</label>
+          </div>
         </div>
         <button class="btn-primary" id="createUserBtn">Create user</button>
         <div class="msg" id="userMsg"></div>
       </div>
       <div class="card">
         <h2>Existing users</h2>
-        <table><thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead>
+        <table><thead><tr><th>Username</th><th>Role</th><th>Sections</th><th>Status</th><th>Last login</th><th></th></tr></thead>
         <tbody id="usersTable"></tbody></table>
       </div>
     </div>
@@ -571,6 +575,10 @@ async function loadUsers(){
           ${['viewer','operator','accountant','manager','super_admin'].map(r=>`<option value="${r}" ${r===u.role?'selected':''}>${r.replace('_',' ')}</option>`).join('')}
         </select>
       </td>
+      <td class="small">
+        <label style="display:block;font-weight:normal;"><input type="checkbox" data-section-for="${u.id}" data-section-code="finished_goods" ${(u.sections||[]).includes('finished_goods')?'checked':''}> Finished Goods</label>
+        <label style="display:block;font-weight:normal;"><input type="checkbox" data-section-for="${u.id}" data-section-code="spare_parts" ${(u.sections||[]).includes('spare_parts')?'checked':''}> Spare Parts</label>
+      </td>
       <td><span class="pill ${u.active?'pill-active':'pill-inactive'}">${u.active?'Active':'Disabled'}</span></td>
       <td class="small">${u.last_login_at ? new Date(u.last_login_at + 'Z').toLocaleString(undefined, {timeZone:'Africa/Kampala', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'}) : 'never'}</td>
       <td>
@@ -579,14 +587,15 @@ async function loadUsers(){
         <button class="${u.active?'btn-danger':'btn-primary'}" data-toggle-active="${u.id}" data-next="${!u.active}">${u.active?'Disable':'Reactivate'}</button>
       </td>
     </tr>`).join('');
-  document.getElementById('usersTable').innerHTML = rows || '<tr><td colspan="5" class="small">No users yet.</td></tr>';
+  document.getElementById('usersTable').innerHTML = rows || '<tr><td colspan="6" class="small">No users yet.</td></tr>';
 
   document.querySelectorAll('[data-save]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const id = btn.dataset.save;
       const role = document.querySelector(`[data-role-for="${id}"]`).value;
       const username = document.querySelector(`[data-username-for="${id}"]`).value.trim();
-      const {status, data} = await api(`/api/admin/users/${id}`, {method:'PATCH', body: JSON.stringify({role, username})});
+      const sections = Array.from(document.querySelectorAll(`[data-section-for="${id}"]:checked`)).map(cb=>cb.dataset.sectionCode);
+      const {status, data} = await api(`/api/admin/users/${id}`, {method:'PATCH', body: JSON.stringify({role, username, sections})});
       document.getElementById('userMsg').textContent = status===200 ? 'User updated.' : (data.error||'Failed');
       document.getElementById('userMsg').className = 'msg ' + (status===200?'ok':'err');
       loadUsers();
@@ -649,11 +658,16 @@ document.getElementById('createUserBtn').addEventListener('click', async ()=>{
   const username = document.getElementById('newUserName').value.trim();
   const password = document.getElementById('newUserPass').value;
   const role = document.getElementById('newUserRole').value;
-  const {status, data} = await api('/api/admin/users', {method:'POST', body: JSON.stringify({username, password, role})});
+  const sections = [];
+  if(document.getElementById('newUserSectionFinishedGoods').checked) sections.push('finished_goods');
+  if(document.getElementById('newUserSectionSpareParts').checked) sections.push('spare_parts');
+  const {status, data} = await api('/api/admin/users', {method:'POST', body: JSON.stringify({username, password, role, sections})});
   const msg = document.getElementById('userMsg');
   if(status===201){
     msg.textContent = 'User created.'; msg.className='msg ok';
     document.getElementById('newUserName').value=''; document.getElementById('newUserPass').value='';
+    document.getElementById('newUserSectionFinishedGoods').checked = true;
+    document.getElementById('newUserSectionSpareParts').checked = false;
     loadUsers();
   } else { msg.textContent = data.error || 'Failed to create user.'; msg.className='msg err'; }
 });

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1B2430">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Spare Parts">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app-shell.css">
+<title>Spare Parts — Store Department</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --line:#DEDACF; --teal:#1F8A70;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:560px; margin:0 auto; min-height:100vh; background:var(--paper); display:flex; flex-direction:column; }
+  header{ background:var(--ink); color:var(--paper); padding:18px 20px 14px; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#8A94A6; margin:0 0 4px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; }
+  main{ flex:1; padding:40px 20px; text-align:center; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:40px 20px; }
+  .btn{ padding:12px 20px; border-radius:10px; border:1.5px solid var(--line); background:white; font-size:14px; font-weight:600; cursor:pointer; }
+  .btn-primary{ background:var(--teal); color:white; border-color:var(--teal); }
+</style>
+</head>
+<body>
+
+<div class="shell" id="appShell">
+  <div id="appIdentityBar"></div>
+  <header>
+    <p class="eyebrow">Store Department</p>
+    <h1>Spare Parts</h1>
+  </header>
+  <main>
+    <div class="card">
+      <p>Spare Parts section</p>
+      <p style="color:var(--ink-soft);font-size:13px;">This section is coming soon.</p>
+      <button class="btn" id="logoutBtn">Sign out</button>
+    </div>
+  </main>
+</div>
+
+<script>
+async function apiGet(url){
+  const res = await fetch(url);
+  return res.json();
+}
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  await fetch('/api/logout', {method:'POST'});
+  window.location.href = '/';
+});
+(async function init(){
+  const s = await apiGet('/api/session');
+  if(!s || !s.authed || s.active_section !== 'spare_parts'){
+    window.location.href = '/';
+  }
+})();
+</script>
+</body>
+</html>

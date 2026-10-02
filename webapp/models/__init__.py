@@ -17,6 +17,7 @@ from webapp.models.daily_review_session import DailyReviewSession, DailyReviewPr
 from webapp.models.ledger_cutover import LedgerCutover, LedgerCutoverBalance
 from webapp.models.correction_request import CorrectionRequest
 from webapp.models.push_subscription import PushSubscription
+from webapp.models.section import Department, Section, UserSectionAccess
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -33,4 +34,5 @@ __all__ = [
     "LedgerCutover", "LedgerCutoverBalance",
     "CorrectionRequest",
     "PushSubscription",
+    "Department", "Section", "UserSectionAccess",
 ]

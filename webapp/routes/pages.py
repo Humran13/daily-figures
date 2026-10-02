@@ -20,7 +20,8 @@ reachable regardless of any flag's state.
 """
 from flask import Blueprint, Response, current_app, redirect
 
-from webapp.auth import current_user
+from webapp.auth import active_section, current_user
+from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS
 from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
 from webapp.services import feature_flag_service as ffs
 
@@ -87,9 +88,24 @@ def _module_disabled_response(module_key):
     return Response(_DISABLED_MODULE_MESSAGE, status=503)
 
 
-def _guard_page(filename, allowed_roles, module_key=None):
+def _wrong_section(section_code):
+    # A session with no active_section stamped at all (any session that
+    # predates this feature) is treated as finished_goods — see
+    # webapp/auth.py's enforce_section() docstring for why.
+    if section_code is None:
+        return False
+    return (active_section() or SECTION_FINISHED_GOODS) != section_code
+
+
+def _guard_page(filename, allowed_roles, module_key=None, section_code=SECTION_FINISHED_GOODS):
     user = current_user()
     if user is None:
+        return redirect("/")
+    if _wrong_section(section_code):
+        # Authenticated, just not into the section this page belongs to —
+        # send them to "/", whose own boot logic routes an already-valid
+        # session straight to ITS section's landing page, rather than
+        # treating this as a login problem.
         return redirect("/")
     if user.role not in allowed_roles:
         return redirect(first_authorized_page(user))
@@ -98,9 +114,11 @@ def _guard_page(filename, allowed_roles, module_key=None):
     return current_app.send_static_file(filename)
 
 
-def _guard_flag_and_auth(filename, module_key):
+def _guard_flag_and_auth(filename, module_key, section_code=SECTION_FINISHED_GOODS):
     user = current_user()
     if user is None:
+        return redirect("/")
+    if _wrong_section(section_code):
         return redirect("/")
     if not ffs.is_enabled(module_key):
         return _module_disabled_response(module_key)
@@ -139,7 +157,10 @@ def dashboard_page():
 
 @pages_bp.route("/admin.html")
 def admin_page():
-    return _guard_page("admin.html", (ROLE_SUPER_ADMIN,))
+    # Global: reachable regardless of which section the Super Admin is
+    # currently logged into — same reasoning as never feature-flag-gating
+    # it (see module docstring above).
+    return _guard_page("admin.html", (ROLE_SUPER_ADMIN,), section_code=None)
 
 
 @pages_bp.route("/reset-daily-values.html")
@@ -168,3 +189,16 @@ def requests_page():
     # underlying /api/correction-requests* review endpoints
     # (approve/reject/pending-count).
     return _guard_page("requests.html", (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT))
+
+
+@pages_bp.route("/spare-parts.html")
+def spare_parts_page():
+    # Spare Parts has no roles/modules of its own yet — any role granted
+    # Spare Parts section access may enter; this is a placeholder shell
+    # only (see static/spare-parts.html).
+    user = current_user()
+    if user is None:
+        return redirect("/")
+    if _wrong_section(SECTION_SPARE_PARTS):
+        return redirect("/")
+    return current_app.send_static_file("spare-parts.html")

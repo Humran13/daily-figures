@@ -200,19 +200,34 @@
   .login-card input{ width:100%; padding:16px; font-size:24px; letter-spacing:.3em; text-align:center; font-family:var(--mono); border:2px solid var(--line); border-radius:10px; margin-bottom:14px; }
   .login-card input:focus{ outline:none; border-color:var(--teal); }
   .login-card .err{ color:var(--red); font-size:12px; height:16px; margin-bottom:10px; }
+  .section-card{ background:var(--paper); border-radius:18px; padding:36px 28px; width:min(360px,90vw); text-align:center; }
+  .section-card h1{ font-size:20px; margin:0 0 4px; }
+  .section-card .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 20px; }
+  .section-btn{ display:block; width:100%; padding:16px; margin-bottom:12px; border:2px solid var(--line); border-radius:10px; background:white; font-size:15px; font-weight:700; cursor:pointer; color:var(--ink); }
+  .section-btn:hover{ border-color:var(--teal); }
+  .change-section-link{ display:inline-block; margin-top:4px; font-size:12px; color:var(--ink-soft); text-decoration:underline; cursor:pointer; background:none; border:none; }
 </style>
 </head>
 <body>
 
-<div id="loginScreen" class="login-shell">
+<div id="sectionScreen" class="login-shell">
+  <div class="section-card">
+    <p class="eyebrow">Store Department</p>
+    <h1>Select a section</h1>
+    <div id="sectionButtons"></div>
+  </div>
+</div>
+
+<div id="loginScreen" class="login-shell hidden">
   <div class="login-card">
     <img data-brand-logo class="hidden" alt="" style="max-height:56px;max-width:220px;display:block;margin:0 auto 12px;">
     <h1 data-brand-name>Daily Figures</h1>
-    <p>Sign in to continue</p>
+    <p id="loginSectionLabel">Sign in to continue</p>
     <input type="text" autocomplete="username" id="usernameInput" placeholder="Username" style="margin-bottom:10px;letter-spacing:normal;font-size:16px;text-align:left;">
     <input type="password" autocomplete="current-password" id="passwordInput" placeholder="Password" style="letter-spacing:normal;font-size:16px;text-align:left;">
     <div class="err" id="loginErr"></div>
     <button class="btn btn-primary" id="loginBtn" style="width:100%;">Sign in</button>
+    <button class="change-section-link" id="changeSectionBtn" type="button">Choose a different section</button>
   </div>
 </div>
 
@@ -1386,10 +1401,61 @@ document.getElementById('shiftInput').addEventListener('change', async ()=>{ cur
 // webapp/routes/pages.py's first_authorized_page() exactly). Navigating
 // back to "/" later (e.g. via the reporting nav's "Daily Figures" link)
 // goes through init()/boot() below instead, which does not redirect.
+// ---------- section selection (Store Department) ----------
+// Server-verifiable: this choice is just which login form to show and
+// which section code attemptLogin() sends — /api/login re-validates the
+// account's actual access itself, so nothing here is trusted for
+// authorization (see webapp/auth.py's login()).
+let chosenSection = null;
+const SECTION_LABELS = { finished_goods: 'Finished Goods', spare_parts: 'Spare Parts' };
+const DEFAULT_SECTIONS = [
+  { code: 'finished_goods', name: 'Finished Goods' },
+  { code: 'spare_parts', name: 'Spare Parts' },
+];
+
+function showSectionScreen(){
+  chosenSection = null;
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('sectionScreen').classList.remove('hidden');
+}
+
+function showLoginScreen(sectionCode){
+  chosenSection = sectionCode;
+  document.getElementById('loginSectionLabel').textContent =
+    'Store Department / ' + (SECTION_LABELS[sectionCode] || sectionCode);
+  document.getElementById('loginErr').textContent = '';
+  document.getElementById('sectionScreen').classList.add('hidden');
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('usernameInput').focus();
+}
+
+function renderSectionButtons(sections){
+  document.getElementById('sectionButtons').innerHTML = sections.map(s =>
+    `<button type="button" class="section-btn" data-section="${s.code}">${s.name}</button>`
+  ).join('');
+  document.querySelectorAll('.section-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>showLoginScreen(btn.dataset.section));
+  });
+}
+
+document.getElementById('changeSectionBtn').addEventListener('click', showSectionScreen);
+
+(async function loadSections(){
+  try{
+    const res = await fetch('/api/sections');
+    const data = await res.json();
+    const sections = (data.departments || []).flatMap(d => d.sections || []);
+    renderSectionButtons(sections.length ? sections : DEFAULT_SECTIONS);
+  }catch(e){
+    renderSectionButtons(DEFAULT_SECTIONS);
+  }
+})();
+
 async function attemptLogin(){
   const username = document.getElementById('usernameInput').value;
   const password = document.getElementById('passwordInput').value;
-  const res = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password})});
+  const section = chosenSection || 'finished_goods';
+  const res = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username, password, section})});
   const data = await res.json();
   if(!data.ok){
     document.getElementById('loginErr').textContent = data.error || 'Invalid username or password';
@@ -1399,6 +1465,10 @@ async function attemptLogin(){
     sessionStorage.removeItem('appSessionSupersededShown');
     sessionStorage.removeItem('appLoginMessage');
   }catch(e){}
+  if(section === 'spare_parts'){
+    window.location.href = '/spare-parts.html';
+    return;
+  }
   let flags = {};
   try{
     const flagsRes = await fetch('/api/feature-flags');
@@ -1467,6 +1537,7 @@ async function applyFeatureFlags(){
 }
 
 async function boot(user){
+  document.getElementById('sectionScreen').classList.add('hidden');
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('appShell').classList.remove('hidden');
   document.getElementById('dateInput').value = todayStr();
@@ -1515,7 +1586,14 @@ async function boot(user){
     if(loginMessage) document.getElementById('loginErr').textContent = loginMessage;
   }catch(e){}
   const s = await apiGet('/api/session');
-  if(s && s.authed){ businessToday = s.business_today; await boot(s.user); }
+  if(s && s.authed){
+    if(s.active_section === 'spare_parts'){ window.location.href = '/spare-parts.html'; return; }
+    businessToday = s.business_today;
+    await boot(s.user);
+  }
+  // Not authed (or superseded): leave #sectionScreen showing (its default
+  // visible state) rather than jumping straight to the login form — see
+  // the Store Department/Section Access architecture spec.
 })();
 </script>
 <script src="/pwa.js" defer></script>
