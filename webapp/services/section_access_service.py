@@ -56,6 +56,14 @@ def user_has_section_access(user, section):
     explicit set is authoritative and this fallback no longer applies —
     so revoking finished_goods from such a user actually takes effect.
     """
+    from webapp.models.user import ROLE_SUPER_ADMIN
+    if user.role == ROLE_SUPER_ADMIN:
+        # Global section access: a Super Admin may enter every active
+        # section regardless of UserSectionAccess rows — a role check,
+        # never a username check, so this applies identically to any
+        # current or future super_admin account.
+        return True
+
     has_any_grant = db.session.query(UserSectionAccess.id).filter_by(user_id=user.id).first() is not None
     if not has_any_grant:
         return section.code == SECTION_FINISHED_GOODS

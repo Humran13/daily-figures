@@ -18,6 +18,11 @@ from webapp.models.ledger_cutover import LedgerCutover, LedgerCutoverBalance
 from webapp.models.correction_request import CorrectionRequest
 from webapp.models.push_subscription import PushSubscription
 from webapp.models.section import Department, Section, UserSectionAccess
+from webapp.models.machine import Machine, MachineAlias
+from webapp.models.supplier import Supplier
+from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSupplier
+from webapp.models.spare_part_movement import SparePartMovement
+from webapp.models.spare_part_import_row import SparePartImportRow
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -35,4 +40,9 @@ __all__ = [
     "CorrectionRequest",
     "PushSubscription",
     "Department", "Section", "UserSectionAccess",
+    "Machine", "MachineAlias",
+    "Supplier",
+    "SparePart", "SparePartMachine", "SparePartSupplier",
+    "SparePartMovement",
+    "SparePartImportRow",
 ]

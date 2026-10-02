@@ -71,6 +71,10 @@ def create_app():
     from webapp.routes.correction_requests import correction_requests_bp
     from webapp.routes.push import push_bp
     from webapp.routes.sections import sections_bp
+    from webapp.routes.spare_parts import spare_parts_bp
+    from webapp.routes.spare_part_machines import spare_part_machines_bp
+    from webapp.routes.spare_part_suppliers import spare_part_suppliers_bp
+    from webapp.routes.spare_part_movements import spare_part_movements_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_products_bp)
@@ -98,37 +102,42 @@ def create_app():
     app.register_blueprint(push_bp)
     app.register_blueprint(pwa_bp)
     app.register_blueprint(sections_bp)
+    app.register_blueprint(spare_parts_bp)
+    app.register_blueprint(spare_part_machines_bp)
+    app.register_blueprint(spare_part_suppliers_bp)
+    app.register_blueprint(spare_part_movements_bp)
 
-    # Store Department / Section Access: these blueprints are all
-    # Finished-Goods operational data (Daily Figures entries, Dispatch,
-    # Returns, Production, Dashboard, Operations History/exports,
-    # correction requests). A single app-level before_request hook,
-    # keyed off request.blueprint, is the smallest centralized way to
-    # section-gate every route they contain — including any added later —
-    # without decorating dozens of individual view functions.
-    # (Blueprint.before_request() isn't used here because Blueprint
-    # objects are module-level singletons reused across every create_app()
-    # call, e.g. once per test; Flask forbids adding a setup hook to a
-    # blueprint that's already been registered once elsewhere, so a
-    # per-app hook is the only option that's safe to call from inside
+    # Store Department / Section Access: these blueprints are each either
+    # Finished-Goods or Spare-Parts operational data. A single app-level
+    # before_request hook, keyed off request.blueprint, is the smallest
+    # centralized way to section-gate every route they contain — including
+    # any added later — without decorating dozens of individual view
+    # functions. (Blueprint.before_request() isn't used here because
+    # Blueprint objects are module-level singletons reused across every
+    # create_app() call, e.g. once per test; Flask forbids adding a setup
+    # hook to a blueprint that's already been registered once elsewhere, so
+    # a per-app hook is the only option that's safe to call from inside
     # create_app() every time.) Admin/auth/infra blueprints (user
     # management, feature flags, branding, company settings, push,
     # PWA manifest) are deliberately left ungated: they are global, not
     # tied to any one section, per the architecture spec.
     from webapp.auth import enforce_section
-    from webapp.models.section import SECTION_FINISHED_GOODS
-    _FG_BLUEPRINT_NAMES = {
-        fg_bp.name for fg_bp in (
-            legacy_bp, dispatches_bp, daily_figures_bp, reports_bp, dashboard_bp,
-            returns_bp, production_bp, daily_entry_status_bp, daily_reset_bp,
-            daily_review_bp, ledger_cutover_bp, correction_requests_bp,
-        )
-    }
+    from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS
+    _SECTION_BY_BLUEPRINT = {}
+    for fg_bp in (
+        legacy_bp, dispatches_bp, daily_figures_bp, reports_bp, dashboard_bp,
+        returns_bp, production_bp, daily_entry_status_bp, daily_reset_bp,
+        daily_review_bp, ledger_cutover_bp, correction_requests_bp,
+    ):
+        _SECTION_BY_BLUEPRINT[fg_bp.name] = SECTION_FINISHED_GOODS
+    for sp_bp in (spare_parts_bp, spare_part_machines_bp, spare_part_suppliers_bp, spare_part_movements_bp):
+        _SECTION_BY_BLUEPRINT[sp_bp.name] = SECTION_SPARE_PARTS
 
     @app.before_request
-    def _enforce_finished_goods_section():
-        if request.blueprint in _FG_BLUEPRINT_NAMES:
-            return enforce_section(SECTION_FINISHED_GOODS)
+    def _enforce_section_by_blueprint():
+        required = _SECTION_BY_BLUEPRINT.get(request.blueprint)
+        if required:
+            return enforce_section(required)
         return None
 
     from webapp.cli import register_cli

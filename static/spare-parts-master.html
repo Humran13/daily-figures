@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1B2430">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Spare Parts">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app-shell.css">
+<title>Master Data — Spare Parts</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7; --line:#DEDACF; --teal:#1F8A70; --red:#C1443A;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:680px; margin:0 auto; min-height:100vh; background:var(--paper); display:flex; flex-direction:column; }
+  .sp-identity-bar{ background:var(--ink); color:var(--paper); padding:12px 16px; }
+  .sp-identity-row{ display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:8px; }
+  .sp-username{ font-weight:700; }
+  .sp-role{ color:#8A94A6; }
+  .sp-change-section{ margin-left:auto; background:none; border:1px solid #3D4756; color:#8A94A6; border-radius:6px; padding:4px 8px; font-size:11px; cursor:pointer; }
+  .sp-nav{ display:flex; gap:12px; overflow-x:auto; }
+  .sp-nav-link{ color:#8A94A6; text-decoration:none; font-size:12px; font-weight:600; padding-bottom:4px; white-space:nowrap; }
+  .sp-nav-link.active{ color:var(--paper); border-bottom:2px solid #E2A93B; }
+  header{ padding:18px 20px 14px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; }
+  main{ flex:1; padding:16px; padding-bottom:60px; }
+  .tabs{ display:flex; gap:0; margin-bottom:14px; border-bottom:1px solid var(--line); }
+  .tab{ flex:1; text-align:center; padding:9px 0; font-size:13px; font-weight:600; color:var(--ink-soft); cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active{ color:var(--ink); border-bottom-color:var(--teal); }
+  .panel{ display:none; } .panel.active{ display:block; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-bottom:5px; }
+  input, select, textarea{ width:100%; padding:10px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; margin-bottom:10px; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th, td{ text-align:left; padding:8px 4px; border-bottom:1px solid var(--paper-dim); }
+  .btn{ padding:8px 12px; border-radius:8px; border:1.5px solid var(--line); background:white; font-size:12px; cursor:pointer; }
+  .btn-primary{ background:var(--teal); color:white; border-color:var(--teal); }
+  .btn-danger{ background:var(--red); color:white; border-color:var(--red); }
+  .pill{ font-size:11px; padding:2px 8px; border-radius:10px; }
+  .pill-active{ background:#DFF3EC; color:var(--teal); } .pill-inactive{ background:#F3DEDC; color:var(--red); }
+  .msg{ font-size:13px; margin-top:8px; min-height:18px; }
+  .msg.ok{ color:var(--teal); } .msg.err{ color:var(--red); }
+</style>
+</head>
+<body>
+
+<div class="shell" id="appShell">
+  <div id="appIdentityBar"></div>
+  <header><h1>Master Data</h1></header>
+  <main>
+    <div class="tabs">
+      <div class="tab active" data-panel="spare-parts">Spare Parts</div>
+      <div class="tab" data-panel="machines">Machines</div>
+      <div class="tab" data-panel="suppliers">Suppliers</div>
+      <div class="tab" data-panel="adjustments">Adjustments</div>
+    </div>
+
+    <div class="panel active" id="panel-spare-parts">
+      <div class="card">
+        <h3>New Spare Part</h3>
+        <label>Name</label><input id="spName">
+        <label>Model</label><input id="spModel">
+        <label>Size</label><input id="spSize">
+        <label>Unit</label>
+        <select id="spUnit"><option>pcs</option><option>rolls</option><option>metres</option><option>sets</option><option>litres</option><option>other</option></select>
+        <label>Minimum Stock (optional)</label><input type="number" step="any" id="spMinStock">
+        <label>Location (optional)</label><input id="spLocation">
+        <label>Notes (optional)</label><textarea id="spNotes" rows="2"></textarea>
+        <button class="btn btn-primary" id="createSpareBtn">Create</button>
+        <div class="msg" id="spareMsg"></div>
+      </div>
+      <div class="card">
+        <h3>Existing Spare Parts</h3>
+        <table><thead><tr><th>Name</th><th>Stock</th><th>Status</th><th></th></tr></thead><tbody id="sparePartsTable"></tbody></table>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-machines">
+      <div class="card">
+        <h3>New Machine</h3>
+        <label>Name</label><input id="machineName">
+        <button class="btn btn-primary" id="createMachineBtn">Create</button>
+        <div class="msg" id="machineMsg"></div>
+      </div>
+      <div class="card">
+        <h3>Existing Machines</h3>
+        <table><thead><tr><th>Name</th><th>Aliases</th><th>Status</th><th></th></tr></thead><tbody id="machinesTable"></tbody></table>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-suppliers">
+      <div class="card">
+        <h3>New Supplier</h3>
+        <label>Name</label><input id="supplierName">
+        <label>Building / Location</label><input id="supplierBuilding">
+        <label>Contacts</label><input id="supplierContacts">
+        <button class="btn btn-primary" id="createSupplierBtn">Create</button>
+        <div class="msg" id="supplierMsg"></div>
+      </div>
+      <div class="card">
+        <h3>Existing Suppliers</h3>
+        <table><thead><tr><th>Name</th><th>Building</th><th>Contacts</th><th>Status</th><th></th></tr></thead><tbody id="suppliersTable"></tbody></table>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-adjustments">
+      <div class="card">
+        <h3>Stock Adjustment / Opening Balance</h3>
+        <label>Spare Part (ID)</label><input id="adjSparePartId" type="number">
+        <label>Direction</label>
+        <select id="adjDirection"><option value="in">In</option><option value="out">Out</option></select>
+        <label>Quantity</label><input type="number" step="any" id="adjQty">
+        <label>Reason</label><input id="adjReason" placeholder="e.g. opening_balance, stock count correction">
+        <label>Remarks (optional)</label><textarea id="adjRemarks" rows="2"></textarea>
+        <button class="btn btn-primary" id="submitAdjBtn">Submit Adjustment</button>
+        <div class="msg" id="adjMsg"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/pwa.js" defer></script>
+<script src="/spare-parts-shell.js" defer></script>
+<script>
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function api(url, opts){
+  const res = await fetch(url, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await res.json().catch(()=>({}));
+  return {status: res.status, data};
+}
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-'+tab.dataset.panel).classList.add('active');
+  });
+});
+
+async function loadSpareParts(){
+  const {data} = await api('/api/spare-parts?include_inactive=1');
+  document.getElementById('sparePartsTable').innerHTML = (data||[]).map(p => `
+    <tr>
+      <td>${escapeHtml(p.name)}<div style="color:var(--ink-soft);font-size:11px;">${escapeHtml(p.model||'')} ${escapeHtml(p.size||'')}</div></td>
+      <td>${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}</td>
+      <td><span class="pill ${p.active?'pill-active':'pill-inactive'}">${p.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn" data-toggle-spare="${p.id}" data-next="${!p.active}">${p.active?'Deactivate':'Reactivate'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="4">No spare parts yet.</td></tr>';
+  document.querySelectorAll('[data-toggle-spare]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/spare-parts/${btn.dataset.toggleSpare}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
+      loadSpareParts();
+    });
+  });
+}
+
+document.getElementById('createSpareBtn').addEventListener('click', async () => {
+  const body = {
+    name: document.getElementById('spName').value,
+    model: document.getElementById('spModel').value || null,
+    size: document.getElementById('spSize').value || null,
+    unit: document.getElementById('spUnit').value,
+    minimum_stock: document.getElementById('spMinStock').value || null,
+    location: document.getElementById('spLocation').value || null,
+    notes: document.getElementById('spNotes').value || null,
+  };
+  const {status, data} = await api('/api/spare-parts', {method:'POST', body: JSON.stringify(body)});
+  const msg = document.getElementById('spareMsg');
+  if(status === 201){
+    msg.textContent = 'Spare part created.'; msg.className = 'msg ok';
+    ['spName','spModel','spSize','spMinStock','spLocation','spNotes'].forEach(id => document.getElementById(id).value='');
+    loadSpareParts();
+  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+});
+
+async function loadMachines(){
+  const {data} = await api('/api/spare-parts/machines?include_inactive=1');
+  document.getElementById('machinesTable').innerHTML = (data||[]).map(m => `
+    <tr>
+      <td>${escapeHtml(m.name)}</td>
+      <td style="font-size:11px;color:var(--ink-soft);">${(m.aliases||[]).map(escapeHtml).join(', ')}</td>
+      <td><span class="pill ${m.active?'pill-active':'pill-inactive'}">${m.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn" data-toggle-machine="${m.id}" data-next="${!m.active}">${m.active?'Deactivate':'Reactivate'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="4">No machines yet.</td></tr>';
+  document.querySelectorAll('[data-toggle-machine]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/spare-parts/machines/${btn.dataset.toggleMachine}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
+      loadMachines();
+    });
+  });
+}
+
+document.getElementById('createMachineBtn').addEventListener('click', async () => {
+  const {status, data} = await api('/api/spare-parts/machines', {method:'POST', body: JSON.stringify({name: document.getElementById('machineName').value})});
+  const msg = document.getElementById('machineMsg');
+  if(status === 201){
+    msg.textContent = 'Machine created.'; msg.className = 'msg ok';
+    document.getElementById('machineName').value = '';
+    loadMachines();
+  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+});
+
+async function loadSuppliers(){
+  const {data} = await api('/api/spare-parts/suppliers?include_inactive=1');
+  document.getElementById('suppliersTable').innerHTML = (data||[]).map(s => `
+    <tr>
+      <td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.building||'')}</td><td>${escapeHtml(s.contacts||'')}</td>
+      <td><span class="pill ${s.active?'pill-active':'pill-inactive'}">${s.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn" data-toggle-supplier="${s.id}" data-next="${!s.active}">${s.active?'Deactivate':'Reactivate'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="5">No suppliers yet.</td></tr>';
+  document.querySelectorAll('[data-toggle-supplier]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/spare-parts/suppliers/${btn.dataset.toggleSupplier}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
+      loadSuppliers();
+    });
+  });
+}
+
+document.getElementById('createSupplierBtn').addEventListener('click', async () => {
+  const body = {
+    name: document.getElementById('supplierName').value,
+    building: document.getElementById('supplierBuilding').value || null,
+    contacts: document.getElementById('supplierContacts').value || null,
+  };
+  const {status, data} = await api('/api/spare-parts/suppliers', {method:'POST', body: JSON.stringify(body)});
+  const msg = document.getElementById('supplierMsg');
+  if(status === 201){
+    msg.textContent = 'Supplier created.'; msg.className = 'msg ok';
+    ['supplierName','supplierBuilding','supplierContacts'].forEach(id => document.getElementById(id).value='');
+    loadSuppliers();
+  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+});
+
+document.getElementById('submitAdjBtn').addEventListener('click', async () => {
+  const reason = document.getElementById('adjReason').value;
+  const body = {
+    spare_part_id: Number(document.getElementById('adjSparePartId').value),
+    direction: document.getElementById('adjDirection').value,
+    quantity: document.getElementById('adjQty').value,
+    reason: reason || null,
+    remarks: document.getElementById('adjRemarks').value || null,
+  };
+  const endpoint = reason === 'opening_balance'
+    ? '/api/spare-parts/movements/opening-balance'
+    : '/api/spare-parts/movements/adjustment';
+  const {status, data} = await api(endpoint, {method:'POST', body: JSON.stringify(body)});
+  const msg = document.getElementById('adjMsg');
+  if(status === 201){
+    msg.textContent = 'Adjustment recorded.'; msg.className = 'msg ok';
+    ['adjSparePartId','adjQty','adjReason','adjRemarks'].forEach(id => document.getElementById(id).value='');
+  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+});
+
+(async function init(){
+  const s = await (await fetch('/api/session')).json();
+  if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
+  if(!['manager','super_admin'].includes(s.user.role)){ window.location.href = '/spare-parts.html'; return; }
+  await Promise.all([loadSpareParts(), loadMachines(), loadSuppliers()]);
+})();
+</script>
+</body>
+</html>

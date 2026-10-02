@@ -22,7 +22,9 @@ from flask import Blueprint, Response, current_app, redirect
 
 from webapp.auth import active_section, current_user
 from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS
-from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
+from webapp.models.user import (
+    ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER, ROLES,
+)
 from webapp.services import feature_flag_service as ffs
 
 pages_bp = Blueprint("pages", __name__)
@@ -108,6 +110,8 @@ def _guard_page(filename, allowed_roles, module_key=None, section_code=SECTION_F
         # treating this as a login problem.
         return redirect("/")
     if user.role not in allowed_roles:
+        if section_code == SECTION_SPARE_PARTS:
+            return redirect("/spare-parts.html")
         return redirect(first_authorized_page(user))
     if module_key and not ffs.is_enabled(module_key):
         return _module_disabled_response(module_key)
@@ -193,12 +197,33 @@ def requests_page():
 
 @pages_bp.route("/spare-parts.html")
 def spare_parts_page():
-    # Spare Parts has no roles/modules of its own yet — any role granted
-    # Spare Parts section access may enter; this is a placeholder shell
-    # only (see static/spare-parts.html).
-    user = current_user()
-    if user is None:
-        return redirect("/")
-    if _wrong_section(SECTION_SPARE_PARTS):
-        return redirect("/")
-    return current_app.send_static_file("spare-parts.html")
+    # Dashboard — every role with Spare Parts section access may enter.
+    return _guard_page("spare-parts.html", ROLES, section_code=SECTION_SPARE_PARTS)
+
+
+@pages_bp.route("/spare-parts-stock-in.html")
+def spare_parts_stock_in_page():
+    return _guard_page(
+        "spare-parts-stock-in.html", (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN),
+        section_code=SECTION_SPARE_PARTS,
+    )
+
+
+@pages_bp.route("/spare-parts-stock-out.html")
+def spare_parts_stock_out_page():
+    return _guard_page(
+        "spare-parts-stock-out.html", (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN),
+        section_code=SECTION_SPARE_PARTS,
+    )
+
+
+@pages_bp.route("/spare-parts-history.html")
+def spare_parts_history_page():
+    return _guard_page("spare-parts-history.html", ROLES, section_code=SECTION_SPARE_PARTS)
+
+
+@pages_bp.route("/spare-parts-master.html")
+def spare_parts_master_page():
+    return _guard_page(
+        "spare-parts-master.html", (ROLE_MANAGER, ROLE_SUPER_ADMIN), section_code=SECTION_SPARE_PARTS,
+    )

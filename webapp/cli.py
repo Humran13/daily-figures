@@ -421,3 +421,71 @@ def register_cli(app):
         for p in result["products_written"]:
             click.echo(f"  {p['product_name']}: opening_base_qty={p['opening_base_qty']} (daily_figure_id={p['daily_figure_id']})")
         click.echo("\nRe-run `flask stock-ledger` for these products to confirm the new ledger.")
+
+    @app.cli.command("import-spare-parts")
+    @click.option("--file", "file_path", required=True, help="Path to the spare parts catalogue workbook (.xlsx).")
+    @click.option("--apply", "apply_", is_flag=True, default=False, help="Actually write (default is a dry run).")
+    @click.option("--preview-token", "preview_token", default=None, help="The token printed by the dry run — required with --apply.")
+    @click.option("--actor-username", "actor_username", default=None, help="An existing Manager/Super Admin user to attribute the import to — required with --apply.")
+    def import_spare_parts_command(file_path, apply_, preview_token, actor_username):
+        """Spare Part MASTER/sourcing-catalogue import — never imports stock
+        quantities (see webapp/services/spare_part_import_service.py).
+        Idempotent: re-running the same workbook never creates duplicate
+        master records. Dry run by default.
+
+        \b
+        flask import-spare-parts --file "MV MACHINE SPARES.xlsx"
+        flask import-spare-parts --file "MV MACHINE SPARES.xlsx" --preview-token <token> --actor-username root --apply
+        """
+        from webapp.services import spare_part_import_service as import_service
+
+        if not apply_:
+            report = import_service.preview_import(file_path)
+            click.echo(f"DRY RUN — {report['rows_detected']} row(s) detected across sheet(s): {', '.join(report['sheets'])}\n")
+            click.echo(f"  New spare part candidates: {len(report['new_spares'])}")
+            click.echo(f"  Rows attaching to an existing spare part: {len(report['attached_to_existing'])}")
+            click.echo(f"  Ambiguous/invalid rows (skipped): {len(report['ambiguous_invalid'])}")
+            for row in report["ambiguous_invalid"]:
+                click.echo(f"    sheet={row['sheet']} row={row['row']}: {row['reason']}")
+            click.echo(f"  Ambiguous machine text (imported, flagged for admin cleanup): {len(report['ambiguous_machine'])}")
+            for row in report["ambiguous_machine"]:
+                click.echo(f"    sheet={row['sheet']} row={row['row']}: {row['reason']}")
+            click.echo(f"  Already-imported rows that would be skipped on a real run: {len(report['skipped_already_imported'])}")
+            click.echo(f"  Machines seen (raw text): {len(report['machines_seen'])}")
+            click.echo(f"  Suppliers seen (raw name): {len(report['suppliers_seen'])}")
+            click.echo(f"\nPreview token: {report['preview_token']}")
+            click.echo(
+                "No data was changed. To apply, re-run with the exact flags below against this same file:\n"
+                f'  flask import-spare-parts --file "{file_path}" '
+                f"--preview-token {report['preview_token']} --actor-username <you> --apply"
+            )
+            return
+
+        if not preview_token or not actor_username:
+            click.echo("Error: --apply requires both --preview-token (from a prior dry run) and --actor-username.", err=True)
+            raise SystemExit(1)
+
+        from webapp.extensions import db as _db
+        from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN, User
+        actor = User.query.filter_by(username=actor_username).first()
+        if actor is None:
+            click.echo(f"Error: no user named '{actor_username}' exists.", err=True)
+            raise SystemExit(1)
+        if actor.role not in (ROLE_MANAGER, ROLE_SUPER_ADMIN):
+            click.echo(f"Error: '{actor_username}' must be a Manager or Super Administrator.", err=True)
+            raise SystemExit(1)
+
+        try:
+            result = import_service.execute_import(file_path, actor, preview_token)
+        except import_service.SparePartImportError as e:
+            _db.session.rollback()
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(2)
+
+        _db.session.commit()
+        click.echo(
+            f"Imported: {len(result['new_spares'])} new spare part(s), "
+            f"{len(result['attached_to_existing'])} row(s) attached to existing spares, "
+            f"{len(result['ambiguous_invalid'])} ambiguous/invalid row(s) skipped, "
+            f"{len(result['skipped_already_imported'])} already-imported row(s) skipped."
+        )

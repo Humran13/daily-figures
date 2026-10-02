@@ -25,7 +25,9 @@ MANIFEST_TEXT = (STATIC_DIR / "manifest.webmanifest").read_text(encoding="utf-8"
 MANIFEST = json.loads(MANIFEST_TEXT)
 
 PRIMARY_PAGES = ["index.html", "dispatch.html", "returns.html", "production.html",
-                 "history.html", "dashboard.html", "admin.html"]
+                 "history.html", "dashboard.html", "admin.html",
+                 "spare-parts.html", "spare-parts-stock-in.html", "spare-parts-stock-out.html",
+                 "spare-parts-history.html", "spare-parts-master.html"]
 PAGE_SOURCES = {name: (STATIC_DIR / name).read_text(encoding="utf-8") for name in PRIMARY_PAGES}
 
 
@@ -353,8 +355,15 @@ def test_existing_role_aware_nav_still_present_on_index_html():
 
 
 def test_existing_apply_branding_function_still_present_on_every_page():
-    for name, source in PAGE_SOURCES.items():
-        assert "applyBranding" in source, f"{name} lost its own applyBranding logic"
+    # Scoped to the Finished Goods pages this guard predates — the new
+    # Spare Parts pages (added to PRIMARY_PAGES above for their own PWA/
+    # meta regression coverage) don't carry FG's company-branding UI at
+    # all, so they're deliberately excluded here rather than given dead
+    # branding code with no visible element to apply it to.
+    fg_pages = ["index.html", "dispatch.html", "returns.html", "production.html",
+                "history.html", "dashboard.html", "admin.html"]
+    for name in fg_pages:
+        assert "applyBranding" in PAGE_SOURCES[name], f"{name} lost its own applyBranding logic"
 
 
 def test_daily_figures_calculation_unaffected_by_pwa_patch(client, super_admin):

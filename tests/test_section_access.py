@@ -207,6 +207,61 @@ def test_existing_roles_still_enforced_on_top_of_section_access(client, login_as
     assert client.get("/api/admin/users").status_code == 403  # role check, unrelated to section
 
 
+# ---------- Part 0: Super Admin global section access ----------
+
+def test_super_admin_enters_finished_goods_without_explicit_grant(client, make_user):
+    make_user("sa1", "password123", "super_admin")
+    res = client.post("/api/login", json={"username": "sa1", "password": "password123", "section": "finished_goods"})
+    assert res.status_code == 200
+
+
+def test_super_admin_enters_spare_parts_without_explicit_grant(client, make_user):
+    make_user("sa2", "password123", "super_admin")
+    res = client.post("/api/login", json={"username": "sa2", "password": "password123", "section": "spare_parts"})
+    assert res.status_code == 200
+    assert client.get("/api/session").get_json()["active_section"] == "spare_parts"
+
+
+def test_a_different_super_admin_username_also_gets_global_section_access(client, make_user):
+    make_user("completely_different_name", "password123", "super_admin")
+    res = client.post("/api/login", json={
+        "username": "completely_different_name", "password": "password123", "section": "spare_parts",
+    })
+    assert res.status_code == 200
+
+
+def test_normal_roles_still_require_explicit_section_access(client, make_user):
+    make_user("mgrnogrant", "password123", "manager")
+    res = client.post("/api/login", json={"username": "mgrnogrant", "password": "password123", "section": "spare_parts"})
+    assert res.status_code == 403
+
+
+def test_super_admin_unauthorized_section_attempt_cannot_happen_but_other_roles_are_still_session_safe(app, make_user):
+    # Super Admin has no "unauthorized section" case anymore (global access),
+    # so this re-confirms the general rule still holds for everyone else:
+    # a rejected section login must never invalidate a different valid session.
+    make_user("safe3", "password123", "viewer")
+    a = app.test_client()
+    a.post("/api/login", json={"username": "safe3", "password": "password123", "section": "finished_goods"})
+    assert a.get("/api/session").get_json()["authed"] is True
+
+    b = app.test_client()
+    res = b.post("/api/login", json={"username": "safe3", "password": "password123", "section": "spare_parts"})
+    assert res.status_code == 403
+    assert a.get("/api/session").get_json()["authed"] is True
+
+
+def test_super_admin_still_operates_in_one_active_section_at_a_time(app, make_user):
+    make_user("sa3", "password123", "super_admin")
+    c = app.test_client()
+    c.post("/api/login", json={"username": "sa3", "password": "password123", "section": "finished_goods"})
+    assert c.get("/api/dashboard").status_code == 200  # finished_goods API ok
+    c.post("/api/logout")
+    c.post("/api/login", json={"username": "sa3", "password": "password123", "section": "spare_parts"})
+    # Not simultaneously active in both — now in spare_parts, finished_goods API is forbidden.
+    assert c.get("/api/dashboard").status_code == 403
+
+
 def test_migration_backfill_grants_existing_users_finished_goods_only(app):
     # Simulates the migration's own backfill logic against a user that
     # predates any section-access row (exactly what every pre-existing
