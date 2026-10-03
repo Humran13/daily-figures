@@ -450,9 +450,17 @@ def register_cli(app):
             click.echo(f"  Ambiguous machine text (imported, flagged for admin cleanup): {len(report['ambiguous_machine'])}")
             for row in report["ambiguous_machine"]:
                 click.echo(f"    sheet={row['sheet']} row={row['row']}: {row['reason']}")
+            click.echo(f"  Ambiguous pricing (left blank, raw text preserved): {len(report['ambiguous_pricing'])}")
+            for row in report["ambiguous_pricing"]:
+                click.echo(f"    sheet={row['sheet']} row={row['row']}: {row['raw_price_text']!r}")
             click.echo(f"  Already-imported rows that would be skipped on a real run: {len(report['skipped_already_imported'])}")
             click.echo(f"  Machines seen (raw text): {len(report['machines_seen'])}")
             click.echo(f"  Suppliers seen (raw name): {len(report['suppliers_seen'])}")
+            click.echo(f"  Bearing/BR abbreviations normalized to a canonical name: {report['bearing_normalized_count']}")
+            click.echo(f"  Records requiring later categorization (new spares, always uncategorized on import): {report['requires_categorization']}")
+            click.echo(f"  Records with a Selling Price: {report['records_with_selling_price']}")
+            click.echo(f"  Records without a Selling Price: {report['records_without_selling_price']}")
+            click.echo(f"  Records without a Category: {report['records_without_category']}")
             click.echo(f"\nPreview token: {report['preview_token']}")
             click.echo(
                 "No data was changed. To apply, re-run with the exact flags below against this same file:\n"
@@ -488,4 +496,10 @@ def register_cli(app):
             f"{len(result['attached_to_existing'])} row(s) attached to existing spares, "
             f"{len(result['ambiguous_invalid'])} ambiguous/invalid row(s) skipped, "
             f"{len(result['skipped_already_imported'])} already-imported row(s) skipped."
+        )
+        click.echo(
+            f"Selling Price populated for {result['records_with_selling_price']} record(s), "
+            f"{result['records_without_selling_price']} left blank "
+            f"({len(result['ambiguous_pricing'])} were ambiguous raw prices — never guessed). "
+            f"Buying Price left blank for all records (enter manually)."
         )

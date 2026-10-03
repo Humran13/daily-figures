@@ -106,7 +106,12 @@ def _row_fields(ws, header_map, row_num):
         key = header_map.get(col)
         if key:
             fields[key] = _norm_cell(value)
-    return fields, raw_all
+    name_was_generic_alias = False
+    if "name" in fields:
+        raw_key = sp_service.normalize_text(fields["name"]).casefold()
+        name_was_generic_alias = raw_key in sp_service.GENERIC_NAME_ALIASES
+        fields["name"] = sp_service.clean_spare_name(fields["name"])
+    return fields, raw_all, name_was_generic_alias
 
 
 def _classify_row(fields):
@@ -145,10 +150,10 @@ def _iter_data_rows(path):
             if key:
                 header_map[idx] = key
         for row_num in range(header_row + 1, ws.max_row + 1):
-            fields, raw_all = _row_fields(ws, header_map, row_num)
+            fields, raw_all, name_was_generic_alias = _row_fields(ws, header_map, row_num)
             if not raw_all:
                 continue
-            yield sheet_name, row_num, fields, raw_all
+            yield sheet_name, row_num, fields, raw_all, name_was_generic_alias
 
 
 def file_hash(path):
@@ -179,16 +184,26 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
         "skipped_already_imported": [],
         "machines_seen": set(),
         "suppliers_seen": set(),
+        "bearing_normalized_count": 0,
     }
     seen_sheets = set()
     # In-batch identity map so two new rows within the SAME run that share
     # an identity key attach to the same new SparePart instead of each
     # creating one (mirrors how a rerun would resolve against the DB).
     batch_identity = {}
+    # Per-identity "will this resulting master record end up with a
+    # selling price / category" tracking — works identically in preview
+    # and execute (both resolve the same DB lookup), so the preview
+    # report's with/without-price and without-category counts are an
+    # accurate forecast of what execute_import will actually produce.
+    has_price = {}
+    has_category = {}
 
-    for sheet_name, row_num, fields, raw_all in _iter_data_rows(path):
+    for sheet_name, row_num, fields, raw_all, name_was_generic_alias in _iter_data_rows(path):
         seen_sheets.add(sheet_name)
         report["rows_detected"] += 1
+        if name_was_generic_alias:
+            report["bearing_normalized_count"] += 1
 
         already = SparePartImportRow.query.filter_by(
             source_file=source_file, sheet_name=sheet_name, source_row=row_num,
@@ -225,8 +240,17 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
                 .filter(db.func.lower(db.func.coalesce(SparePart.size, "")) == key[2])
                 .first()
             )
+            if existing_spare is not None:
+                if existing_spare.selling_price is not None:
+                    has_price[key] = True
+                if existing_spare.category_id is not None:
+                    has_category[key] = True
 
         classification = "new_spares" if existing_spare is None else "attached_to_existing"
+        if parse_price(fields.get("price")) is not None:
+            has_price[key] = True
+        has_price.setdefault(key, False)
+        has_category.setdefault(key, False)
 
         if not persist:
             # Mark this identity as "seen" even in a dry run — without
@@ -256,6 +280,13 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
             report["attached_to_existing"].append(
                 {"sheet": sheet_name, "row": row_num, "spare_part_id": existing_spare.id}
             )
+
+        if existing_spare.selling_price is None:
+            parsed_price = parse_price(fields.get("price"))
+            if parsed_price is not None:
+                existing_spare.selling_price = parsed_price
+                # buying_price is deliberately NEVER set from the workbook
+                # — the user enters it manually later (see task scope).
 
         machine = sp_service.normalize_machine(fields.get("machine"))
         if machine is not None:
@@ -292,6 +323,9 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
     report["sheets"] = sorted(seen_sheets)
     report["machines_seen"] = sorted(report["machines_seen"])
     report["suppliers_seen"] = sorted(report["suppliers_seen"])
+    report["records_with_selling_price"] = sum(1 for v in has_price.values() if v)
+    report["records_without_selling_price"] = sum(1 for v in has_price.values() if not v)
+    report["records_without_category"] = sum(1 for v in has_category.values() if not v)
     return report
 
 

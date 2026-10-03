@@ -28,6 +28,29 @@ def normalize_key(value):
     return normalize_text(value).casefold()
 
 
+# Whole-cell, case-insensitive exact matches only — never a substring
+# replacement, so a real multi-word product name (e.g. "Bearings Hajj",
+# "Grooved Bearings") is never mangled. Scoped to the import pipeline
+# only (see spare_part_import_service.py); manual admin entry is
+# untouched. "Linear Brg" gets its own canonical name since a linear
+# bearing is a genuinely different physical item from a rotary one.
+GENERIC_NAME_ALIASES = {
+    "br": "Bearing", "b.r.": "Bearing", "b.r": "Bearing",
+    "brg": "Bearing", "bearing": "Bearing", "bearings": "Bearing",
+    "linear brg": "Linear Bearing", "linear bearing": "Linear Bearing", "linear bearings": "Linear Bearing",
+}
+
+
+def clean_spare_name(raw_name):
+    """Trims/collapses whitespace, then maps a known generic abbreviation
+    to its canonical name. Never guesses at spelling beyond this exact,
+    pre-approved alias set — anything else is returned normalized as-is."""
+    text = normalize_text(raw_name)
+    if not text:
+        return text
+    return GENERIC_NAME_ALIASES.get(text.casefold(), text)
+
+
 def normalize_machine(raw_text, actor=None):
     """
     Finds-or-creates the canonical Machine for a raw machine string,
