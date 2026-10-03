@@ -503,3 +503,31 @@ def register_cli(app):
             f"({len(result['ambiguous_pricing'])} were ambiguous raw prices — never guessed). "
             f"Buying Price left blank for all records (enter manually)."
         )
+
+    @app.cli.command("generate-spare-parts-seed")
+    @click.option("--file", "file_path", required=True, help="Path to the spare parts catalogue workbook (.xlsx).")
+    @click.option("--out", "out_path", default="webapp/seed_data/spare_parts_master_seed.json",
+                  help="Where to write the generated JSON seed artifact.")
+    def generate_spare_parts_seed_command(file_path, out_path):
+        """Regenerates webapp/seed_data/spare_parts_master_seed.json from a
+        workbook, reusing the exact same cleaning primitives as
+        `flask import-spare-parts` (name normalization, Model+Size ->
+        Specifications, Selling Price parsing) — never reads the workbook
+        at runtime/production, this is a local, one-off regeneration step
+        whose committed JSON output is what the seed migration
+        (webapp/seed_data/spare_part_seed.py) actually uses. Never
+        includes a stock quantity or Buying Price.
+
+        \b
+        flask generate-spare-parts-seed --file "MV MACHINE SPARES.xlsx"
+        """
+        import json
+
+        from webapp.services import spare_part_import_service as import_service
+
+        records = import_service.build_seed_records(file_path)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(records, f, indent=2, ensure_ascii=False)
+        with_price = sum(1 for r in records if r.get("selling_price"))
+        click.echo(f"Wrote {len(records)} record(s) to {out_path} ({with_price} with a Selling Price).")
+        click.echo("Review the file, then commit it (never the source workbook).")

@@ -335,6 +335,38 @@ def preview_import(path):
     return report
 
 
+def build_seed_records(path):
+    """
+    Pure, DB-independent: scans the workbook with the exact same cleaning
+    primitives as _scan_workbook() (name cleaning, identity grouping,
+    price parsing) and returns the final deduplicated list of master
+    records — [{"name", "specifications", "selling_price"}, ...], ready
+    to be written out as a committed JSON seed artifact (see
+    webapp/seed_data/). Never touches a database and never includes a
+    quantity/stock field — this produces MASTER data only. Used to
+    (re)generate webapp/seed_data/spare_parts_master_seed.json; not
+    itself a second import subsystem — it reuses _iter_data_rows/
+    _classify_row/_identity_key/parse_price/combine_specifications.
+    """
+    records = {}
+    for sheet_name, row_num, fields, raw_all, name_was_generic_alias in _iter_data_rows(path):
+        kind, _reason = _classify_row(fields)
+        if kind in ("skip_blank", "ambiguous_invalid"):
+            continue
+        key = _identity_key(fields)
+        specs = sp_service.combine_specifications(fields.get("model"), fields.get("size"))
+        price = parse_price(fields.get("price"))
+        if key not in records:
+            records[key] = {
+                "name": fields["name"],
+                "specifications": specs,
+                "selling_price": str(price) if price is not None else None,
+            }
+        elif records[key]["selling_price"] is None and price is not None:
+            records[key]["selling_price"] = str(price)
+    return list(records.values())
+
+
 def execute_import(path, actor, preview_token, import_batch_id=None):
     if preview_token != file_hash(path):
         raise SparePartImportError(
