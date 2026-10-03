@@ -51,11 +51,14 @@ def stock_in():
 @roles_required(ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN)
 def stock_out():
     d = request.get_json(force=True) or {}
+    if not d.get("department_id"):
+        return jsonify({"error": "department_id is required"}), 400
     try:
         spare_part = _get_spare_part(d)
         movement = svc.record_stock_out(
             spare_part, _parse_qty(d), current_user(), business_date=d.get("date"),
             requested_by=d.get("requested_by"), approved_by=d.get("approved_by"), remarks=d.get("remarks"),
+            department_id=d.get("department_id"), machine_id=d.get("machine_id"),
         )
     except svc.SparePartMovementError as e:
         db.session.rollback()
@@ -118,6 +121,26 @@ def void(movement_id):
     return jsonify(movement.to_dict())
 
 
+def _enrich_with_names(rows):
+    from webapp.models.machine import Machine
+    from webapp.models.operational_department import SparePartDepartment
+    department_names = {d.id: d.name for d in SparePartDepartment.query.all()}
+    machine_names = {m.id: m.name for m in Machine.query.all()}
+    dicts = []
+    for m in rows:
+        d = m.to_dict()
+        d["department_name"] = department_names.get(m.department_id)
+        d["machine_name"] = machine_names.get(m.machine_id)
+        dicts.append(d)
+    return dicts
+
+
+@spare_part_movements_bp.route("/people", methods=["GET"])
+@login_required
+def people():
+    return jsonify(svc.people_suggestions(request.args.get("q")))
+
+
 @spare_part_movements_bp.route("", methods=["GET"])
 @login_required
 def history():
@@ -125,7 +148,7 @@ def history():
         _, rows = svc.movement_history_data(request.args)
     except (TypeError, ValueError):
         return jsonify({"error": "invalid filter parameters"}), 400
-    return jsonify([m.to_dict() for m in rows])
+    return jsonify(_enrich_with_names(rows))
 
 
 @spare_part_movements_bp.route("/export.<fmt>", methods=["GET"])
@@ -140,15 +163,22 @@ def export(fmt):
     filters = {k: v for k, v in values.items() if v not in (None, "", [])}
     columns = [
         ("business_date", "Date"), ("spare_part_name", "Spare Name"), ("movement_type", "Movement Type"),
-        ("quantity", "Quantity"), ("requested_by", "Requested By"), ("approved_by", "Approved By"),
+        ("quantity", "Quantity"), ("department_name", "Department"), ("machine_name", "Machine"),
+        ("requested_by", "Requested By"), ("approved_by", "Approved By"),
         ("entered_by", "Entered By"), ("remarks", "Remarks"), ("status", "Status"),
     ]
     spare_names = {p.id: p.name for p in SparePart.query.all()}
+    from webapp.models.machine import Machine
+    from webapp.models.operational_department import SparePartDepartment
     from webapp.models.user import User
     users = {u.id: u.username for u in User.query.all()}
+    department_names = {d.id: d.name for d in SparePartDepartment.query.all()}
+    machine_names = {m.id: m.name for m in Machine.query.all()}
     data_rows = [{
         "business_date": m.business_date, "spare_part_name": spare_names.get(m.spare_part_id, ""),
-        "movement_type": m.movement_type, "quantity": str(m.quantity), "requested_by": m.requested_by or "",
+        "movement_type": m.movement_type, "quantity": str(m.quantity),
+        "department_name": department_names.get(m.department_id, ""), "machine_name": machine_names.get(m.machine_id, ""),
+        "requested_by": m.requested_by or "",
         "approved_by": m.approved_by or "", "entered_by": users.get(m.entered_by_user_id, ""),
         "remarks": m.remarks or "", "status": m.status,
     } for m in rows]

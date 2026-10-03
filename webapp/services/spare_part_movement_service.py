@@ -108,12 +108,22 @@ def record_stock_in(spare_part, quantity, user, *, business_date=None, supplier_
 
 
 def record_stock_out(spare_part, quantity, user, *, business_date=None, requested_by=None,
-                      approved_by=None, remarks=None):
+                      approved_by=None, remarks=None, department_id=None, machine_id=None):
     if not requested_by:
         raise SparePartMovementError("requested_by is required for Stock Out")
+    if machine_id is not None and department_id is not None:
+        from webapp.models.machine import Machine
+        machine = db.session.get(Machine, machine_id)
+        if machine is None:
+            raise SparePartMovementError("unknown machine_id")
+        if machine.department_id is not None and machine.department_id != department_id:
+            raise SparePartMovementError(
+                "This machine belongs to a different department than the one selected."
+            )
     return _create_movement(
         spare_part=spare_part, movement_type=MOVEMENT_STOCK_OUT, quantity=quantity, user=user,
         business_date=business_date, requested_by=requested_by, approved_by=approved_by, remarks=remarks,
+        department_id=department_id, machine_id=machine_id,
     )
 
 
@@ -204,6 +214,33 @@ def movement_history(date_from=None, date_to=None, month=None, spare_part_id=Non
 def movement_history_data(args):
     values = movement_history_args(args)
     return values, movement_history(**values)
+
+
+# ---------- Requested By / Approved By suggestions ----------
+# Reuses existing data sources only — active app usernames plus whatever
+# free-text names have already been typed into the ledger. Never creates
+# a user account; free typing always remains valid regardless of whether
+# a name appears here.
+
+def people_suggestions(query=None):
+    from webapp.models.user import User
+    names = set()
+    for (username,) in db.session.query(User.username).filter_by(active=True).all():
+        names.add(username)
+    for (value,) in db.session.query(SparePartMovement.requested_by).filter(
+        SparePartMovement.requested_by.isnot(None)
+    ).distinct().all():
+        if value:
+            names.add(value)
+    for (value,) in db.session.query(SparePartMovement.approved_by).filter(
+        SparePartMovement.approved_by.isnot(None)
+    ).distinct().all():
+        if value:
+            names.add(value)
+    if query:
+        q = query.strip().lower()
+        names = {n for n in names if q in n.lower()}
+    return sorted(names)[:50]
 
 
 # ---------- dashboard ----------

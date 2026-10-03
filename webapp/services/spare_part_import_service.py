@@ -174,6 +174,8 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
         "attached_to_existing": [],
         "ambiguous_invalid": [],
         "ambiguous_machine": [],
+        "ambiguous_pricing": [],
+        "requires_categorization": 0,
         "skipped_already_imported": [],
         "machines_seen": set(),
         "suppliers_seen": set(),
@@ -210,6 +212,8 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
             report["ambiguous_machine"].append({"sheet": sheet_name, "row": row_num, "reason": reason})
             # Still imported — the ambiguity is about which machine(s) it
             # means, not about whether the spare itself is real.
+        if fields.get("price") and parse_price(fields["price"]) is None:
+            report["ambiguous_pricing"].append({"sheet": sheet_name, "row": row_num, "raw_price_text": fields["price"]})
 
         key = _identity_key(fields)
         existing_spare = batch_identity.get(key)
@@ -233,6 +237,7 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
             # accurate preview of what execute_import will actually do.
             if existing_spare is None:
                 batch_identity[key] = True
+                report["requires_categorization"] += 1
             report[classification].append({
                 "sheet": sheet_name, "row": row_num, "name": fields.get("name"),
                 "model": fields.get("model"), "size": fields.get("size"), "machine": fields.get("machine"),
@@ -244,6 +249,7 @@ def _scan_workbook(path, persist=False, import_batch_id=None):
                 name=fields["name"], model=fields.get("model"), size=fields.get("size"), notes=None,
             )
             batch_identity[key] = existing_spare
+            report["requires_categorization"] += 1
             report["new_spares"].append({"sheet": sheet_name, "row": row_num, "spare_part_id": existing_spare.id})
         else:
             batch_identity[key] = existing_spare

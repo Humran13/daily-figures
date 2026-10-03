@@ -14,7 +14,7 @@
 <title>Master Data — Spare Parts</title>
 <style>
   :root{
-    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7; --line:#DEDACF; --teal:#1F8A70; --red:#C1443A;
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7; --line:#DEDACF; --teal:#1F8A70; --red:#C1443A; --amber:#E2A93B;
     --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
   }
   *{box-sizing:border-box;}
@@ -31,8 +31,8 @@
   header{ padding:18px 20px 14px; }
   header h1{ margin:0; font-size:19px; font-weight:700; }
   main{ flex:1; padding:16px; padding-bottom:60px; }
-  .tabs{ display:flex; gap:0; margin-bottom:14px; border-bottom:1px solid var(--line); }
-  .tab{ flex:1; text-align:center; padding:9px 0; font-size:13px; font-weight:600; color:var(--ink-soft); cursor:pointer; border-bottom:2px solid transparent; }
+  .tabs{ display:flex; gap:0; margin-bottom:14px; border-bottom:1px solid var(--line); overflow-x:auto; }
+  .tab{ flex:1; text-align:center; padding:9px 6px; font-size:12px; font-weight:600; color:var(--ink-soft); cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
   .tab.active{ color:var(--ink); border-bottom-color:var(--teal); }
   .panel{ display:none; } .panel.active{ display:block; }
   .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
@@ -47,6 +47,15 @@
   .pill-active{ background:#DFF3EC; color:var(--teal); } .pill-inactive{ background:#F3DEDC; color:var(--red); }
   .msg{ font-size:13px; margin-top:8px; min-height:18px; }
   .msg.ok{ color:var(--teal); } .msg.err{ color:var(--red); }
+  .field{ position:relative; }
+  .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:20; }
+  .autocomplete-item{ padding:10px; font-size:14px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
+  .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
+  .hidden{ display:none !important; }
+  .duplicate-warning{ background:#FFF4E5; border:1.5px solid var(--amber); border-radius:10px; padding:12px; margin-bottom:10px; font-size:13px; }
+  .duplicate-warning .btn{ margin-top:8px; }
+  .row2{ display:flex; gap:10px; }
+  .row2 > div{ flex:1; }
 </style>
 </head>
 <body>
@@ -57,7 +66,9 @@
   <main>
     <div class="tabs">
       <div class="tab active" data-panel="spare-parts">Spare Parts</div>
+      <div class="tab" data-panel="categories">Categories</div>
       <div class="tab" data-panel="machines">Machines</div>
+      <div class="tab" data-panel="departments">Departments</div>
       <div class="tab" data-panel="suppliers">Suppliers</div>
       <div class="tab" data-panel="adjustments">Adjustments</div>
     </div>
@@ -65,20 +76,41 @@
     <div class="panel active" id="panel-spare-parts">
       <div class="card">
         <h3>New Spare Part</h3>
+        <div class="duplicate-warning hidden" id="duplicateWarning"></div>
         <label>Name</label><input id="spName">
-        <label>Model</label><input id="spModel">
-        <label>Size</label><input id="spSize">
+        <label>Specifications (optional)</label><input id="spSpecifications" placeholder="e.g. Digital - Medium">
+        <label>Category (optional)</label>
+        <select id="spCategory"><option value="">Uncategorized</option></select>
         <label>Unit</label>
         <select id="spUnit"><option>pcs</option><option>rolls</option><option>metres</option><option>sets</option><option>litres</option><option>other</option></select>
-        <label>Minimum Stock (optional)</label><input type="number" step="any" id="spMinStock">
-        <label>Location (optional)</label><input id="spLocation">
-        <label>Notes (optional)</label><textarea id="spNotes" rows="2"></textarea>
+        <label>Minimum Stock (optional)</label><input type="number" step="any" inputmode="decimal" id="spMinStock">
+        <div class="row2">
+          <div><label>Buying Price (optional)</label><input type="number" step="any" inputmode="decimal" id="spBuyingPrice"></div>
+          <div><label>Selling Price (optional)</label><input type="number" step="any" inputmode="decimal" id="spSellingPrice"></div>
+        </div>
         <button class="btn btn-primary" id="createSpareBtn">Create</button>
         <div class="msg" id="spareMsg"></div>
       </div>
       <div class="card">
         <h3>Existing Spare Parts</h3>
-        <table><thead><tr><th>Name</th><th>Stock</th><th>Status</th><th></th></tr></thead><tbody id="sparePartsTable"></tbody></table>
+        <div class="row2">
+          <input id="spareSearch" placeholder="Search name/specs/machine...">
+          <select id="spareCategoryFilter"><option value="">All categories</option></select>
+        </div>
+        <table><thead><tr><th>Name</th><th>Stock</th><th>Pricing</th><th>Status</th><th></th></tr></thead><tbody id="sparePartsTable"></tbody></table>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-categories">
+      <div class="card">
+        <h3>New Category</h3>
+        <label>Name</label><input id="categoryName">
+        <button class="btn btn-primary" id="createCategoryBtn">Create</button>
+        <div class="msg" id="categoryMsg"></div>
+      </div>
+      <div class="card">
+        <h3>Existing Categories</h3>
+        <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead><tbody id="categoriesTable"></tbody></table>
       </div>
     </div>
 
@@ -86,12 +118,27 @@
       <div class="card">
         <h3>New Machine</h3>
         <label>Name</label><input id="machineName">
+        <label>Department (optional)</label>
+        <select id="machineDepartment"><option value="">None</option></select>
         <button class="btn btn-primary" id="createMachineBtn">Create</button>
         <div class="msg" id="machineMsg"></div>
       </div>
       <div class="card">
         <h3>Existing Machines</h3>
-        <table><thead><tr><th>Name</th><th>Aliases</th><th>Status</th><th></th></tr></thead><tbody id="machinesTable"></tbody></table>
+        <table><thead><tr><th>Name</th><th>Department</th><th>Aliases</th><th>Status</th><th></th></tr></thead><tbody id="machinesTable"></tbody></table>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-departments">
+      <div class="card">
+        <h3>New Department</h3>
+        <label>Name</label><input id="departmentName">
+        <button class="btn btn-primary" id="createDepartmentBtn">Create</button>
+        <div class="msg" id="departmentMsg"></div>
+      </div>
+      <div class="card">
+        <h3>Existing Departments</h3>
+        <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead><tbody id="departmentsTable"></tbody></table>
       </div>
     </div>
 
@@ -113,10 +160,14 @@
     <div class="panel" id="panel-adjustments">
       <div class="card">
         <h3>Stock Adjustment / Opening Balance</h3>
-        <label>Spare Part (ID)</label><input id="adjSparePartId" type="number">
+        <div class="field">
+          <label>Spare Part</label>
+          <input id="adjSpareInput" placeholder="Search spare part...">
+          <div class="autocomplete-list hidden" id="adjSpareResults"></div>
+        </div>
         <label>Direction</label>
         <select id="adjDirection"><option value="in">In</option><option value="out">Out</option></select>
-        <label>Quantity</label><input type="number" step="any" id="adjQty">
+        <label>Quantity</label><input type="number" step="any" inputmode="decimal" id="adjQty">
         <label>Reason</label><input id="adjReason" placeholder="e.g. opening_balance, stock count correction">
         <label>Remarks (optional)</label><textarea id="adjRemarks" rows="2"></textarea>
         <button class="btn btn-primary" id="submitAdjBtn">Submit Adjustment</button>
@@ -128,6 +179,7 @@
 
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
+<script src="/filter-autocomplete.js" defer></script>
 <script>
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -147,15 +199,104 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-async function loadSpareParts(){
-  const {data} = await api('/api/spare-parts?include_inactive=1');
-  document.getElementById('sparePartsTable').innerHTML = (data||[]).map(p => `
+// ---------- categories ----------
+let categories = [];
+
+async function loadCategories(){
+  const {data} = await api('/api/spare-parts/categories?include_inactive=1');
+  categories = data || [];
+  document.getElementById('categoriesTable').innerHTML = categories.map(c => `
     <tr>
-      <td>${escapeHtml(p.name)}<div style="color:var(--ink-soft);font-size:11px;">${escapeHtml(p.model||'')} ${escapeHtml(p.size||'')}</div></td>
+      <td>${escapeHtml(c.name)}</td>
+      <td><span class="pill ${c.active?'pill-active':'pill-inactive'}">${c.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn" data-toggle-category="${c.id}" data-next="${!c.active}">${c.active?'Deactivate':'Reactivate'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="3">No categories yet.</td></tr>';
+  document.querySelectorAll('[data-toggle-category]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/spare-parts/categories/${btn.dataset.toggleCategory}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
+      loadCategories();
+    });
+  });
+  const activeCats = categories.filter(c => c.active);
+  const options = '<option value="">Uncategorized</option>' + activeCats.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  document.getElementById('spCategory').innerHTML = options;
+  document.getElementById('spareCategoryFilter').innerHTML = '<option value="">All categories</option>' +
+    activeCats.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+}
+
+document.getElementById('createCategoryBtn').addEventListener('click', async () => {
+  const {status, data} = await api('/api/spare-parts/categories', {method:'POST', body: JSON.stringify({name: document.getElementById('categoryName').value})});
+  const msg = document.getElementById('categoryMsg');
+  if(status === 201){
+    msg.textContent = 'Category created.'; msg.className = 'msg ok';
+    document.getElementById('categoryName').value = '';
+    loadCategories();
+  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+});
+
+// ---------- departments ----------
+let departments = [];
+
+async function loadDepartments(){
+  const {data} = await api('/api/spare-parts/departments?include_inactive=1');
+  departments = data || [];
+  document.getElementById('departmentsTable').innerHTML = departments.map(d => `
+    <tr>
+      <td>${escapeHtml(d.name)}</td>
+      <td><span class="pill ${d.active?'pill-active':'pill-inactive'}">${d.active?'Active':'Inactive'}</span></td>
+      <td><button class="btn" data-toggle-department="${d.id}" data-next="${!d.active}">${d.active?'Deactivate':'Reactivate'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="3">No departments yet.</td></tr>';
+  document.querySelectorAll('[data-toggle-department]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/spare-parts/departments/${btn.dataset.toggleDepartment}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
+      loadDepartments();
+    });
+  });
+  const activeDepts = departments.filter(d => d.active);
+  document.getElementById('machineDepartment').innerHTML = '<option value="">None</option>' +
+    activeDepts.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+}
+
+document.getElementById('createDepartmentBtn').addEventListener('click', async () => {
+  const {status, data} = await api('/api/spare-parts/departments', {method:'POST', body: JSON.stringify({name: document.getElementById('departmentName').value})});
+  const msg = document.getElementById('departmentMsg');
+  if(status === 201){
+    msg.textContent = 'Department created.'; msg.className = 'msg ok';
+    document.getElementById('departmentName').value = '';
+    loadDepartments();
+  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+});
+
+// ---------- spare parts ----------
+let sparePartsCache = [];
+
+function pricingCell(p){
+  if(p.buying_price === undefined) return ''; // not visible to this role (shouldn't happen on this page)
+  const parts = [];
+  if(p.buying_price != null) parts.push('Buy: '+p.buying_price);
+  if(p.selling_price != null) parts.push('Sell: '+p.selling_price);
+  if(p.profit != null) parts.push('Profit: '+p.profit);
+  if(p.margin_percent != null) parts.push('Margin: '+Number(p.margin_percent).toFixed(1)+'%');
+  return parts.join(' · ') || '—';
+}
+
+function renderSparePartsTable(){
+  const q = (document.getElementById('spareSearch').value || '').toLowerCase();
+  const categoryId = document.getElementById('spareCategoryFilter').value;
+  let rows = sparePartsCache;
+  if(categoryId) rows = rows.filter(p => String(p.category_id) === categoryId);
+  if(q) rows = rows.filter(p =>
+    p.name.toLowerCase().includes(q) || (p.specifications||'').toLowerCase().includes(q) ||
+    (p.machines||[]).some(m => m.name.toLowerCase().includes(q))
+  );
+  document.getElementById('sparePartsTable').innerHTML = rows.map(p => `
+    <tr>
+      <td>${escapeHtml(p.name)}<div style="color:var(--ink-soft);font-size:11px;">${escapeHtml(p.specifications||'')}</div></td>
       <td>${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}</td>
+      <td style="font-size:11px;">${escapeHtml(pricingCell(p))}</td>
       <td><span class="pill ${p.active?'pill-active':'pill-inactive'}">${p.active?'Active':'Inactive'}</span></td>
       <td><button class="btn" data-toggle-spare="${p.id}" data-next="${!p.active}">${p.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="4">No spare parts yet.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5">No spare parts yet.</td></tr>';
   document.querySelectorAll('[data-toggle-spare]').forEach(btn => {
     btn.addEventListener('click', async () => {
       await api(`/api/spare-parts/${btn.dataset.toggleSpare}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
@@ -164,34 +305,64 @@ async function loadSpareParts(){
   });
 }
 
-document.getElementById('createSpareBtn').addEventListener('click', async () => {
-  const body = {
+async function loadSpareParts(){
+  const {data} = await api('/api/spare-parts?include_inactive=1');
+  sparePartsCache = data || [];
+  renderSparePartsTable();
+}
+document.getElementById('spareSearch').addEventListener('input', renderSparePartsTable);
+document.getElementById('spareCategoryFilter').addEventListener('change', renderSparePartsTable);
+
+function newSparePayload(){
+  return {
     name: document.getElementById('spName').value,
-    model: document.getElementById('spModel').value || null,
-    size: document.getElementById('spSize').value || null,
+    specifications: document.getElementById('spSpecifications').value || null,
+    category_id: document.getElementById('spCategory').value ? Number(document.getElementById('spCategory').value) : null,
     unit: document.getElementById('spUnit').value,
     minimum_stock: document.getElementById('spMinStock').value || null,
-    location: document.getElementById('spLocation').value || null,
-    notes: document.getElementById('spNotes').value || null,
+    buying_price: document.getElementById('spBuyingPrice').value || null,
+    selling_price: document.getElementById('spSellingPrice').value || null,
   };
+}
+
+async function createSpare(confirmDuplicate){
+  const body = newSparePayload();
+  if(confirmDuplicate) body.confirm_duplicate = true;
   const {status, data} = await api('/api/spare-parts', {method:'POST', body: JSON.stringify(body)});
   const msg = document.getElementById('spareMsg');
+  const warning = document.getElementById('duplicateWarning');
   if(status === 201){
+    warning.classList.add('hidden');
     msg.textContent = 'Spare part created.'; msg.className = 'msg ok';
-    ['spName','spModel','spSize','spMinStock','spLocation','spNotes'].forEach(id => document.getElementById(id).value='');
+    ['spName','spSpecifications','spMinStock','spBuyingPrice','spSellingPrice'].forEach(id => document.getElementById(id).value='');
     loadSpareParts();
-  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
-});
+  } else if(status === 409 && data.error === 'possible_duplicate'){
+    warning.innerHTML = `A similar spare part already exists: <strong>${escapeHtml(data.existing.name)}</strong>`+
+      `${data.existing.specifications ? ' ('+escapeHtml(data.existing.specifications)+')' : ''}.`+
+      `<button class="btn btn-primary" id="confirmDuplicateBtn">Create anyway</button>`;
+    warning.classList.remove('hidden');
+    document.getElementById('confirmDuplicateBtn').addEventListener('click', () => createSpare(true));
+    msg.textContent = ''; msg.className = 'msg';
+  } else {
+    msg.textContent = data.error || 'Failed.'; msg.className = 'msg err';
+  }
+}
 
+document.getElementById('createSpareBtn').addEventListener('click', () => createSpare(false));
+
+// ---------- machines ----------
 async function loadMachines(){
   const {data} = await api('/api/spare-parts/machines?include_inactive=1');
-  document.getElementById('machinesTable').innerHTML = (data||[]).map(m => `
+  const machines = data || [];
+  const deptName = id => { const d = departments.find(d => d.id === id); return d ? d.name : ''; };
+  document.getElementById('machinesTable').innerHTML = machines.map(m => `
     <tr>
       <td>${escapeHtml(m.name)}</td>
+      <td style="font-size:11px;">${escapeHtml(deptName(m.department_id))}</td>
       <td style="font-size:11px;color:var(--ink-soft);">${(m.aliases||[]).map(escapeHtml).join(', ')}</td>
       <td><span class="pill ${m.active?'pill-active':'pill-inactive'}">${m.active?'Active':'Inactive'}</span></td>
       <td><button class="btn" data-toggle-machine="${m.id}" data-next="${!m.active}">${m.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="4">No machines yet.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5">No machines yet.</td></tr>';
   document.querySelectorAll('[data-toggle-machine]').forEach(btn => {
     btn.addEventListener('click', async () => {
       await api(`/api/spare-parts/machines/${btn.dataset.toggleMachine}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
@@ -201,7 +372,10 @@ async function loadMachines(){
 }
 
 document.getElementById('createMachineBtn').addEventListener('click', async () => {
-  const {status, data} = await api('/api/spare-parts/machines', {method:'POST', body: JSON.stringify({name: document.getElementById('machineName').value})});
+  const departmentId = document.getElementById('machineDepartment').value;
+  const body = {name: document.getElementById('machineName').value};
+  if(departmentId) body.department_id = Number(departmentId);
+  const {status, data} = await api('/api/spare-parts/machines', {method:'POST', body: JSON.stringify(body)});
   const msg = document.getElementById('machineMsg');
   if(status === 201){
     msg.textContent = 'Machine created.'; msg.className = 'msg ok';
@@ -210,6 +384,7 @@ document.getElementById('createMachineBtn').addEventListener('click', async () =
   } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
 });
 
+// ---------- suppliers ----------
 async function loadSuppliers(){
   const {data} = await api('/api/spare-parts/suppliers?include_inactive=1');
   document.getElementById('suppliersTable').innerHTML = (data||[]).map(s => `
@@ -241,10 +416,16 @@ document.getElementById('createSupplierBtn').addEventListener('click', async () 
   } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
 });
 
+// ---------- adjustments ----------
+let adjSpareAutocomplete;
+
 document.getElementById('submitAdjBtn').addEventListener('click', async () => {
+  const spareId = adjSpareAutocomplete.selectedId();
+  const msg = document.getElementById('adjMsg');
+  if(!spareId){ msg.textContent = 'Select a spare part.'; msg.className = 'msg err'; return; }
   const reason = document.getElementById('adjReason').value;
   const body = {
-    spare_part_id: Number(document.getElementById('adjSparePartId').value),
+    spare_part_id: Number(spareId),
     direction: document.getElementById('adjDirection').value,
     quantity: document.getElementById('adjQty').value,
     reason: reason || null,
@@ -254,10 +435,11 @@ document.getElementById('submitAdjBtn').addEventListener('click', async () => {
     ? '/api/spare-parts/movements/opening-balance'
     : '/api/spare-parts/movements/adjustment';
   const {status, data} = await api(endpoint, {method:'POST', body: JSON.stringify(body)});
-  const msg = document.getElementById('adjMsg');
   if(status === 201){
     msg.textContent = 'Adjustment recorded.'; msg.className = 'msg ok';
-    ['adjSparePartId','adjQty','adjReason','adjRemarks'].forEach(id => document.getElementById(id).value='');
+    ['adjQty','adjReason','adjRemarks'].forEach(id => document.getElementById(id).value='');
+    adjSpareAutocomplete.clear();
+    loadSpareParts();
   } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
 });
 
@@ -265,7 +447,12 @@ document.getElementById('submitAdjBtn').addEventListener('click', async () => {
   const s = await (await fetch('/api/session')).json();
   if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
   if(!['manager','super_admin'].includes(s.user.role)){ window.location.href = '/spare-parts.html'; return; }
-  await Promise.all([loadSpareParts(), loadMachines(), loadSuppliers()]);
+  await loadDepartments();
+  await Promise.all([loadCategories(), loadSpareParts(), loadMachines(), loadSuppliers()]);
+  adjSpareAutocomplete = FilterAutocomplete.create({
+    inputId:'adjSpareInput', resultsId:'adjSpareResults', onChange: ()=>{},
+    source: async q => sparePartsCache.filter(p => p.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
+  });
 })();
 </script>
 </body>

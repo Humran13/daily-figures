@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from webapp.auth import current_user, login_required, roles_required
+from webapp.auth import current_user, roles_required
 from webapp.extensions import db
 from webapp.models.supplier import Supplier
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
@@ -10,7 +10,7 @@ spare_part_suppliers_bp = Blueprint("spare_part_suppliers", __name__, url_prefix
 
 
 @spare_part_suppliers_bp.route("", methods=["GET"])
-@login_required
+@roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
 def list_suppliers():
     include_inactive = request.args.get("include_inactive") == "1"
     query = Supplier.query

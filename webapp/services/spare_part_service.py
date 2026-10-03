@@ -8,7 +8,9 @@ import re
 
 from webapp.extensions import db
 from webapp.models.machine import Machine, MachineAlias
+from webapp.models.operational_department import SparePartDepartment
 from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSupplier, UNITS
+from webapp.models.spare_part_category import SparePartCategory
 from webapp.models.supplier import Supplier
 
 
@@ -87,17 +89,62 @@ def _assign_code(spare_part):
     spare_part.code = f"SP-{spare_part.id:05d}"
 
 
-def create_spare_part(*, name, model=None, size=None, unit="pcs", minimum_stock=None,
+def combine_specifications(model, size):
+    """
+    Conservative Model+Size -> Specifications join — the single rule
+    shared by the importer and the one-time migration backfill, so the
+    two can never disagree: "{model} - {size}" if both are set, whichever
+    one is set alone, else None. Never invents text beyond what's given.
+    """
+    model = normalize_text(model)
+    size = normalize_text(size)
+    if model and size:
+        return f"{model} - {size}"
+    return model or size or None
+
+
+def find_probable_duplicate(name, specifications=None, category_id=None, exclude_id=None):
+    """
+    Conservative duplicate detector for the "add spare" warning — never
+    auto-merges, just flags a probable match for a human to confirm or
+    dismiss. Matches on normalized (name, specifications); category is an
+    extra signal when both records have one, not a requirement (an
+    uncategorized legacy record can still be flagged against a new
+    categorized one with the same name/specs).
+    """
+    name_key = normalize_key(name)
+    specs_key = normalize_key(specifications)
+    if not name_key:
+        return None
+    query = SparePart.query.filter(db.func.lower(SparePart.name) == name_key)
+    if exclude_id:
+        query = query.filter(SparePart.id != exclude_id)
+    for candidate in query.all():
+        if normalize_key(candidate.specifications) != specs_key:
+            continue
+        if category_id and candidate.category_id and candidate.category_id != category_id:
+            continue
+        return candidate
+    return None
+
+
+def create_spare_part(*, name, model=None, size=None, specifications=None, category_id=None,
+                       unit="pcs", minimum_stock=None, buying_price=None, selling_price=None,
                        location=None, notes=None, machine_ids=None):
     name = normalize_text(name)
     if not name:
         raise SparePartError("name is required")
     if unit and unit not in UNITS:
         raise SparePartError(f"unit must be one of {UNITS}")
+    if category_id is not None and db.session.get(SparePartCategory, category_id) is None:
+        raise SparePartError(f"unknown category id {category_id}")
 
+    specs = normalize_text(specifications) or combine_specifications(model, size)
     spare_part = SparePart(
         name=name, model=normalize_text(model) or None, size=normalize_text(size) or None,
-        unit=unit or "pcs", minimum_stock=minimum_stock, location=normalize_text(location) or None,
+        specifications=specs, category_id=category_id,
+        unit=unit or "pcs", minimum_stock=minimum_stock, buying_price=buying_price, selling_price=selling_price,
+        location=normalize_text(location) or None,
         notes=notes, active=True, current_stock_cache=0,
     )
     db.session.add(spare_part)
@@ -122,12 +169,23 @@ def update_spare_part(spare_part, changes, machine_ids=None):
         spare_part.model = normalize_text(changes["model"]) or None
     if "size" in changes:
         spare_part.size = normalize_text(changes["size"]) or None
+    if "specifications" in changes:
+        spare_part.specifications = normalize_text(changes["specifications"]) or None
+    if "category_id" in changes:
+        category_id = changes["category_id"]
+        if category_id is not None and db.session.get(SparePartCategory, category_id) is None:
+            raise SparePartError(f"unknown category id {category_id}")
+        spare_part.category_id = category_id
     if "unit" in changes:
         if changes["unit"] not in UNITS:
             raise SparePartError(f"unit must be one of {UNITS}")
         spare_part.unit = changes["unit"]
     if "minimum_stock" in changes:
         spare_part.minimum_stock = changes["minimum_stock"]
+    if "buying_price" in changes:
+        spare_part.buying_price = changes["buying_price"]
+    if "selling_price" in changes:
+        spare_part.selling_price = changes["selling_price"]
     if "location" in changes:
         spare_part.location = normalize_text(changes["location"]) or None
     if "notes" in changes:
@@ -162,3 +220,65 @@ def spare_part_machines(spare_part_id):
 
 def spare_part_suppliers(spare_part_id):
     return SparePartSupplier.query.filter_by(spare_part_id=spare_part_id).order_by(SparePartSupplier.id).all()
+
+
+# ---------- categories / operational departments ----------
+# Same deactivate-only philosophy as Machine/Supplier above — these are
+# small, elevated-managed lookup tables, never hard-deleted once in use.
+
+def create_category(name):
+    name = normalize_text(name)
+    if not name:
+        raise SparePartError("name is required")
+    if SparePartCategory.query.filter(db.func.lower(SparePartCategory.name) == name.casefold()).first():
+        raise SparePartError("a category with this name already exists")
+    category = SparePartCategory(name=name, active=True)
+    db.session.add(category)
+    db.session.flush()
+    return category
+
+
+def update_category(category, changes):
+    if "name" in changes:
+        name = normalize_text(changes["name"])
+        if not name:
+            raise SparePartError("name cannot be empty")
+        clash = SparePartCategory.query.filter(
+            db.func.lower(SparePartCategory.name) == name.casefold(), SparePartCategory.id != category.id,
+        ).first()
+        if clash:
+            raise SparePartError("a category with this name already exists")
+        category.name = name
+    if "active" in changes:
+        category.active = bool(changes["active"])
+    db.session.flush()
+    return category
+
+
+def create_department(name):
+    name = normalize_text(name)
+    if not name:
+        raise SparePartError("name is required")
+    if SparePartDepartment.query.filter(db.func.lower(SparePartDepartment.name) == name.casefold()).first():
+        raise SparePartError("a department with this name already exists")
+    department = SparePartDepartment(name=name, active=True)
+    db.session.add(department)
+    db.session.flush()
+    return department
+
+
+def update_department(department, changes):
+    if "name" in changes:
+        name = normalize_text(changes["name"])
+        if not name:
+            raise SparePartError("name cannot be empty")
+        clash = SparePartDepartment.query.filter(
+            db.func.lower(SparePartDepartment.name) == name.casefold(), SparePartDepartment.id != department.id,
+        ).first()
+        if clash:
+            raise SparePartError("a department with this name already exists")
+        department.name = name
+    if "active" in changes:
+        department.active = bool(changes["active"])
+    db.session.flush()
+    return department

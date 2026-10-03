@@ -40,6 +40,12 @@ class SparePartMovement(db.Model):
     unit_snapshot = db.Column(db.String(20), nullable=True)
     supplier_id = db.Column(db.Integer, db.ForeignKey("spare_suppliers.id"), nullable=True)
     reference_doc = db.Column(db.String(120), nullable=True)
+    # Per-movement attribution for Stock Out — "where this specific issue
+    # went," independent of SparePartMachine (which machines a spare FITS
+    # at the master level). Nullable for historical rows and for
+    # non-Stock-Out movement types, which never set these.
+    department_id = db.Column(db.Integer, db.ForeignKey("spare_part_departments.id"), nullable=True)
+    machine_id = db.Column(db.Integer, db.ForeignKey("machines.id"), nullable=True)
     requested_by = db.Column(db.String(120), nullable=True)
     approved_by = db.Column(db.String(120), nullable=True)
     reason = db.Column(db.String(60), nullable=True)
@@ -63,6 +69,8 @@ class SparePartMovement(db.Model):
             "unit_snapshot": self.unit_snapshot,
             "supplier_id": self.supplier_id,
             "reference_doc": self.reference_doc,
+            "department_id": self.department_id,
+            "machine_id": self.machine_id,
             "requested_by": self.requested_by,
             "approved_by": self.approved_by,
             "reason": self.reason,

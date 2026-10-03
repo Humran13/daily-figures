@@ -52,6 +52,24 @@ def _create_spare_part_via_manager(app, make_user, **overrides):
     return _create_spare_part(other, **overrides)
 
 
+def _get_or_create_department(app, name="General"):
+    with app.app_context():
+        from webapp.models.operational_department import SparePartDepartment
+        dept = SparePartDepartment.query.filter_by(name=name).first()
+        if dept is None:
+            dept = SparePartDepartment(name=name, active=True)
+            db.session.add(dept)
+            db.session.commit()
+        return dept.id
+
+
+def _stock_out(app, client, spare_part_id, **overrides):
+    body = {"spare_part_id": spare_part_id, "quantity": "1", "requested_by": "x"}
+    body["department_id"] = overrides.pop("department_id", None) or _get_or_create_department(app)
+    body.update(overrides)
+    return client.post("/api/spare-parts/movements/stock-out", json=body)
+
+
 # ---------- master data ----------
 
 def test_add_spare_part(app, client, make_user):
@@ -139,9 +157,7 @@ def test_stock_out_decreases_stock(app, client, make_user):
     part = _create_spare_part_via_manager(app, make_user)
     _login_spare_parts(client, make_user, "op2", "operator")
     client.post("/api/spare-parts/movements/stock-in", json={"spare_part_id": part["id"], "quantity": "10"})
-    res = client.post("/api/spare-parts/movements/stock-out", json={
-        "spare_part_id": part["id"], "quantity": "4", "requested_by": "Ambrose",
-    })
+    res = _stock_out(app, client, part["id"], quantity="4", requested_by="Ambrose")
     assert res.status_code == 201
     with app.app_context():
         assert movement_svc.current_stock(part["id"]) == 6
@@ -188,9 +204,7 @@ def test_current_stock_reconciles_cache_to_ledger(app, client, make_user):
     _login_spare_parts(client, make_user, "mgr9", "manager")
     part = _create_spare_part(client)
     client.post("/api/spare-parts/movements/stock-in", json={"spare_part_id": part["id"], "quantity": "10"})
-    client.post("/api/spare-parts/movements/stock-out", json={
-        "spare_part_id": part["id"], "quantity": "3", "requested_by": "x",
-    })
+    _stock_out(app, client, part["id"], quantity="3")
     client.post("/api/spare-parts/movements/adjustment", json={
         "spare_part_id": part["id"], "quantity": "1", "direction": "out",
     })
@@ -205,9 +219,7 @@ def test_stock_out_cannot_exceed_available_stock(app, client, make_user):
     part = _create_spare_part_via_manager(app, make_user)
     _login_spare_parts(client, make_user, "op3", "operator")
     client.post("/api/spare-parts/movements/stock-in", json={"spare_part_id": part["id"], "quantity": "5"})
-    res = client.post("/api/spare-parts/movements/stock-out", json={
-        "spare_part_id": part["id"], "quantity": "6", "requested_by": "x",
-    })
+    res = _stock_out(app, client, part["id"], quantity="6")
     assert res.status_code == 400
     with app.app_context():
         assert movement_svc.current_stock(part["id"]) == 5
@@ -216,9 +228,7 @@ def test_stock_out_cannot_exceed_available_stock(app, client, make_user):
 def test_negative_stock_prevented_at_zero(app, client, make_user):
     part = _create_spare_part_via_manager(app, make_user)
     _login_spare_parts(client, make_user, "op4", "operator")
-    res = client.post("/api/spare-parts/movements/stock-out", json={
-        "spare_part_id": part["id"], "quantity": "1", "requested_by": "x",
-    })
+    res = _stock_out(app, client, part["id"])
     assert res.status_code == 400
 
 
@@ -242,9 +252,7 @@ def test_requested_by_persists(app, client, make_user):
     part = _create_spare_part_via_manager(app, make_user)
     _login_spare_parts(client, make_user, "op5", "operator")
     client.post("/api/spare-parts/movements/stock-in", json={"spare_part_id": part["id"], "quantity": "5"})
-    movement = client.post("/api/spare-parts/movements/stock-out", json={
-        "spare_part_id": part["id"], "quantity": "1", "requested_by": "Juma",
-    }).get_json()
+    movement = _stock_out(app, client, part["id"], requested_by="Juma").get_json()
     assert movement["requested_by"] == "Juma"
 
 
@@ -252,9 +260,7 @@ def test_approved_by_persists(app, client, make_user):
     part = _create_spare_part_via_manager(app, make_user)
     _login_spare_parts(client, make_user, "op6", "operator")
     client.post("/api/spare-parts/movements/stock-in", json={"spare_part_id": part["id"], "quantity": "5"})
-    movement = client.post("/api/spare-parts/movements/stock-out", json={
-        "spare_part_id": part["id"], "quantity": "1", "requested_by": "Juma", "approved_by": "Manager Bob",
-    }).get_json()
+    movement = _stock_out(app, client, part["id"], requested_by="Juma", approved_by="Manager Bob").get_json()
     assert movement["approved_by"] == "Manager Bob"
 
 

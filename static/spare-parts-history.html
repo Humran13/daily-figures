@@ -119,7 +119,7 @@ async function loadHistory(){
         ${g.items.map(m => `
           <div class="movement-row ${m.status === 'void' ? 'void' : ''}">
             ${escapeHtml(m.movement_type)} — ${escapeHtml(m.quantity)} (${escapeHtml(m.reference)})
-            <div class="meta">Requested: ${escapeHtml(m.requested_by||'—')} · Approved: ${escapeHtml(m.approved_by||'—')} · ${escapeHtml(m.remarks||'')}</div>
+            <div class="meta">${m.department_name ? 'Dept: '+escapeHtml(m.department_name)+' · ' : ''}${m.machine_name ? 'Machine: '+escapeHtml(m.machine_name)+' · ' : ''}Requested: ${escapeHtml(m.requested_by||'—')} · Approved: ${escapeHtml(m.approved_by||'—')} · ${escapeHtml(m.remarks||'')}</div>
           </div>`).join('')}
       </div>
     </div>`).join('') : '<div style="color:var(--ink-soft);font-size:13px;">No movements found.</div>';

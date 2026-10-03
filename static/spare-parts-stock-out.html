@@ -59,9 +59,23 @@
         <div class="autocomplete-list hidden" id="spareResults"></div>
       </div>
       <div class="context hidden" id="spareContext"></div>
-      <div class="field"><label>Quantity</label><input type="number" step="any" id="qtyInput"></div>
-      <div class="field"><label>Requested By</label><input id="requestedByInput"></div>
-      <div class="field"><label>Approved By (optional)</label><input id="approvedByInput"></div>
+      <div class="field"><label>Quantity</label><input type="number" step="any" inputmode="decimal" id="qtyInput"></div>
+      <div class="field"><label>Department</label>
+        <select id="departmentSelect"><option value="">Select department...</option></select>
+      </div>
+      <div class="field"><label>Machine (optional)</label>
+        <select id="machineSelect"><option value="">Select machine...</option></select>
+      </div>
+      <div class="field">
+        <label>Requested By</label>
+        <input id="requestedByInput" autocomplete="off">
+        <div class="autocomplete-list hidden" id="requestedByResults"></div>
+      </div>
+      <div class="field">
+        <label>Approved By (optional)</label>
+        <input id="approvedByInput" autocomplete="off">
+        <div class="autocomplete-list hidden" id="approvedByResults"></div>
+      </div>
       <div class="field"><label>Remarks (optional)</label><textarea id="remarksInput" rows="2"></textarea></div>
       <button class="btn-primary" id="submitBtn">Record Stock Out</button>
       <div class="msg" id="msg"></div>
@@ -73,14 +87,21 @@
 <script src="/spare-parts-shell.js" defer></script>
 <script src="/filter-autocomplete.js" defer></script>
 <script>
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 let spareParts = [];
+let departments = [];
+let allMachines = [];
+let people = [];
 
 function todayStr(){
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 
-let spareAutocomplete;
+let spareAutocomplete, requestedByAutocomplete, approvedByAutocomplete;
 
 function renderSpareContext(){
   const id = spareAutocomplete.selectedId();
@@ -89,22 +110,50 @@ function renderSpareContext(){
   const p = spareParts.find(p => String(p.id) === String(id));
   if(!p){ ctx.classList.add('hidden'); return; }
   const machines = (p.machines||[]).map(m=>m.name).join(', ') || '—';
-  ctx.innerHTML = `Model: ${p.model||'—'} · Size: ${p.size||'—'} · Machine: ${machines}<br>Current stock: ${p.current_stock} ${p.unit}`;
+  ctx.innerHTML = `${p.specifications ? 'Specs: '+p.specifications+' · ' : ''}Machine: ${machines}<br>Current stock: ${p.current_stock} ${p.unit}`;
   ctx.classList.remove('hidden');
 }
 
+function renderDepartmentOptions(){
+  const sel = document.getElementById('departmentSelect');
+  sel.innerHTML = '<option value="">Select department...</option>' +
+    departments.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+}
+
+function renderMachineOptions(){
+  const departmentId = document.getElementById('departmentSelect').value;
+  const sel = document.getElementById('machineSelect');
+  const filtered = departmentId
+    ? allMachines.filter(m => !m.department_id || String(m.department_id) === departmentId)
+    : allMachines;
+  sel.innerHTML = '<option value="">Select machine...</option>' +
+    filtered.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
+}
+
+document.getElementById('departmentSelect').addEventListener('change', renderMachineOptions);
+
 async function loadData(){
   spareParts = await (await fetch('/api/spare-parts')).json();
+  departments = await (await fetch('/api/spare-parts/departments')).json();
+  allMachines = await (await fetch('/api/spare-parts/machines')).json();
+  people = await (await fetch('/api/spare-parts/movements/people')).json();
+  renderDepartmentOptions();
+  renderMachineOptions();
 }
 
 document.getElementById('submitBtn').addEventListener('click', async ()=>{
   const msg = document.getElementById('msg');
   const spareId = spareAutocomplete.selectedId();
   if(!spareId){ msg.textContent = 'Select a spare part.'; msg.className = 'msg err'; return; }
+  const departmentId = document.getElementById('departmentSelect').value;
+  if(!departmentId){ msg.textContent = 'Select a department.'; msg.className = 'msg err'; return; }
+  const machineId = document.getElementById('machineSelect').value;
   const body = {
     spare_part_id: Number(spareId),
     quantity: document.getElementById('qtyInput').value,
     date: document.getElementById('dateInput').value,
+    department_id: Number(departmentId),
+    machine_id: machineId ? Number(machineId) : null,
     requested_by: document.getElementById('requestedByInput').value,
     approved_by: document.getElementById('approvedByInput').value || null,
     remarks: document.getElementById('remarksInput').value || null,
@@ -134,6 +183,17 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
   spareAutocomplete = FilterAutocomplete.create({
     inputId:'spareInput', resultsId:'spareResults', onChange: renderSpareContext,
     source: async q => spareParts.filter(p => p.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
+  });
+  // Requested By / Approved By: plain text fields, autocomplete only
+  // suggests — the field's own typed value is always what gets
+  // submitted, never a resolved id, so a name not in the list remains valid.
+  requestedByAutocomplete = FilterAutocomplete.create({
+    inputId:'requestedByInput', resultsId:'requestedByResults', onChange: ()=>{},
+    source: async q => people.filter(n => n.toLowerCase().includes(q.toLowerCase())).slice(0,20).map(n => ({id:n, name:n})),
+  });
+  approvedByAutocomplete = FilterAutocomplete.create({
+    inputId:'approvedByInput', resultsId:'approvedByResults', onChange: ()=>{},
+    source: async q => people.filter(n => n.toLowerCase().includes(q.toLowerCase())).slice(0,20).map(n => ({id:n, name:n})),
   });
 })();
 </script>

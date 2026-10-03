@@ -19,6 +19,7 @@ class Machine(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(60), unique=True, nullable=False, index=True)
     name = db.Column(db.String(120), nullable=False)
+    department_id = db.Column(db.Integer, db.ForeignKey("spare_part_departments.id"), nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True)
     notes = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime(), nullable=False, default=_utcnow)
@@ -27,7 +28,7 @@ class Machine(db.Model):
     def to_dict(self):
         return {
             "id": self.id, "code": self.code, "name": self.name, "active": self.active,
-            "notes": self.notes,
+            "department_id": self.department_id, "notes": self.notes,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

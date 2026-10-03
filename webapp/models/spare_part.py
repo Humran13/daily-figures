@@ -9,6 +9,30 @@ def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def pricing_dict(spare_part):
+    """
+    Profit = Selling - Buying; Margin % = Profit / Selling * 100. Returns
+    None for profit/margin whenever either price is missing or selling
+    price is zero — never fabricates a result from insufficient data.
+    Callers MUST gate this behind a Manager/Super Admin check before
+    including it in any response (see webapp/routes/spare_parts.py).
+    """
+    buying = spare_part.buying_price
+    selling = spare_part.selling_price
+    profit = None
+    margin = None
+    if buying is not None and selling is not None:
+        profit = selling - buying
+        if selling != 0:
+            margin = (profit / selling) * 100
+    return {
+        "buying_price": str(buying) if buying is not None else None,
+        "selling_price": str(selling) if selling is not None else None,
+        "profit": str(profit) if profit is not None else None,
+        "margin_percent": str(margin) if margin is not None else None,
+    }
+
+
 class SparePart(db.Model):
     """
     Spare Part MASTER — describes WHAT the spare is, never what happened
@@ -23,27 +47,41 @@ class SparePart(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(20), unique=True, nullable=True, index=True)
     name = db.Column(db.String(200), nullable=False, index=True)
+    # model/size are legacy/import-provenance fields — still stored for
+    # traceability, but the normal UI reads/writes `specifications`
+    # instead (see webapp/services/spare_part_service.py's
+    # combine_specifications()). Never dropped, never required again.
     model = db.Column(db.String(120), nullable=True)
     size = db.Column(db.String(120), nullable=True)
+    specifications = db.Column(db.String(255), nullable=True)
+    category_id = db.Column(db.Integer, db.ForeignKey("spare_part_categories.id"), nullable=True)
     unit = db.Column(db.String(20), nullable=False, default="pcs")
     minimum_stock = db.Column(db.Numeric(12, 3), nullable=True)
     location = db.Column(db.String(120), nullable=True)
     notes = db.Column(db.Text, nullable=True)
+    # Commercial fields — restricted to Manager/Super Admin at the route
+    # layer (webapp/routes/spare_parts.py's _to_dict()); never float.
+    buying_price = db.Column(db.Numeric(12, 2), nullable=True)
+    selling_price = db.Column(db.Numeric(12, 2), nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True, index=True)
     current_stock_cache = db.Column(db.Numeric(12, 3), nullable=False, default=0)
     created_at = db.Column(db.DateTime(), nullable=False, default=_utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=_utcnow, onupdate=_utcnow)
 
-    def to_dict(self, current_stock=None):
-        return {
+    def to_dict(self, current_stock=None, include_pricing=False):
+        d = {
             "id": self.id, "code": self.code, "name": self.name, "model": self.model,
-            "size": self.size, "unit": self.unit,
+            "size": self.size, "specifications": self.specifications, "category_id": self.category_id,
+            "unit": self.unit,
             "minimum_stock": str(self.minimum_stock) if self.minimum_stock is not None else None,
             "location": self.location, "notes": self.notes, "active": self.active,
             "current_stock": str(current_stock) if current_stock is not None else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+        if include_pricing:
+            d.update(pricing_dict(self))
+        return d
 
 
 class SparePartMachine(db.Model):

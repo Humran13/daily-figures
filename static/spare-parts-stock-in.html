@@ -59,13 +59,7 @@
         <div class="autocomplete-list hidden" id="spareResults"></div>
       </div>
       <div class="context hidden" id="spareContext"></div>
-      <div class="field"><label>Quantity</label><input type="number" step="any" id="qtyInput"></div>
-      <div class="field"><label>Supplier / Source (optional)</label>
-        <input id="supplierInput" placeholder="Search supplier...">
-        <div class="autocomplete-list hidden" id="supplierResults"></div>
-      </div>
-      <div class="field"><label>Reference / GRN (optional)</label><input id="refInput"></div>
-      <div class="field"><label>Remarks (optional)</label><textarea id="remarksInput" rows="2"></textarea></div>
+      <div class="field"><label>Quantity</label><input type="number" step="any" inputmode="decimal" id="qtyInput"></div>
       <button class="btn-primary" id="submitBtn">Record Stock In</button>
       <div class="msg" id="msg"></div>
     </div>
@@ -77,7 +71,6 @@
 <script src="/filter-autocomplete.js" defer></script>
 <script>
 let spareParts = [];
-let suppliers = [];
 
 function todayStr(){
   const d = new Date();
@@ -91,15 +84,14 @@ function renderSpareContext(){
   const p = spareParts.find(p => String(p.id) === String(id));
   if(!p){ ctx.classList.add('hidden'); return; }
   const machines = (p.machines||[]).map(m=>m.name).join(', ') || '—';
-  ctx.innerHTML = `Model: ${p.model||'—'} · Size: ${p.size||'—'} · Machine: ${machines}<br>Current stock: ${p.current_stock} ${p.unit}`;
+  ctx.innerHTML = `${p.specifications ? 'Specs: '+p.specifications+' · ' : ''}Machine: ${machines}<br>Current stock: ${p.current_stock} ${p.unit}`;
   ctx.classList.remove('hidden');
 }
 
-let spareAutocomplete, supplierAutocomplete;
+let spareAutocomplete;
 
 async function loadData(){
   spareParts = await (await fetch('/api/spare-parts')).json();
-  suppliers = await (await fetch('/api/spare-parts/suppliers')).json();
 }
 
 document.getElementById('submitBtn').addEventListener('click', async ()=>{
@@ -110,9 +102,6 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
     spare_part_id: Number(spareId),
     quantity: document.getElementById('qtyInput').value,
     date: document.getElementById('dateInput').value,
-    supplier_id: supplierAutocomplete.selectedId() ? Number(supplierAutocomplete.selectedId()) : null,
-    reference_doc: document.getElementById('refInput').value || null,
-    remarks: document.getElementById('remarksInput').value || null,
   };
   const res = await fetch('/api/spare-parts/movements/stock-in', {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
@@ -121,8 +110,6 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
   if(res.status === 201){
     msg.textContent = 'Stock In recorded.'; msg.className = 'msg ok';
     document.getElementById('qtyInput').value = '';
-    document.getElementById('refInput').value = '';
-    document.getElementById('remarksInput').value = '';
     await loadData();
     renderSpareContext();
   } else {
@@ -138,10 +125,6 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
   spareAutocomplete = FilterAutocomplete.create({
     inputId:'spareInput', resultsId:'spareResults', onChange: renderSpareContext,
     source: async q => spareParts.filter(p => p.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
-  });
-  supplierAutocomplete = FilterAutocomplete.create({
-    inputId:'supplierInput', resultsId:'supplierResults', onChange: ()=>{},
-    source: async q => suppliers.filter(s => s.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
   });
 })();
 </script>
