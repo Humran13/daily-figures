@@ -5,7 +5,10 @@ webapp.models.section's "Store Department" application-section concept
 login_required, not elevated-only, because Operator needs this list to
 populate the Stock Out "Department" dropdown.
 """
+import logging
+
 from flask import Blueprint, jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
@@ -15,6 +18,8 @@ from webapp.services import spare_part_service as svc
 from webapp.services.audit_service import record_audit
 
 spare_part_departments_bp = Blueprint("spare_part_departments", __name__, url_prefix="/api/spare-parts/departments")
+
+logger = logging.getLogger(__name__)
 
 
 @spare_part_departments_bp.route("", methods=["GET"])
@@ -57,3 +62,19 @@ def update_department(department_id):
     record_audit(current_user(), "update", "spare_part_department", entity_id=department.id, before=before, after=department.to_dict())
     db.session.commit()
     return jsonify(department.to_dict())
+
+
+@spare_part_departments_bp.route("/<int:department_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN)
+def delete_department(department_id):
+    department = db.session.get(SparePartDepartment, department_id)
+    if department is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        removed = svc.permanently_delete_department(department, current_user())
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("permanent delete of department %s failed", department_id)
+        return jsonify({"error": "Delete failed. Nothing was removed; please try again."}), 500
+    return jsonify({"ok": True, "removed": removed})

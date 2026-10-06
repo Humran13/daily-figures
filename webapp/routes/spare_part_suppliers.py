@@ -1,12 +1,18 @@
+import logging
+
 from flask import Blueprint, jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from webapp.auth import current_user, roles_required
 from webapp.extensions import db
 from webapp.models.supplier import Supplier
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+from webapp.services import spare_part_service as svc
 from webapp.services.audit_service import record_audit
 
 spare_part_suppliers_bp = Blueprint("spare_part_suppliers", __name__, url_prefix="/api/spare-parts/suppliers")
+
+logger = logging.getLogger(__name__)
 
 
 @spare_part_suppliers_bp.route("", methods=["GET"])
@@ -56,3 +62,19 @@ def update_supplier(supplier_id):
     record_audit(current_user(), "update", "spare_supplier", entity_id=supplier.id, before=before, after=supplier.to_dict())
     db.session.commit()
     return jsonify(supplier.to_dict())
+
+
+@spare_part_suppliers_bp.route("/<int:supplier_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN)
+def delete_supplier(supplier_id):
+    supplier = db.session.get(Supplier, supplier_id)
+    if supplier is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        removed = svc.permanently_delete_supplier(supplier, current_user())
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("permanent delete of supplier %s failed", supplier_id)
+        return jsonify({"error": "Delete failed. Nothing was removed; please try again."}), 500
+    return jsonify({"ok": True, "removed": removed})

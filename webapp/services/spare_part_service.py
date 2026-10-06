@@ -5,13 +5,22 @@ a SparePart/Machine/Supplier referenced by any movement/association must
 never disappear out from under historical data.
 """
 import re
+from decimal import Decimal
+
+from sqlalchemy import or_
 
 from webapp.extensions import db
+from webapp.models.audit_log import AuditLog
 from webapp.models.machine import Machine, MachineAlias
 from webapp.models.operational_department import SparePartDepartment
-from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSupplier, UNITS
+from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSupplier, UNITS, profit_and_margin
 from webapp.models.spare_part_category import SparePartCategory
+from webapp.models.spare_part_import_row import SparePartImportRow
+from webapp.models.spare_part_movement import SparePartMovement
 from webapp.models.supplier import Supplier
+from webapp.services.audit_service import record_audit
+
+PRICE_CHANGE_ACTION = "price_change"
 
 
 class SparePartError(ValueError):
@@ -305,3 +314,197 @@ def update_department(department, changes):
         department.active = bool(changes["active"])
     db.session.flush()
     return department
+
+
+# ---------- shared search (every spare-part picker/list goes through this) ----------
+
+def _escape_like(token):
+    return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_spare_parts(query=None, *, include_inactive=False, category_id=None):
+    """
+    The ONE spare-part search implementation. Stock In/Out, Adjustments,
+    Master Data, History filters and Admin Pricing all reach it through
+    GET /api/spare-parts?q=. Whitespace-separated tokens are ANDed; each
+    token must appear (case-insensitive, substring) in at least one of:
+    name, specifications, model, size, code, or a linked machine's name.
+    So "Bearing" and "22213" each locate the same bearing, and
+    "bearing 22213" narrows to it.
+    """
+    query_obj = SparePart.query
+    if not include_inactive:
+        query_obj = query_obj.filter(SparePart.active.is_(True))
+    if category_id is not None:
+        query_obj = query_obj.filter(SparePart.category_id == category_id)
+
+    for token in normalize_text(query).split():
+        pattern = f"%{_escape_like(token)}%"
+        machine_match = (
+            db.session.query(SparePartMachine.id)
+            .join(Machine, Machine.id == SparePartMachine.machine_id)
+            .filter(SparePartMachine.spare_part_id == SparePart.id, Machine.name.ilike(pattern, escape="\\"))
+            .exists()
+        )
+        query_obj = query_obj.filter(or_(
+            SparePart.name.ilike(pattern, escape="\\"),
+            SparePart.specifications.ilike(pattern, escape="\\"),
+            SparePart.model.ilike(pattern, escape="\\"),
+            SparePart.size.ilike(pattern, escape="\\"),
+            SparePart.code.ilike(pattern, escape="\\"),
+            machine_match,
+        ))
+    return query_obj.order_by(SparePart.name, SparePart.specifications, SparePart.id).all()
+
+
+# ---------- financial figures (Super Admin only; see admin_spare_pricing routes) ----------
+
+def pricing_summary(spare_part, stock):
+    """
+    Pricing & Profit figures for one spare part at a given stock quantity
+    (Decimal). Amounts are quantised to 2dp. Any figure that needs a
+    missing price is None rather than guessed. Margin follows
+    profit_and_margin()'s convention (Profit / Selling * 100).
+    """
+    buying = spare_part.buying_price
+    selling = spare_part.selling_price
+    profit, margin = profit_and_margin(buying, selling)
+
+    def money(value):
+        return value.quantize(Decimal("0.01")) if value is not None else None
+
+    return {
+        "buying_price": money(buying),
+        "selling_price": money(selling),
+        "profit_per_unit": money(profit),
+        "margin_percent": money(margin),
+        "current_stock": stock.quantize(Decimal("0.001")),
+        "stock_value_at_buying": money(stock * buying) if buying is not None else None,
+        "expected_sales_value": money(stock * selling) if selling is not None else None,
+        "expected_gross_profit": money(stock * profit) if profit is not None else None,
+    }
+
+
+def record_price_change(spare_part, before_buying, before_selling, actor):
+    """
+    Price history lives in the existing audit_log (action=price_change),
+    not in a second logging table. Each row holds the previous and new
+    buying/selling prices, the actor and the timestamp. No-op when neither
+    price actually changed.
+    """
+    after_buying = spare_part.buying_price
+    after_selling = spare_part.selling_price
+    if before_buying == after_buying and before_selling == after_selling:
+        return None
+    before = {
+        "buying_price": str(before_buying) if before_buying is not None else None,
+        "selling_price": str(before_selling) if before_selling is not None else None,
+    }
+    after = {
+        "buying_price": str(after_buying) if after_buying is not None else None,
+        "selling_price": str(after_selling) if after_selling is not None else None,
+    }
+    return record_audit(actor, PRICE_CHANGE_ACTION, "spare_part", entity_id=spare_part.id,
+                        before=before, after=after)
+
+
+def price_history(spare_part_id):
+    return (
+        AuditLog.query.filter_by(action=PRICE_CHANGE_ACTION, entity_type="spare_part", entity_id=str(spare_part_id))
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .all()
+    )
+
+
+# ---------- permanent deletion (Super Admin only) ----------
+# A spare part's own history (movements, machine/supplier links) is deleted
+# with it, as the Super Admin explicitly requires. Shared lookup masters
+# (category, department, machine, supplier) are never cascaded into stock
+# history: their references on movements and spare parts are DETACHED
+# (set to NULL), so the stock ledger keeps every quantity and nothing
+# dangles. Callers own the commit and must roll back on any exception.
+
+def spare_part_deletion_counts(spare_part_id):
+    return {
+        "movements": SparePartMovement.query.filter_by(spare_part_id=spare_part_id).count(),
+        "machine_links": SparePartMachine.query.filter_by(spare_part_id=spare_part_id).count(),
+        "supplier_quotes": SparePartSupplier.query.filter_by(spare_part_id=spare_part_id).count(),
+        "import_rows_detached": SparePartImportRow.query.filter_by(spare_part_id=spare_part_id).count(),
+    }
+
+
+def permanently_delete_spare_part(spare_part, actor):
+    spare_part_id = spare_part.id
+    snapshot = spare_part.to_dict(include_pricing=True)
+    counts = spare_part_deletion_counts(spare_part_id)
+
+    SparePartMovement.query.filter_by(spare_part_id=spare_part_id).delete(synchronize_session=False)
+    SparePartMachine.query.filter_by(spare_part_id=spare_part_id).delete(synchronize_session=False)
+    SparePartSupplier.query.filter_by(spare_part_id=spare_part_id).delete(synchronize_session=False)
+    # Import rows are provenance only (raw_json keeps the full workbook row),
+    # so they are detached rather than destroyed.
+    SparePartImportRow.query.filter_by(spare_part_id=spare_part_id).update(
+        {"spare_part_id": None}, synchronize_session=False,
+    )
+    db.session.delete(spare_part)
+    db.session.flush()
+    record_audit(actor, "permanent_delete", "spare_part", entity_id=spare_part_id,
+                 before=snapshot, after={"removed_related": counts})
+    return counts
+
+
+def permanently_delete_category(category, actor):
+    snapshot = category.to_dict()
+    detached = SparePart.query.filter_by(category_id=category.id).update(
+        {"category_id": None}, synchronize_session=False,
+    )
+    db.session.delete(category)
+    db.session.flush()
+    counts = {"spare_parts_uncategorized": detached}
+    record_audit(actor, "permanent_delete", "spare_part_category", entity_id=snapshot["id"],
+                 before=snapshot, after=counts)
+    return counts
+
+
+def permanently_delete_department(department, actor):
+    snapshot = department.to_dict()
+    movements = SparePartMovement.query.filter_by(department_id=department.id).update(
+        {"department_id": None}, synchronize_session=False,
+    )
+    machines = Machine.query.filter_by(department_id=department.id).update(
+        {"department_id": None}, synchronize_session=False,
+    )
+    db.session.delete(department)
+    db.session.flush()
+    counts = {"movements_detached": movements, "machines_detached": machines}
+    record_audit(actor, "permanent_delete", "spare_part_department", entity_id=snapshot["id"],
+                 before=snapshot, after=counts)
+    return counts
+
+
+def permanently_delete_machine(machine, actor):
+    snapshot = machine.to_dict()
+    links = SparePartMachine.query.filter_by(machine_id=machine.id).delete(synchronize_session=False)
+    aliases = MachineAlias.query.filter_by(machine_id=machine.id).delete(synchronize_session=False)
+    movements = SparePartMovement.query.filter_by(machine_id=machine.id).update(
+        {"machine_id": None}, synchronize_session=False,
+    )
+    db.session.delete(machine)
+    db.session.flush()
+    counts = {"spare_part_links_removed": links, "aliases_removed": aliases, "movements_detached": movements}
+    record_audit(actor, "permanent_delete", "machine", entity_id=snapshot["id"], before=snapshot, after=counts)
+    return counts
+
+
+def permanently_delete_supplier(supplier, actor):
+    snapshot = supplier.to_dict()
+    quotes = SparePartSupplier.query.filter_by(supplier_id=supplier.id).delete(synchronize_session=False)
+    movements = SparePartMovement.query.filter_by(supplier_id=supplier.id).update(
+        {"supplier_id": None}, synchronize_session=False,
+    )
+    db.session.delete(supplier)
+    db.session.flush()
+    counts = {"supplier_quotes_removed": quotes, "movements_detached": movements}
+    record_audit(actor, "permanent_delete", "spare_supplier", entity_id=snapshot["id"],
+                 before=snapshot, after=counts)
+    return counts

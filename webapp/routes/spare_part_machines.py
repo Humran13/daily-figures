@@ -1,12 +1,18 @@
+import logging
+
 from flask import Blueprint, jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
 from webapp.models.machine import Machine, MachineAlias
 from webapp.models.user import ROLE_MANAGER, ROLE_SUPER_ADMIN
+from webapp.services import spare_part_service as svc
 from webapp.services.audit_service import record_audit
 
 spare_part_machines_bp = Blueprint("spare_part_machines", __name__, url_prefix="/api/spare-parts/machines")
+
+logger = logging.getLogger(__name__)
 
 
 def _to_dict(machine):
@@ -73,6 +79,22 @@ def update_machine(machine_id):
     record_audit(current_user(), "update", "machine", entity_id=machine.id, before=before, after=machine.to_dict())
     db.session.commit()
     return jsonify(_to_dict(machine))
+
+
+@spare_part_machines_bp.route("/<int:machine_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN)
+def delete_machine(machine_id):
+    machine = db.session.get(Machine, machine_id)
+    if machine is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        removed = svc.permanently_delete_machine(machine, current_user())
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("permanent delete of machine %s failed", machine_id)
+        return jsonify({"error": "Delete failed. Nothing was removed; please try again."}), 500
+    return jsonify({"ok": True, "removed": removed})
 
 
 @spare_part_machines_bp.route("/<int:machine_id>/aliases", methods=["POST"])

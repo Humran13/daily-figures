@@ -26,8 +26,15 @@
       });
     }
 
+    // Optional display hooks: options.label(item) sets the input text after
+    // selection and options.meta(item) adds a secondary line in the results.
+    // Both default to the item's own name, so existing callers are unchanged.
+    function labelOf(item) {
+      return options.label ? options.label(item) : item.name;
+    }
+
     function select(item) {
-      input.value = item.name;
+      input.value = labelOf(item);
       input.dataset.selectedId = String(item.id);
       hide();
       if (options.onChange) options.onChange();
@@ -38,8 +45,10 @@
       activeIndex = -1;
       results.innerHTML = items.length
         ? items.map(function (item, index) {
+            var meta = options.meta ? options.meta(item) : '';
             return '<div class="autocomplete-item" role="option" data-index="' + index + '">' +
-              escapeHtml(item.name) + '</div>';
+              escapeHtml(labelOf(item)) +
+              (meta ? '<div class="autocomplete-meta">' + escapeHtml(meta) + '</div>' : '') + '</div>';
           }).join('')
         : '<div class="autocomplete-item" aria-disabled="true">No matches</div>';
       results.classList.remove('hidden');

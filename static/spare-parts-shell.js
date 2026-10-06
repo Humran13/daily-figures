@@ -23,6 +23,7 @@
     { key: 'stock-out', label: 'Stock Out', href: '/spare-parts-stock-out.html', roles: ['operator', 'manager', 'super_admin'] },
     { key: 'history', label: 'History', href: '/spare-parts-history.html', roles: null },
     { key: 'master', label: 'Master Data', href: '/spare-parts-master.html', roles: ['manager', 'super_admin'] },
+    { key: 'admin', label: 'Admin', href: '/admin.html', roles: ['super_admin'] },
   ];
 
   function currentPageKey() {

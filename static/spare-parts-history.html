@@ -41,6 +41,11 @@
   .movement-row{ padding:8px 0; border-bottom:1px solid var(--paper-dim); font-size:13px; }
   .movement-row .meta{ color:var(--ink-soft); font-size:11px; }
   .movement-row.void{ opacity:.5; text-decoration:line-through; }
+  .field{ position:relative; display:inline-block; min-width:200px; }
+  .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:20; }
+  .autocomplete-item{ padding:8px 10px; font-size:13px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
+  .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
+  .autocomplete-meta{ font-size:11px; color:var(--ink-soft); margin-top:2px; }
 </style>
 </head>
 <body>
@@ -61,6 +66,7 @@
         <option value="ADJUSTMENT_IN">Adjustment In</option>
         <option value="ADJUSTMENT_OUT">Adjustment Out</option>
       </select>
+      <div class="field"><input id="fSpare" placeholder="Spare part (name or spec)" autocomplete="off"><div class="autocomplete-list hidden" id="fSpareResults"></div></div>
       <input id="fRequestedBy" placeholder="Requested by">
       <button id="applyFiltersBtn">Filter</button>
     </div>
@@ -75,6 +81,8 @@
 
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
+<script src="/filter-autocomplete.js" defer></script>
+<script src="/spare-parts-search.js" defer></script>
 <script>
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -94,10 +102,14 @@ function filterParams(){
   }
   const type = document.getElementById('fType').value;
   if(type) params.set('movement_type', type);
+  const sparePartId = spareAutocomplete && spareAutocomplete.selectedId();
+  if(sparePartId) params.set('spare_part_id', sparePartId);
   const requestedBy = document.getElementById('fRequestedBy').value;
   if(requestedBy) params.set('requested_by', requestedBy);
   return params;
 }
+
+let spareAutocomplete;
 
 function groupByDate(rows){
   const groups = {};
@@ -139,6 +151,10 @@ document.getElementById('applyFiltersBtn').addEventListener('click', loadHistory
 (async function init(){
   const s = await (await fetch('/api/session')).json();
   if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
+  spareAutocomplete = FilterAutocomplete.create({
+    inputId:'fSpare', resultsId:'fSpareResults', onChange: ()=>{},
+    source: SparePartSearch.source({includeInactive: true}), label: SparePartSearch.label, meta: SparePartSearch.meta,
+  });
   await loadHistory();
 })();
 </script>

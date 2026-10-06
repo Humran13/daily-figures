@@ -239,31 +239,31 @@ def test_operational_department_does_not_interfere_with_store_section(app, clien
 # ---------- Pricing ----------
 
 def test_buying_price_stored_exactly(client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr19", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr19", "super_admin")
     part = _create_spare_part(client, name="Priced A", buying_price="12345.67")
     assert part["buying_price"] == "12345.67"
 
 
 def test_selling_price_stored_exactly(client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr20", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr20", "super_admin")
     part = _create_spare_part(client, name="Priced B", selling_price="99999.99")
     assert part["selling_price"] == "99999.99"
 
 
 def test_profit_calculation_correct(client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr21", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr21", "super_admin")
     part = _create_spare_part(client, name="Priced C", buying_price="100", selling_price="150")
     assert Decimal(part["profit"]) == Decimal("50")
 
 
 def test_margin_calculation_correct(client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr22", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr22", "super_admin")
     part = _create_spare_part(client, name="Priced D", buying_price="100", selling_price="200")
     assert Decimal(part["margin_percent"]) == Decimal("50")
 
 
 def test_null_prices_safe(client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr23", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr23", "super_admin")
     part = _create_spare_part(client, name="Priced E")
     assert part["buying_price"] is None
     assert part["profit"] is None
@@ -271,7 +271,7 @@ def test_null_prices_safe(client, make_user):
 
 
 def test_zero_selling_price_safe(client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr24", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr24", "super_admin")
     part = _create_spare_part(client, name="Priced F", buying_price="50", selling_price="0")
     assert Decimal(part["profit"]) == Decimal("-50")
     assert part["margin_percent"] is None  # division by zero avoided, never fabricated
@@ -279,7 +279,7 @@ def test_zero_selling_price_safe(client, make_user):
 
 def test_normal_users_cannot_see_pricing(app, client, make_user):
     other = app.test_client()
-    _login_spare_parts(other, make_user, "ref_mgr25", "manager")
+    _login_spare_parts(other, make_user, "ref_mgr25", "super_admin")
     part = _create_spare_part(other, name="Restricted", buying_price="10", selling_price="20")
 
     _login_spare_parts(client, make_user, "ref_viewer1", "viewer")
@@ -293,7 +293,7 @@ def test_normal_users_cannot_see_pricing(app, client, make_user):
 
 def test_pricing_absent_from_list_for_operator(app, client, make_user):
     other = app.test_client()
-    _login_spare_parts(other, make_user, "ref_mgr26", "manager")
+    _login_spare_parts(other, make_user, "ref_mgr26", "super_admin")
     _create_spare_part(other, name="Restricted List", buying_price="10", selling_price="20")
 
     _login_spare_parts(client, make_user, "ref_op1", "operator")
@@ -304,7 +304,7 @@ def test_pricing_absent_from_list_for_operator(app, client, make_user):
 
 
 def test_pricing_absent_from_movement_export(app, client, make_user):
-    _login_spare_parts(client, make_user, "ref_mgr27", "manager")
+    _login_spare_parts(client, make_user, "ref_mgr27", "super_admin")
     dept_id = _create_department(app)
     part = _create_spare_part(client, name="ExportPriceCheck", buying_price="10", selling_price="20")
     client.post("/api/spare-parts/movements/stock-in", json={"spare_part_id": part["id"], "quantity": "5"})

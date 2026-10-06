@@ -95,11 +95,12 @@ def test_deactivate_spare_part(app, client, make_user):
     assert res.get_json()["active"] is False
 
 
-def test_referenced_spare_cannot_be_hard_deleted_no_route_exists(app, client, make_user):
+def test_manager_cannot_permanently_delete_spare_part(app, client, make_user):
     _login_spare_parts(client, make_user, "mgr4", "manager")
     part = _create_spare_part(client)
     res = client.delete(f"/api/spare-parts/{part['id']}")
-    assert res.status_code in (404, 405)  # no DELETE route — deactivate-only
+    assert res.status_code == 403
+    assert db.session.get(SparePart, part["id"]) is not None
 
 
 def test_machine_association_works(app, client, make_user):

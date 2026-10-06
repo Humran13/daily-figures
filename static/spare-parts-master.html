@@ -30,20 +30,21 @@
   .sp-nav-link.active{ color:var(--paper); border-bottom:2px solid #E2A93B; }
   header{ padding:18px 20px 14px; }
   header h1{ margin:0; font-size:19px; font-weight:700; }
-  main{ flex:1; padding:16px; padding-bottom:60px; }
+  main{ flex:1; min-width:0; padding:16px; padding-bottom:60px; }
   .tabs{ display:flex; gap:0; margin-bottom:14px; border-bottom:1px solid var(--line); overflow-x:auto; }
   .tab{ flex:1; text-align:center; padding:9px 6px; font-size:12px; font-weight:600; color:var(--ink-soft); cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
   .tab.active{ color:var(--ink); border-bottom-color:var(--teal); }
   .panel{ display:none; } .panel.active{ display:block; }
-  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; min-width:0; max-width:100%; }
+  .card h3{ margin:0 0 12px; font-size:15px; }
   label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-bottom:5px; }
-  input, select, textarea{ width:100%; padding:10px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; margin-bottom:10px; }
-  table{ width:100%; border-collapse:collapse; font-size:13px; }
-  th, td{ text-align:left; padding:8px 4px; border-bottom:1px solid var(--paper-dim); }
-  .btn{ padding:8px 12px; border-radius:8px; border:1.5px solid var(--line); background:white; font-size:12px; cursor:pointer; }
+  input, select, textarea{ width:100%; padding:10px; border:1.5px solid var(--line); border-radius:8px; font-size:14px; margin-bottom:10px; font-family:inherit; }
+  .btn{ padding:8px 12px; border-radius:8px; border:1.5px solid var(--line); background:white; font-size:12px; cursor:pointer; white-space:nowrap; font-family:inherit; color:var(--ink); }
+  .btn:disabled{ opacity:.45; cursor:not-allowed; }
+  .btn-sm{ padding:6px 9px; font-size:11px; }
   .btn-primary{ background:var(--teal); color:white; border-color:var(--teal); }
   .btn-danger{ background:var(--red); color:white; border-color:var(--red); }
-  .pill{ font-size:11px; padding:2px 8px; border-radius:10px; }
+  .pill{ font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; }
   .pill-active{ background:#DFF3EC; color:var(--teal); } .pill-inactive{ background:#F3DEDC; color:var(--red); }
   .msg{ font-size:13px; margin-top:8px; min-height:18px; }
   .msg.ok{ color:var(--teal); } .msg.err{ color:var(--red); }
@@ -51,11 +52,35 @@
   .autocomplete-list{ position:absolute; top:100%; left:0; right:0; background:white; border:1.5px solid var(--line); border-top:none; border-radius:0 0 8px 8px; max-height:220px; overflow-y:auto; z-index:20; }
   .autocomplete-item{ padding:10px; font-size:14px; border-bottom:1px solid var(--paper-dim); cursor:pointer; }
   .autocomplete-item:hover, .autocomplete-item.active{ background:var(--paper-dim); }
+  .autocomplete-meta{ font-size:11px; color:var(--ink-soft); margin-top:2px; }
   .hidden{ display:none !important; }
   .duplicate-warning{ background:#FFF4E5; border:1.5px solid var(--amber); border-radius:10px; padding:12px; margin-bottom:10px; font-size:13px; }
   .duplicate-warning .btn{ margin-top:8px; }
-  .row2{ display:flex; gap:10px; }
-  .row2 > div{ flex:1; }
+  .row2{ display:flex; gap:10px; flex-wrap:wrap; }
+  .row2 > div{ flex:1 1 180px; min-width:0; }
+  .muted{ color:var(--ink-soft); font-size:12px; }
+
+  /* Tables stay inside the card: the table scrolls horizontally within
+     its own wrapper on narrow screens and never pushes the page wider. */
+  .table-wrap{ width:100%; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:10px; }
+  .data-table{ width:100%; min-width:560px; border-collapse:collapse; font-size:13px; }
+  .data-table th, .data-table td{ text-align:left; padding:9px 8px; border-bottom:1px solid var(--paper-dim); vertical-align:top; }
+  .data-table th{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); background:var(--paper-dim); white-space:nowrap; }
+  .data-table td.name{ word-break:break-word; overflow-wrap:anywhere; min-width:140px; }
+  .data-table td.num{ white-space:nowrap; }
+  .data-table td.price{ font-size:11px; min-width:130px; }
+  .data-table td.actions{ white-space:nowrap; width:1%; text-align:right; }
+  .data-table td.actions .btn{ margin-left:4px; }
+  .data-table tr:last-child td{ border-bottom:none; }
+  .sub{ color:var(--ink-soft); font-size:11px; margin-top:2px; }
+
+  /* Dialogs: edit form, and a strong delete confirmation. */
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.55); display:flex; align-items:center; justify-content:center; padding:16px; z-index:100; }
+  .modal{ background:var(--paper); border-radius:14px; padding:18px; width:100%; max-width:440px; max-height:90vh; overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+  .modal h3{ margin:0 0 10px; font-size:16px; }
+  .modal-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:6px; flex-wrap:wrap; }
+  .danger-box{ background:#F9E4E1; border:1.5px solid var(--red); color:#6B1F18; border-radius:10px; padding:12px; font-size:13px; margin-bottom:12px; }
+  .danger-box ul{ margin:6px 0 0 18px; padding:0; }
 </style>
 </head>
 <body>
@@ -78,13 +103,13 @@
         <h3>New Spare Part</h3>
         <div class="duplicate-warning hidden" id="duplicateWarning"></div>
         <label>Name</label><input id="spName">
-        <label>Specifications (optional)</label><input id="spSpecifications" placeholder="e.g. Digital - Medium">
+        <label>Specifications (optional)</label><input id="spSpecifications" placeholder="e.g. 22213 or Digital - Medium">
         <label>Category (optional)</label>
         <select id="spCategory"><option value="">Uncategorized</option></select>
         <label>Unit</label>
         <select id="spUnit"><option>pcs</option><option>rolls</option><option>metres</option><option>sets</option><option>litres</option><option>other</option></select>
         <label>Minimum Stock (optional)</label><input type="number" step="any" inputmode="decimal" id="spMinStock">
-        <div class="row2">
+        <div class="row2 super-only">
           <div><label>Buying Price (optional)</label><input type="number" step="any" inputmode="decimal" id="spBuyingPrice"></div>
           <div><label>Selling Price (optional)</label><input type="number" step="any" inputmode="decimal" id="spSellingPrice"></div>
         </div>
@@ -94,10 +119,15 @@
       <div class="card">
         <h3>Existing Spare Parts</h3>
         <div class="row2">
-          <input id="spareSearch" placeholder="Search name/specs/machine...">
+          <input id="spareSearch" placeholder="Search name, spec, size, code or machine">
           <select id="spareCategoryFilter"><option value="">All categories</option></select>
         </div>
-        <table><thead><tr><th>Name</th><th>Stock</th><th>Pricing</th><th>Status</th><th></th></tr></thead><tbody id="sparePartsTable"></tbody></table>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Stock</th><th>Price</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="sparePartsTable"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -110,7 +140,12 @@
       </div>
       <div class="card">
         <h3>Existing Categories</h3>
-        <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead><tbody id="categoriesTable"></tbody></table>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="categoriesTable"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -125,7 +160,12 @@
       </div>
       <div class="card">
         <h3>Existing Machines</h3>
-        <table><thead><tr><th>Name</th><th>Department</th><th>Aliases</th><th>Status</th><th></th></tr></thead><tbody id="machinesTable"></tbody></table>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Department</th><th>Aliases</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="machinesTable"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -138,7 +178,12 @@
       </div>
       <div class="card">
         <h3>Existing Departments</h3>
-        <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead><tbody id="departmentsTable"></tbody></table>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="departmentsTable"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -153,7 +198,12 @@
       </div>
       <div class="card">
         <h3>Existing Suppliers</h3>
-        <table><thead><tr><th>Name</th><th>Building</th><th>Contacts</th><th>Status</th><th></th></tr></thead><tbody id="suppliersTable"></tbody></table>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Building</th><th>Contacts</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="suppliersTable"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -162,7 +212,7 @@
         <h3>Stock Adjustment / Opening Balance</h3>
         <div class="field">
           <label>Spare Part</label>
-          <input id="adjSpareInput" placeholder="Search spare part...">
+          <input id="adjSpareInput" placeholder="Search by name or specification..." autocomplete="off">
           <div class="autocomplete-list hidden" id="adjSpareResults"></div>
         </div>
         <label>Direction</label>
@@ -177,10 +227,51 @@
   </main>
 </div>
 
+<!-- Edit dialog: one form shared by every master-data kind. -->
+<div class="modal-backdrop hidden" id="editModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
+    <h3 id="editModalTitle">Edit</h3>
+    <div id="editModalFields"></div>
+    <div class="msg" id="editModalMsg"></div>
+    <div class="modal-actions">
+      <button class="btn" id="editCancelBtn">Cancel</button>
+      <button class="btn btn-primary" id="editSaveBtn">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Permanent-delete confirmation (Super Administrator only). -->
+<div class="modal-backdrop hidden" id="deleteModal">
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+    <h3 id="deleteModalTitle">Permanently delete?</h3>
+    <div class="danger-box">
+      <strong>This cannot be undone.</strong> <span id="deleteModalBody"></span>
+      <div id="deleteModalRelated"></div>
+    </div>
+    <label>Type <span id="deleteModalName" style="text-transform:none;letter-spacing:0"></span> to confirm</label>
+    <input id="deleteConfirmInput" autocomplete="off">
+    <div class="msg" id="deleteModalMsg"></div>
+    <div class="modal-actions">
+      <button class="btn" id="deleteCancelBtn">Cancel</button>
+      <button class="btn btn-danger" id="deleteConfirmBtn" disabled>Delete permanently</button>
+    </div>
+  </div>
+</div>
+
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
 <script src="/filter-autocomplete.js" defer></script>
+<script src="/spare-parts-search.js" defer></script>
 <script>
+const UNITS = ['pcs','rolls','metres','sets','litres','other'];
+let isSuper = false;
+const records = {spare: [], category: [], machine: [], department: [], supplier: []};
+let categories = [];
+let departments = [];
+let adjSpareAutocomplete;
+let searchTimer = null;
+let pendingDelete = null;
+
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -188,6 +279,13 @@ async function api(url, opts){
   const res = await fetch(url, {headers:{'Content-Type':'application/json'}, ...opts});
   const data = await res.json().catch(()=>({}));
   return {status: res.status, data};
+}
+function setMsg(id, text, ok){
+  const el = document.getElementById(id);
+  el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+function pill(active){
+  return `<span class="pill ${active?'pill-active':'pill-inactive'}">${active?'Active':'Inactive'}</span>`;
 }
 
 document.querySelectorAll('.tab').forEach(tab => {
@@ -199,119 +297,234 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// ---------- categories ----------
-let categories = [];
+// ---------- one action set for every master-data row ----------
+// Edit and Activate/Deactivate are open to Managers and Super Admins.
+// Delete is rendered and accepted only for Super Admins (the API enforces it too).
+function actionsCell(kind, record){
+  const toggleLabel = record.active ? 'Deactivate' : 'Activate';
+  return `<td class="actions">
+    <button class="btn btn-sm" data-action="edit" data-kind="${kind}" data-id="${record.id}">Edit</button>
+    <button class="btn btn-sm" data-action="toggle" data-kind="${kind}" data-id="${record.id}" data-next="${!record.active}">${toggleLabel}</button>
+    ${isSuper ? `<button class="btn btn-sm btn-danger" data-action="delete" data-kind="${kind}" data-id="${record.id}">Delete</button>` : ''}
+  </td>`;
+}
 
+document.addEventListener('click', async (event) => {
+  const btn = event.target.closest('[data-action]');
+  if(!btn) return;
+  const kind = btn.dataset.kind, id = Number(btn.dataset.id);
+  if(btn.dataset.action === 'edit') return openEditModal(kind, id);
+  if(btn.dataset.action === 'toggle'){
+    const {status, data} = await api(`${ENTITY[kind].base}/${id}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
+    if(status !== 200) alert(data.error || 'Could not change status.');
+    return refreshAll();
+  }
+  if(btn.dataset.action === 'delete') return openDeleteModal(kind, id);
+});
+
+// ---------- entity definitions (base URL, editable fields, display name) ----------
+const ENTITY = {
+  spare:      {base:'/api/spare-parts', label:'Spare part', nameOf: r => r.name},
+  category:   {base:'/api/spare-parts/categories', label:'Category', nameOf: r => r.name},
+  machine:    {base:'/api/spare-parts/machines', label:'Machine', nameOf: r => r.name},
+  department: {base:'/api/spare-parts/departments', label:'Department', nameOf: r => r.name},
+  supplier:   {base:'/api/spare-parts/suppliers', label:'Supplier', nameOf: r => r.name},
+};
+
+function departmentOptions(selectedId){
+  return '<option value="">None</option>' + departments.filter(d => d.active || d.id === selectedId)
+    .map(d => `<option value="${d.id}" ${d.id===selectedId?'selected':''}>${escapeHtml(d.name)}</option>`).join('');
+}
+function categoryOptions(selectedId){
+  return '<option value="">Uncategorized</option>' + categories.filter(c => c.active || c.id === selectedId)
+    .map(c => `<option value="${c.id}" ${c.id===selectedId?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
+}
+
+function editFields(kind, r){
+  const text = (key, label, value) => `<label>${label}</label><input data-key="${key}" value="${escapeHtml(value ?? '')}">`;
+  if(kind === 'spare'){
+    const unitOpts = UNITS.map(u => `<option ${u===r.unit?'selected':''}>${u}</option>`).join('');
+    return text('name','Name', r.name) + text('specifications','Specifications', r.specifications) +
+      `<label>Category</label><select data-key="category_id">${categoryOptions(r.category_id)}</select>` +
+      `<label>Unit</label><select data-key="unit">${unitOpts}</select>` +
+      `<label>Minimum Stock</label><input data-key="minimum_stock" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.minimum_stock ?? '')}">` +
+      (isSuper ? `<div class="row2"><div><label>Buying Price</label><input data-key="buying_price" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.buying_price ?? '')}"></div>` +
+                 `<div><label>Selling Price</label><input data-key="selling_price" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.selling_price ?? '')}"></div></div>` : '');
+  }
+  if(kind === 'category' || kind === 'department') return text('name','Name', r.name);
+  if(kind === 'machine') return text('name','Name', r.name) +
+      `<label>Department</label><select data-key="department_id">${departmentOptions(r.department_id)}</select>`;
+  if(kind === 'supplier') return text('name','Name', r.name) + text('building','Building / Location', r.building) +
+      text('contacts','Contacts', r.contacts) + `<label>Notes</label><textarea data-key="notes" rows="2">${escapeHtml(r.notes ?? '')}</textarea>`;
+  return '';
+}
+
+let editing = null;
+function openEditModal(kind, id){
+  const r = records[kind].find(x => x.id === id);
+  if(!r) return;
+  editing = {kind, id};
+  document.getElementById('editModalTitle').textContent = 'Edit ' + ENTITY[kind].label.toLowerCase();
+  document.getElementById('editModalFields').innerHTML = editFields(kind, r);
+  document.getElementById('editModalMsg').textContent = '';
+  document.getElementById('editModal').classList.remove('hidden');
+}
+function closeEditModal(){ editing = null; document.getElementById('editModal').classList.add('hidden'); }
+
+function collectEditPayload(){
+  const payload = {};
+  document.querySelectorAll('#editModalFields [data-key]').forEach(el => {
+    const key = el.dataset.key;
+    let value = el.value;
+    if(key === 'category_id' || key === 'department_id') value = value ? Number(value) : null;
+    else if(key === 'minimum_stock' || key === 'buying_price' || key === 'selling_price') value = value === '' ? null : value;
+    else value = value.trim() === '' ? null : value.trim();
+    payload[key] = value;
+  });
+  return payload;
+}
+
+document.getElementById('editCancelBtn').addEventListener('click', closeEditModal);
+document.getElementById('editSaveBtn').addEventListener('click', async () => {
+  if(!editing) return;
+  const payload = collectEditPayload();
+  if(!payload.name && 'name' in payload){ setMsg('editModalMsg', 'Name is required.', false); return; }
+  const {status, data} = await api(`${ENTITY[editing.kind].base}/${editing.id}`, {method:'PATCH', body: JSON.stringify(payload)});
+  if(status === 200){
+    closeEditModal();
+    refreshAll();
+  } else {
+    setMsg('editModalMsg', data.error || 'Could not save changes.', false);
+  }
+});
+
+// ---------- permanent delete (Super Admin only) ----------
+async function openDeleteModal(kind, id){
+  const r = records[kind].find(x => x.id === id);
+  if(!r) return;
+  pendingDelete = {kind, id, name: ENTITY[kind].nameOf(r)};
+  document.getElementById('deleteModalName').textContent = '"' + pendingDelete.name + '"';
+  document.getElementById('deleteModalBody').textContent =
+    kind === 'spare'
+      ? `The spare part "${pendingDelete.name}" and every related operational record will be permanently removed, including its Stock In, Stock Out and adjustment history.`
+      : `The ${ENTITY[kind].label.toLowerCase()} "${pendingDelete.name}" will be permanently removed. Records that reference it are kept but detached from it, so stock history is unchanged.`;
+  document.getElementById('deleteModalRelated').innerHTML = '';
+  document.getElementById('deleteConfirmInput').value = '';
+  document.getElementById('deleteConfirmBtn').disabled = true;
+  document.getElementById('deleteModalMsg').textContent = '';
+  document.getElementById('deleteModal').classList.remove('hidden');
+  document.getElementById('deleteConfirmInput').focus();
+  if(kind === 'spare'){
+    const {status, data} = await api(`/api/spare-parts/${id}/deletion-preview`);
+    if(status === 200 && pendingDelete && pendingDelete.id === id && pendingDelete.kind === 'spare'){
+      const c = data.related;
+      document.getElementById('deleteModalRelated').innerHTML =
+        `<ul><li>${c.movements} stock movement(s) (Stock In / Out / adjustments)</li>` +
+        `<li>${c.machine_links} machine link(s)</li><li>${c.supplier_quotes} supplier quote(s)</li>` +
+        `<li>${c.import_rows_detached} import record(s) kept but detached</li></ul>`;
+    }
+  }
+}
+function closeDeleteModal(){ pendingDelete = null; document.getElementById('deleteModal').classList.add('hidden'); }
+
+document.getElementById('deleteConfirmInput').addEventListener('input', (event) => {
+  const matches = pendingDelete && event.target.value.trim() === pendingDelete.name;
+  document.getElementById('deleteConfirmBtn').disabled = !matches;
+});
+document.getElementById('deleteCancelBtn').addEventListener('click', closeDeleteModal);
+document.getElementById('deleteConfirmBtn').addEventListener('click', async () => {
+  if(!pendingDelete) return;
+  const {kind, id} = pendingDelete;
+  const {status, data} = await api(`${ENTITY[kind].base}/${id}`, {method:'DELETE'});
+  if(status === 200){
+    closeDeleteModal();
+    refreshAll();
+  } else {
+    setMsg('deleteModalMsg', data.error || 'Delete failed.', false);
+  }
+});
+
+// ---------- categories ----------
 async function loadCategories(){
   const {data} = await api('/api/spare-parts/categories?include_inactive=1');
   categories = data || [];
+  records.category = categories;
   document.getElementById('categoriesTable').innerHTML = categories.map(c => `
-    <tr>
-      <td>${escapeHtml(c.name)}</td>
-      <td><span class="pill ${c.active?'pill-active':'pill-inactive'}">${c.active?'Active':'Inactive'}</span></td>
-      <td><button class="btn" data-toggle-category="${c.id}" data-next="${!c.active}">${c.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="3">No categories yet.</td></tr>';
-  document.querySelectorAll('[data-toggle-category]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await api(`/api/spare-parts/categories/${btn.dataset.toggleCategory}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
-      loadCategories();
-    });
-  });
+    <tr><td class="name">${escapeHtml(c.name)}</td><td>${pill(c.active)}</td>${actionsCell('category', c)}</tr>`).join('')
+    || '<tr><td colspan="3" class="muted">No categories yet.</td></tr>';
   const activeCats = categories.filter(c => c.active);
-  const options = '<option value="">Uncategorized</option>' + activeCats.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-  document.getElementById('spCategory').innerHTML = options;
-  document.getElementById('spareCategoryFilter').innerHTML = '<option value="">All categories</option>' +
+  document.getElementById('spCategory').innerHTML = '<option value="">Uncategorized</option>' +
     activeCats.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  const filter = document.getElementById('spareCategoryFilter');
+  const keep = filter.value;
+  filter.innerHTML = '<option value="">All categories</option>' +
+    activeCats.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  filter.value = keep;
 }
 
 document.getElementById('createCategoryBtn').addEventListener('click', async () => {
   const {status, data} = await api('/api/spare-parts/categories', {method:'POST', body: JSON.stringify({name: document.getElementById('categoryName').value})});
-  const msg = document.getElementById('categoryMsg');
   if(status === 201){
-    msg.textContent = 'Category created.'; msg.className = 'msg ok';
+    setMsg('categoryMsg', 'Category created.', true);
     document.getElementById('categoryName').value = '';
-    loadCategories();
-  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+    refreshAll();
+  } else { setMsg('categoryMsg', data.error || 'Failed.', false); }
 });
 
 // ---------- departments ----------
-let departments = [];
-
 async function loadDepartments(){
   const {data} = await api('/api/spare-parts/departments?include_inactive=1');
   departments = data || [];
+  records.department = departments;
   document.getElementById('departmentsTable').innerHTML = departments.map(d => `
-    <tr>
-      <td>${escapeHtml(d.name)}</td>
-      <td><span class="pill ${d.active?'pill-active':'pill-inactive'}">${d.active?'Active':'Inactive'}</span></td>
-      <td><button class="btn" data-toggle-department="${d.id}" data-next="${!d.active}">${d.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="3">No departments yet.</td></tr>';
-  document.querySelectorAll('[data-toggle-department]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await api(`/api/spare-parts/departments/${btn.dataset.toggleDepartment}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
-      loadDepartments();
-    });
-  });
-  const activeDepts = departments.filter(d => d.active);
+    <tr><td class="name">${escapeHtml(d.name)}</td><td>${pill(d.active)}</td>${actionsCell('department', d)}</tr>`).join('')
+    || '<tr><td colspan="3" class="muted">No departments yet.</td></tr>';
   document.getElementById('machineDepartment').innerHTML = '<option value="">None</option>' +
-    activeDepts.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+    departments.filter(d => d.active).map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
 }
 
 document.getElementById('createDepartmentBtn').addEventListener('click', async () => {
   const {status, data} = await api('/api/spare-parts/departments', {method:'POST', body: JSON.stringify({name: document.getElementById('departmentName').value})});
-  const msg = document.getElementById('departmentMsg');
   if(status === 201){
-    msg.textContent = 'Department created.'; msg.className = 'msg ok';
+    setMsg('departmentMsg', 'Department created.', true);
     document.getElementById('departmentName').value = '';
-    loadDepartments();
-  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+    refreshAll();
+  } else { setMsg('departmentMsg', data.error || 'Failed.', false); }
 });
 
 // ---------- spare parts ----------
-let sparePartsCache = [];
-
-function pricingCell(p){
-  if(p.buying_price === undefined) return ''; // not visible to this role (shouldn't happen on this page)
+function priceCell(p){
+  if(p.buying_price === undefined) return '<span class="muted">Super Admin only</span>';
   const parts = [];
-  if(p.buying_price != null) parts.push('Buy: '+p.buying_price);
-  if(p.selling_price != null) parts.push('Sell: '+p.selling_price);
-  if(p.profit != null) parts.push('Profit: '+p.profit);
+  if(p.buying_price != null) parts.push('Buy: '+escapeHtml(p.buying_price));
+  if(p.selling_price != null) parts.push('Sell: '+escapeHtml(p.selling_price));
+  if(p.profit != null) parts.push('Profit: '+escapeHtml(p.profit));
   if(p.margin_percent != null) parts.push('Margin: '+Number(p.margin_percent).toFixed(1)+'%');
-  return parts.join(' · ') || '—';
-}
-
-function renderSparePartsTable(){
-  const q = (document.getElementById('spareSearch').value || '').toLowerCase();
-  const categoryId = document.getElementById('spareCategoryFilter').value;
-  let rows = sparePartsCache;
-  if(categoryId) rows = rows.filter(p => String(p.category_id) === categoryId);
-  if(q) rows = rows.filter(p =>
-    p.name.toLowerCase().includes(q) || (p.specifications||'').toLowerCase().includes(q) ||
-    (p.machines||[]).some(m => m.name.toLowerCase().includes(q))
-  );
-  document.getElementById('sparePartsTable').innerHTML = rows.map(p => `
-    <tr>
-      <td>${escapeHtml(p.name)}<div style="color:var(--ink-soft);font-size:11px;">${escapeHtml(p.specifications||'')}</div></td>
-      <td>${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}</td>
-      <td style="font-size:11px;">${escapeHtml(pricingCell(p))}</td>
-      <td><span class="pill ${p.active?'pill-active':'pill-inactive'}">${p.active?'Active':'Inactive'}</span></td>
-      <td><button class="btn" data-toggle-spare="${p.id}" data-next="${!p.active}">${p.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="5">No spare parts yet.</td></tr>';
-  document.querySelectorAll('[data-toggle-spare]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await api(`/api/spare-parts/${btn.dataset.toggleSpare}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
-      loadSpareParts();
-    });
-  });
+  return parts.length ? parts.join('<br>') : '<span class="muted">—</span>';
 }
 
 async function loadSpareParts(){
-  const {data} = await api('/api/spare-parts?include_inactive=1');
-  sparePartsCache = data || [];
-  renderSparePartsTable();
+  const params = new URLSearchParams({include_inactive: '1'});
+  const q = document.getElementById('spareSearch').value.trim();
+  const categoryId = document.getElementById('spareCategoryFilter').value;
+  if(q) params.set('q', q);
+  if(categoryId) params.set('category_id', categoryId);
+  const {data} = await api('/api/spare-parts?' + params.toString());
+  records.spare = data || [];
+  document.getElementById('sparePartsTable').innerHTML = records.spare.map(p => `
+    <tr>
+      <td class="name">${escapeHtml(p.name)}<div class="sub">${escapeHtml(p.specifications||'')}</div></td>
+      <td class="num">${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}</td>
+      <td class="price">${priceCell(p)}</td>
+      <td>${pill(p.active)}</td>
+      ${actionsCell('spare', p)}
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">No spare parts found.</td></tr>';
 }
-document.getElementById('spareSearch').addEventListener('input', renderSparePartsTable);
-document.getElementById('spareCategoryFilter').addEventListener('change', renderSparePartsTable);
+document.getElementById('spareSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadSpareParts, 200);
+});
+document.getElementById('spareCategoryFilter').addEventListener('change', loadSpareParts);
 
 function newSparePayload(){
   return {
@@ -320,22 +533,24 @@ function newSparePayload(){
     category_id: document.getElementById('spCategory').value ? Number(document.getElementById('spCategory').value) : null,
     unit: document.getElementById('spUnit').value,
     minimum_stock: document.getElementById('spMinStock').value || null,
-    buying_price: document.getElementById('spBuyingPrice').value || null,
-    selling_price: document.getElementById('spSellingPrice').value || null,
   };
 }
 
 async function createSpare(confirmDuplicate){
   const body = newSparePayload();
+  if(isSuper){
+    body.buying_price = document.getElementById('spBuyingPrice').value || null;
+    body.selling_price = document.getElementById('spSellingPrice').value || null;
+  }
   if(confirmDuplicate) body.confirm_duplicate = true;
   const {status, data} = await api('/api/spare-parts', {method:'POST', body: JSON.stringify(body)});
   const msg = document.getElementById('spareMsg');
   const warning = document.getElementById('duplicateWarning');
   if(status === 201){
     warning.classList.add('hidden');
-    msg.textContent = 'Spare part created.'; msg.className = 'msg ok';
+    setMsg('spareMsg', 'Spare part created.', true);
     ['spName','spSpecifications','spMinStock','spBuyingPrice','spSellingPrice'].forEach(id => document.getElementById(id).value='');
-    loadSpareParts();
+    refreshAll();
   } else if(status === 409 && data.error === 'possible_duplicate'){
     warning.innerHTML = `A similar spare part already exists: <strong>${escapeHtml(data.existing.name)}</strong>`+
       `${data.existing.specifications ? ' ('+escapeHtml(data.existing.specifications)+')' : ''}.`+
@@ -344,31 +559,24 @@ async function createSpare(confirmDuplicate){
     document.getElementById('confirmDuplicateBtn').addEventListener('click', () => createSpare(true));
     msg.textContent = ''; msg.className = 'msg';
   } else {
-    msg.textContent = data.error || 'Failed.'; msg.className = 'msg err';
+    setMsg('spareMsg', data.error || 'Failed.', false);
   }
 }
-
 document.getElementById('createSpareBtn').addEventListener('click', () => createSpare(false));
 
 // ---------- machines ----------
 async function loadMachines(){
   const {data} = await api('/api/spare-parts/machines?include_inactive=1');
-  const machines = data || [];
+  records.machine = data || [];
   const deptName = id => { const d = departments.find(d => d.id === id); return d ? d.name : ''; };
-  document.getElementById('machinesTable').innerHTML = machines.map(m => `
+  document.getElementById('machinesTable').innerHTML = records.machine.map(m => `
     <tr>
-      <td>${escapeHtml(m.name)}</td>
-      <td style="font-size:11px;">${escapeHtml(deptName(m.department_id))}</td>
-      <td style="font-size:11px;color:var(--ink-soft);">${(m.aliases||[]).map(escapeHtml).join(', ')}</td>
-      <td><span class="pill ${m.active?'pill-active':'pill-inactive'}">${m.active?'Active':'Inactive'}</span></td>
-      <td><button class="btn" data-toggle-machine="${m.id}" data-next="${!m.active}">${m.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="5">No machines yet.</td></tr>';
-  document.querySelectorAll('[data-toggle-machine]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await api(`/api/spare-parts/machines/${btn.dataset.toggleMachine}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
-      loadMachines();
-    });
-  });
+      <td class="name">${escapeHtml(m.name)}</td>
+      <td class="sub">${escapeHtml(deptName(m.department_id))}</td>
+      <td class="sub">${(m.aliases||[]).map(escapeHtml).join(', ')}</td>
+      <td>${pill(m.active)}</td>
+      ${actionsCell('machine', m)}
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">No machines yet.</td></tr>';
 }
 
 document.getElementById('createMachineBtn').addEventListener('click', async () => {
@@ -376,29 +584,23 @@ document.getElementById('createMachineBtn').addEventListener('click', async () =
   const body = {name: document.getElementById('machineName').value};
   if(departmentId) body.department_id = Number(departmentId);
   const {status, data} = await api('/api/spare-parts/machines', {method:'POST', body: JSON.stringify(body)});
-  const msg = document.getElementById('machineMsg');
   if(status === 201){
-    msg.textContent = 'Machine created.'; msg.className = 'msg ok';
+    setMsg('machineMsg', 'Machine created.', true);
     document.getElementById('machineName').value = '';
-    loadMachines();
-  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+    refreshAll();
+  } else { setMsg('machineMsg', data.error || 'Failed.', false); }
 });
 
 // ---------- suppliers ----------
 async function loadSuppliers(){
   const {data} = await api('/api/spare-parts/suppliers?include_inactive=1');
-  document.getElementById('suppliersTable').innerHTML = (data||[]).map(s => `
+  records.supplier = data || [];
+  document.getElementById('suppliersTable').innerHTML = records.supplier.map(s => `
     <tr>
-      <td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.building||'')}</td><td>${escapeHtml(s.contacts||'')}</td>
-      <td><span class="pill ${s.active?'pill-active':'pill-inactive'}">${s.active?'Active':'Inactive'}</span></td>
-      <td><button class="btn" data-toggle-supplier="${s.id}" data-next="${!s.active}">${s.active?'Deactivate':'Reactivate'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="5">No suppliers yet.</td></tr>';
-  document.querySelectorAll('[data-toggle-supplier]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      await api(`/api/spare-parts/suppliers/${btn.dataset.toggleSupplier}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
-      loadSuppliers();
-    });
-  });
+      <td class="name">${escapeHtml(s.name)}</td><td>${escapeHtml(s.building||'')}</td><td>${escapeHtml(s.contacts||'')}</td>
+      <td>${pill(s.active)}</td>
+      ${actionsCell('supplier', s)}
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">No suppliers yet.</td></tr>';
 }
 
 document.getElementById('createSupplierBtn').addEventListener('click', async () => {
@@ -408,21 +610,17 @@ document.getElementById('createSupplierBtn').addEventListener('click', async () 
     contacts: document.getElementById('supplierContacts').value || null,
   };
   const {status, data} = await api('/api/spare-parts/suppliers', {method:'POST', body: JSON.stringify(body)});
-  const msg = document.getElementById('supplierMsg');
   if(status === 201){
-    msg.textContent = 'Supplier created.'; msg.className = 'msg ok';
+    setMsg('supplierMsg', 'Supplier created.', true);
     ['supplierName','supplierBuilding','supplierContacts'].forEach(id => document.getElementById(id).value='');
-    loadSuppliers();
-  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+    refreshAll();
+  } else { setMsg('supplierMsg', data.error || 'Failed.', false); }
 });
 
 // ---------- adjustments ----------
-let adjSpareAutocomplete;
-
 document.getElementById('submitAdjBtn').addEventListener('click', async () => {
   const spareId = adjSpareAutocomplete.selectedId();
-  const msg = document.getElementById('adjMsg');
-  if(!spareId){ msg.textContent = 'Select a spare part.'; msg.className = 'msg err'; return; }
+  if(!spareId){ setMsg('adjMsg', 'Select a spare part.', false); return; }
   const reason = document.getElementById('adjReason').value;
   const body = {
     spare_part_id: Number(spareId),
@@ -436,22 +634,28 @@ document.getElementById('submitAdjBtn').addEventListener('click', async () => {
     : '/api/spare-parts/movements/adjustment';
   const {status, data} = await api(endpoint, {method:'POST', body: JSON.stringify(body)});
   if(status === 201){
-    msg.textContent = 'Adjustment recorded.'; msg.className = 'msg ok';
+    setMsg('adjMsg', 'Adjustment recorded.', true);
     ['adjQty','adjReason','adjRemarks'].forEach(id => document.getElementById(id).value='');
     adjSpareAutocomplete.clear();
-    loadSpareParts();
-  } else { msg.textContent = data.error || 'Failed.'; msg.className = 'msg err'; }
+    refreshAll();
+  } else { setMsg('adjMsg', data.error || 'Failed.', false); }
 });
+
+async function refreshAll(){
+  await loadDepartments();
+  await Promise.all([loadCategories(), loadSpareParts(), loadMachines(), loadSuppliers()]);
+}
 
 (async function init(){
   const s = await (await fetch('/api/session')).json();
   if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
   if(!['manager','super_admin'].includes(s.user.role)){ window.location.href = '/spare-parts.html'; return; }
-  await loadDepartments();
-  await Promise.all([loadCategories(), loadSpareParts(), loadMachines(), loadSuppliers()]);
+  isSuper = s.user.role === 'super_admin';
+  if(!isSuper) document.querySelectorAll('.super-only').forEach(el => el.classList.add('hidden'));
+  await refreshAll();
   adjSpareAutocomplete = FilterAutocomplete.create({
     inputId:'adjSpareInput', resultsId:'adjSpareResults', onChange: ()=>{},
-    source: async q => sparePartsCache.filter(p => p.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
+    source: SparePartSearch.source({includeInactive: true}), label: SparePartSearch.label, meta: SparePartSearch.meta,
   });
 })();
 </script>

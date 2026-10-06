@@ -1,6 +1,8 @@
+import logging
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
@@ -10,9 +12,16 @@ from webapp.services import spare_part_movement_service as movement_svc
 from webapp.services import spare_part_service as svc
 from webapp.services.audit_service import record_audit
 
+logger = logging.getLogger(__name__)
+
 spare_parts_bp = Blueprint("spare_parts", __name__, url_prefix="/api/spare-parts")
 
-PRICING_ROLES = (ROLE_MANAGER, ROLE_SUPER_ADMIN)
+# Buying/Selling prices and profit are financial data: Super Administrator
+# only. Operational roles (including Manager) never receive them, and can't
+# write them either — ongoing pricing is managed from Admin > Spare Parts >
+# Pricing & Profit (see webapp/routes/admin_spare_pricing.py).
+PRICING_ROLES = (ROLE_SUPER_ADMIN,)
+PRICE_FIELDS = ("buying_price", "selling_price")
 
 
 def _may_see_pricing():
@@ -37,28 +46,27 @@ def _parse_decimal(value, field):
         raise svc.SparePartError(f"{field} must be a number") from None
 
 
+def _pricing_forbidden_response(payload):
+    """Returns a 403 response when a non-Super-Admin tries to send any price field."""
+    if any(field in payload for field in PRICE_FIELDS) and not _may_see_pricing():
+        return jsonify({"error": "Only a Super Administrator can set buying or selling prices."}), 403
+    return None
+
+
 @spare_parts_bp.route("", methods=["GET"])
 @login_required
 def list_spare_parts():
-    q = (request.args.get("q") or "").strip().lower()
     category_id = request.args.get("category_id")
     include_inactive = request.args.get("include_inactive") == "1"
-    query = SparePart.query
-    if not include_inactive:
-        query = query.filter_by(active=True)
+    category = None
     if category_id:
         try:
-            query = query.filter_by(category_id=int(category_id))
+            category = int(category_id)
         except ValueError:
             return jsonify({"error": "invalid category_id"}), 400
-    parts = query.order_by(SparePart.name).all()
-    if q:
-        parts = [
-            p for p in parts
-            if q in (p.name or "").lower() or q in (p.specifications or "").lower()
-            or q in (p.model or "").lower() or q in (p.size or "").lower()
-            or any(q in m.name.lower() for m in svc.spare_part_machines(p.id))
-        ]
+    parts = svc.search_spare_parts(
+        request.args.get("q"), include_inactive=include_inactive, category_id=category,
+    )
     return jsonify([_to_dict(p) for p in parts])
 
 
@@ -77,6 +85,9 @@ def get_spare_part(spare_part_id):
 @roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
 def create_spare_part():
     d = request.get_json(force=True) or {}
+    forbidden = _pricing_forbidden_response(d)
+    if forbidden:
+        return forbidden
     try:
         minimum_stock = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
         buying_price = _parse_decimal(d.get("buying_price"), "buying_price")
@@ -113,7 +124,11 @@ def update_spare_part(spare_part_id):
     if spare_part is None:
         return jsonify({"error": "not found"}), 404
     d = request.get_json(force=True) or {}
+    forbidden = _pricing_forbidden_response(d)
+    if forbidden:
+        return forbidden
     before = spare_part.to_dict(include_pricing=True)
+    before_buying, before_selling = spare_part.buying_price, spare_part.selling_price
     try:
         if "minimum_stock" in d:
             d["minimum_stock"] = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
@@ -127,8 +142,40 @@ def update_spare_part(spare_part_id):
         return jsonify({"error": str(e)}), 400
     record_audit(current_user(), "update", "spare_part", entity_id=spare_part.id, before=before,
                  after=spare_part.to_dict(include_pricing=True))
+    svc.record_price_change(spare_part, before_buying, before_selling, current_user())
     db.session.commit()
     return jsonify(_to_dict(spare_part))
+
+
+@spare_parts_bp.route("/<int:spare_part_id>/deletion-preview", methods=["GET"])
+@roles_required(ROLE_SUPER_ADMIN)
+def deletion_preview(spare_part_id):
+    spare_part = db.session.get(SparePart, spare_part_id)
+    if spare_part is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"id": spare_part.id, "name": spare_part.name,
+                    "related": svc.spare_part_deletion_counts(spare_part_id)})
+
+
+@spare_parts_bp.route("/<int:spare_part_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN)
+def delete_spare_part(spare_part_id):
+    """
+    Permanent delete, Super Administrator only. Removes the spare part with
+    its movements and machine/supplier links in ONE transaction; any failure
+    rolls the whole thing back so nothing is left half-deleted.
+    """
+    spare_part = db.session.get(SparePart, spare_part_id)
+    if spare_part is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        removed = svc.permanently_delete_spare_part(spare_part, current_user())
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("permanent delete of spare part %s failed", spare_part_id)
+        return jsonify({"error": "Delete failed. Nothing was removed; please try again."}), 500
+    return jsonify({"ok": True, "removed": removed})
 
 
 @spare_parts_bp.route("/dashboard", methods=["GET"])

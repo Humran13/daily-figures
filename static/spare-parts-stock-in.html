@@ -69,6 +69,7 @@
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
 <script src="/filter-autocomplete.js" defer></script>
+<script src="/spare-parts-search.js" defer></script>
 <script>
 let spareParts = [];
 
@@ -124,7 +125,7 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
   await loadData();
   spareAutocomplete = FilterAutocomplete.create({
     inputId:'spareInput', resultsId:'spareResults', onChange: renderSpareContext,
-    source: async q => spareParts.filter(p => p.name.toLowerCase().includes(q.toLowerCase())).slice(0,50),
+    source: SparePartSearch.source(), label: SparePartSearch.label, meta: SparePartSearch.meta,
   });
 })();
 </script>

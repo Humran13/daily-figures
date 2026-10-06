@@ -25,7 +25,7 @@
   header a{ color:var(--paper); text-decoration:underline; font-size:13px; }
   header h1{ margin:0; font-size:18px; }
   .wrap{ max-width:920px; margin:0 auto; padding:20px; }
-  .tabs{ display:flex; gap:8px; margin-bottom:18px; }
+  .tabs{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; }
   .tab{ padding:9px 16px; border-radius:8px; background:white; border:1.5px solid var(--line); font-weight:700; font-size:13px; cursor:pointer; color:var(--ink-soft); }
   .tab.active{ background:var(--ink); color:var(--paper); border-color:var(--ink); }
   .panel{ display:none; }
@@ -55,6 +55,17 @@
   .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.6); z-index:60; display:flex; align-items:center; justify-content:center; padding:20px; }
   .modal-sheet{ background:var(--paper); width:100%; max-width:420px; border-radius:14px; padding:20px; }
   .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
+  .table-wrap{ width:100%; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:10px; }
+  .pricing-table{ width:100%; min-width:960px; border-collapse:collapse; font-size:13px; }
+  .pricing-table th, .pricing-table td{ text-align:left; padding:8px; border-bottom:1px solid var(--paper-dim); vertical-align:top; }
+  .pricing-table th{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); background:var(--paper-dim); white-space:nowrap; }
+  .pricing-table td.nowrap{ white-space:nowrap; }
+  .pricing-table td.actions{ white-space:nowrap; }
+  .pricing-table .price-in{ width:120px; padding:6px; border:1.5px solid var(--line); border-radius:6px; font-size:13px; }
+  .sp-totals{ display:flex; gap:10px; flex-wrap:wrap; margin:12px 0; }
+  .sp-totals div{ background:var(--paper-dim); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--ink-soft); }
+  .sp-totals strong{ display:block; color:var(--ink); font-size:14px; }
+  .sub{ color:var(--ink-soft); font-size:11px; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -83,6 +94,7 @@
       <div class="tab" data-panel="flags">Feature Flags</div>
       <div class="tab" data-panel="reset">Reset Daily Values</div>
       <div class="tab" data-panel="cutover">Ledger Cutover</div>
+      <div class="tab" data-panel="sp-pricing">Spare Parts · Pricing &amp; Profit</div>
     </div>
 
     <!-- USERS -->
@@ -484,6 +496,45 @@
             <button class="btn-danger" id="cutoverActivateBtn">Activate cutover</button>
           </div>
           <div class="msg" id="cutoverActivateMsg"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SPARE PARTS · PRICING & PROFIT (Super Administrator only) -->
+    <div class="panel" id="panel-sp-pricing">
+      <div class="card">
+        <h2>Spare Parts — Pricing &amp; Profit</h2>
+        <p class="small">
+          Buying and selling prices drive profit, margin, stock valuation and expected sales. Profit per unit is
+          Selling − Buying; margin is Profit ÷ Selling × 100. Every price change is kept in the audit log and shown
+          under History. Only Super Administrators can see or change these figures.
+        </p>
+        <div class="row">
+          <input id="spPricingSearch" placeholder="Search name, specification, machine or code" autocomplete="off">
+          <label class="small"><input type="checkbox" id="spPricingInactive"> Include inactive</label>
+        </div>
+        <div class="sp-totals" id="spPricingTotals"></div>
+        <div class="table-wrap">
+          <table class="pricing-table">
+            <thead>
+              <tr>
+                <th>Spare part</th><th>Stock</th><th>Buying (UGX)</th><th>Selling (UGX)</th>
+                <th>Profit / unit</th><th>Margin</th><th>Stock value (buying)</th>
+                <th>Expected sales</th><th>Expected gross profit</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="spPricingBody"></tbody>
+          </table>
+        </div>
+        <div class="msg" id="spPricingMsg"></div>
+      </div>
+      <div class="card hidden" id="spHistoryCard">
+        <h3>Price history — <span id="spHistoryName"></span></h3>
+        <div class="table-wrap">
+          <table class="pricing-table">
+            <thead><tr><th>When</th><th>Changed by</th><th>Buying (UGX)</th><th>Selling (UGX)</th></tr></thead>
+            <tbody id="spHistoryBody"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1502,6 +1553,85 @@ document.getElementById('cutoverActivateBtn').addEventListener('click', async ()
   await loadCutovers();
 });
 
+// ---------- spare parts pricing & profit ----------
+function fmtUGX(value){
+  if(value == null || value === '') return '—';
+  return 'UGX ' + Number(value).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 2});
+}
+function fmtPct(value){
+  return value == null ? '—' : Number(value).toFixed(2) + '%';
+}
+
+let spPricingTimer = null;
+async function loadSparePricing(){
+  const params = new URLSearchParams();
+  const q = document.getElementById('spPricingSearch').value.trim();
+  if(q) params.set('q', q);
+  if(document.getElementById('spPricingInactive').checked) params.set('include_inactive', '1');
+  const {status, data} = await api('/api/admin/spare-parts/pricing?' + params.toString());
+  if(status !== 200){ document.getElementById('spPricingMsg').textContent = data.error || 'Could not load pricing.'; return; }
+  const t = data.totals;
+  document.getElementById('spPricingTotals').innerHTML = `
+    <div>Stock value (buying)<strong>${fmtUGX(t.stock_value_at_buying)}</strong></div>
+    <div>Expected sales<strong>${fmtUGX(t.expected_sales_value)}</strong></div>
+    <div>Expected gross profit<strong>${fmtUGX(t.expected_gross_profit)}</strong></div>
+    <div>Priced / unpriced<strong>${t.priced_count} / ${t.unpriced_count}</strong></div>`;
+  document.getElementById('spPricingBody').innerHTML = data.rows.map(r => `
+    <tr data-id="${r.id}">
+      <td><strong>${escapeHtml(r.name)}</strong><div class="sub">${escapeHtml(r.specifications || '')}</div></td>
+      <td class="nowrap">${escapeHtml(r.current_stock)} ${escapeHtml(r.unit)}</td>
+      <td><input class="price-in" type="number" step="any" min="0" inputmode="decimal" data-field="buying_price" value="${escapeHtml(r.buying_price ?? '')}"></td>
+      <td><input class="price-in" type="number" step="any" min="0" inputmode="decimal" data-field="selling_price" value="${escapeHtml(r.selling_price ?? '')}"></td>
+      <td class="nowrap">${fmtUGX(r.profit_per_unit)}</td>
+      <td class="nowrap">${fmtPct(r.margin_percent)}</td>
+      <td class="nowrap">${fmtUGX(r.stock_value_at_buying)}</td>
+      <td class="nowrap">${fmtUGX(r.expected_sales_value)}</td>
+      <td class="nowrap">${fmtUGX(r.expected_gross_profit)}</td>
+      <td class="actions">
+        <button class="btn-primary" data-sp-save="${r.id}">Save</button>
+        <button data-sp-history="${r.id}" data-sp-name="${escapeHtml(r.name)}">History</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="10" class="small">No spare parts match.</td></tr>';
+}
+
+document.getElementById('spPricingBody').addEventListener('click', async (event)=>{
+  const save = event.target.closest('[data-sp-save]');
+  const history = event.target.closest('[data-sp-history]');
+  if(save){
+    const row = save.closest('tr');
+    const body = {
+      buying_price: row.querySelector('[data-field="buying_price"]').value || null,
+      selling_price: row.querySelector('[data-field="selling_price"]').value || null,
+    };
+    const msg = document.getElementById('spPricingMsg');
+    const {status, data} = await api(`/api/admin/spare-parts/pricing/${save.dataset.spSave}`, {method:'PATCH', body: JSON.stringify(body)});
+    if(status === 200){ msg.textContent = 'Prices saved.'; msg.className = 'msg ok'; await loadSparePricing(); }
+    else { msg.textContent = data.error || 'Could not save prices.'; msg.className = 'msg err'; }
+  }
+  if(history){ await openPriceHistory(history.dataset.spHistory, history.dataset.spName); }
+});
+
+async function openPriceHistory(id, name){
+  const {status, data} = await api(`/api/admin/spare-parts/pricing/${id}/history`);
+  document.getElementById('spHistoryName').textContent = name;
+  document.getElementById('spHistoryBody').innerHTML = status === 200 && data.length
+    ? data.map(h => `
+      <tr>
+        <td class="nowrap">${escapeHtml((h.created_at || '').replace('T', ' ').slice(0, 16))}</td>
+        <td>${escapeHtml(h.username || '—')}</td>
+        <td class="nowrap">${fmtUGX(h.before && h.before.buying_price)} → ${fmtUGX(h.after && h.after.buying_price)}</td>
+        <td class="nowrap">${fmtUGX(h.before && h.before.selling_price)} → ${fmtUGX(h.after && h.after.selling_price)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="small">No price changes recorded yet.</td></tr>';
+  document.getElementById('spHistoryCard').classList.remove('hidden');
+}
+
+document.getElementById('spPricingSearch').addEventListener('input', ()=>{
+  clearTimeout(spPricingTimer);
+  spPricingTimer = setTimeout(loadSparePricing, 200);
+});
+document.getElementById('spPricingInactive').addEventListener('change', loadSparePricing);
+
 // ---------- boot ----------
 (async function init(){
   const {data} = await api('/api/session');
@@ -1515,7 +1645,7 @@ document.getElementById('cutoverActivateBtn').addEventListener('click', async ()
   await loadSalesCategoriesAdmin();
   await Promise.all([
     loadUsers(), loadProducts(), loadCustomers(), loadFlags(), loadReviewQueue(),
-    loadCompanySettings(), loadFeatureFlagsAdmin(), loadCutovers(),
+    loadCompanySettings(), loadFeatureFlagsAdmin(), loadCutovers(), loadSparePricing(),
   ]);
   populateResetProductSelect();
 })();

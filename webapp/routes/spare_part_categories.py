@@ -1,4 +1,7 @@
+import logging
+
 from flask import Blueprint, jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
@@ -8,6 +11,8 @@ from webapp.services import spare_part_service as svc
 from webapp.services.audit_service import record_audit
 
 spare_part_categories_bp = Blueprint("spare_part_categories", __name__, url_prefix="/api/spare-parts/categories")
+
+logger = logging.getLogger(__name__)
 
 
 @spare_part_categories_bp.route("", methods=["GET"])
@@ -50,3 +55,19 @@ def update_category(category_id):
     record_audit(current_user(), "update", "spare_part_category", entity_id=category.id, before=before, after=category.to_dict())
     db.session.commit()
     return jsonify(category.to_dict())
+
+
+@spare_part_categories_bp.route("/<int:category_id>", methods=["DELETE"])
+@roles_required(ROLE_SUPER_ADMIN)
+def delete_category(category_id):
+    category = db.session.get(SparePartCategory, category_id)
+    if category is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        removed = svc.permanently_delete_category(category, current_user())
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("permanent delete of category %s failed", category_id)
+        return jsonify({"error": "Delete failed. Nothing was removed; please try again."}), 500
+    return jsonify({"ok": True, "removed": removed})

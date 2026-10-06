@@ -9,22 +9,29 @@ def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def profit_and_margin(buying, selling):
+    """
+    The single profit/margin convention for the whole app: Profit = Selling
+    - Buying; Margin % = Profit / Selling * 100. Returns (None, None) when
+    either price is missing, and a None margin when selling is zero — never
+    fabricates a result from insufficient data.
+    """
+    if buying is None or selling is None:
+        return None, None
+    profit = selling - buying
+    margin = (profit / selling) * 100 if selling != 0 else None
+    return profit, margin
+
+
 def pricing_dict(spare_part):
     """
-    Profit = Selling - Buying; Margin % = Profit / Selling * 100. Returns
-    None for profit/margin whenever either price is missing or selling
-    price is zero — never fabricates a result from insufficient data.
-    Callers MUST gate this behind a Manager/Super Admin check before
-    including it in any response (see webapp/routes/spare_parts.py).
+    String-serialized pricing for API responses. Callers MUST gate this
+    behind a Super Admin check before including it in any response (see
+    webapp/routes/spare_parts.py's _may_see_pricing()).
     """
     buying = spare_part.buying_price
     selling = spare_part.selling_price
-    profit = None
-    margin = None
-    if buying is not None and selling is not None:
-        profit = selling - buying
-        if selling != 0:
-            margin = (profit / selling) * 100
+    profit, margin = profit_and_margin(buying, selling)
     return {
         "buying_price": str(buying) if buying is not None else None,
         "selling_price": str(selling) if selling is not None else None,
