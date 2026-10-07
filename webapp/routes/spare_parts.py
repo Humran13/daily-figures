@@ -21,7 +21,10 @@ spare_parts_bp = Blueprint("spare_parts", __name__, url_prefix="/api/spare-parts
 # write them either — ongoing pricing is managed from Admin > Spare Parts >
 # Pricing & Profit (see webapp/routes/admin_spare_pricing.py).
 PRICING_ROLES = (ROLE_SUPER_ADMIN,)
-PRICE_FIELDS = ("buying_price", "selling_price")
+PRICE_FIELDS = (
+    "buying_price", "china_buying_price", "local_buying_price",
+    "selling_price", "preferred_cost_source",
+)
 
 
 def _may_see_pricing():
@@ -41,15 +44,20 @@ def _parse_decimal(value, field):
     if value in (None, ""):
         return None
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except InvalidOperation:
         raise svc.SparePartError(f"{field} must be a number") from None
+    if not parsed.is_finite():
+        raise svc.SparePartError(f"{field} must be a finite number")
+    if parsed < 0:
+        raise svc.SparePartError(f"{field} cannot be negative")
+    return parsed
 
 
 def _pricing_forbidden_response(payload):
     """Returns a 403 response when a non-Super-Admin tries to send any price field."""
     if any(field in payload for field in PRICE_FIELDS) and not _may_see_pricing():
-        return jsonify({"error": "Only a Super Administrator can set buying or selling prices."}), 403
+        return jsonify({"error": "Only a Super Administrator can set spare-part pricing."}), 403
     return None
 
 
@@ -91,6 +99,8 @@ def create_spare_part():
     try:
         minimum_stock = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
         buying_price = _parse_decimal(d.get("buying_price"), "buying_price")
+        china_buying_price = _parse_decimal(d.get("china_buying_price"), "china_buying_price")
+        local_buying_price = _parse_decimal(d.get("local_buying_price"), "local_buying_price")
         selling_price = _parse_decimal(d.get("selling_price"), "selling_price")
 
         if not d.get("confirm_duplicate"):
@@ -104,7 +114,10 @@ def create_spare_part():
             name=d.get("name"), model=d.get("model"), size=d.get("size"),
             specifications=d.get("specifications"), category_id=d.get("category_id"),
             unit=d.get("unit") or "pcs", minimum_stock=minimum_stock,
-            buying_price=buying_price, selling_price=selling_price,
+            buying_price=buying_price, china_buying_price=china_buying_price,
+            local_buying_price=local_buying_price,
+            preferred_cost_source=d.get("preferred_cost_source") or None,
+            selling_price=selling_price,
             location=d.get("location"), notes=d.get("notes"),
             machine_ids=d.get("machine_ids"),
         )
@@ -128,21 +141,24 @@ def update_spare_part(spare_part_id):
     if forbidden:
         return forbidden
     before = spare_part.to_dict(include_pricing=True)
-    before_buying, before_selling = spare_part.buying_price, spare_part.selling_price
+    before_pricing = svc.pricing_snapshot(spare_part)
     try:
         if "minimum_stock" in d:
             d["minimum_stock"] = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
         if "buying_price" in d:
             d["buying_price"] = _parse_decimal(d.get("buying_price"), "buying_price")
-        if "selling_price" in d:
-            d["selling_price"] = _parse_decimal(d.get("selling_price"), "selling_price")
+        for field in ("china_buying_price", "local_buying_price", "selling_price"):
+            if field in d:
+                d[field] = _parse_decimal(d.get(field), field)
+        if "preferred_cost_source" in d:
+            d["preferred_cost_source"] = d.get("preferred_cost_source") or None
         svc.update_spare_part(spare_part, d, machine_ids=d.get("machine_ids"))
     except svc.SparePartError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     record_audit(current_user(), "update", "spare_part", entity_id=spare_part.id, before=before,
                  after=spare_part.to_dict(include_pricing=True))
-    svc.record_price_change(spare_part, before_buying, before_selling, current_user())
+    svc.record_price_change(spare_part, before_pricing, current_user())
     db.session.commit()
     return jsonify(_to_dict(spare_part))
 

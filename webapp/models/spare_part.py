@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from webapp.extensions import db
 
 UNITS = ["pcs", "rolls", "metres", "sets", "litres", "other"]
+COST_SOURCE_CHINA = "china"
+COST_SOURCE_LOCAL = "local_uganda"
+COST_SOURCES = (COST_SOURCE_CHINA, COST_SOURCE_LOCAL)
 
 
 def _utcnow():
@@ -23,17 +26,35 @@ def profit_and_margin(buying, selling):
     return profit, margin
 
 
+def current_cost(spare_part):
+    """Return the explicitly selected source cost.
+
+    ``buying_price`` is retained as a read-compatible legacy fallback for
+    records migrated from the former single-price model.  It is deliberately
+    not copied into either source column because its origin is unknowable.
+    """
+    if spare_part.preferred_cost_source == COST_SOURCE_CHINA:
+        return spare_part.china_buying_price
+    if spare_part.preferred_cost_source == COST_SOURCE_LOCAL:
+        return spare_part.local_buying_price
+    return spare_part.buying_price
+
+
 def pricing_dict(spare_part):
     """
     String-serialized pricing for API responses. Callers MUST gate this
     behind a Super Admin check before including it in any response (see
     webapp/routes/spare_parts.py's _may_see_pricing()).
     """
-    buying = spare_part.buying_price
+    buying = current_cost(spare_part)
     selling = spare_part.selling_price
     profit, margin = profit_and_margin(buying, selling)
     return {
         "buying_price": str(buying) if buying is not None else None,
+        "china_buying_price": str(spare_part.china_buying_price) if spare_part.china_buying_price is not None else None,
+        "local_buying_price": str(spare_part.local_buying_price) if spare_part.local_buying_price is not None else None,
+        "preferred_cost_source": spare_part.preferred_cost_source,
+        "current_cost_price": str(buying) if buying is not None else None,
         "selling_price": str(selling) if selling is not None else None,
         "profit": str(profit) if profit is not None else None,
         "margin_percent": str(margin) if margin is not None else None,
@@ -66,9 +87,12 @@ class SparePart(db.Model):
     minimum_stock = db.Column(db.Numeric(12, 3), nullable=True)
     location = db.Column(db.String(120), nullable=True)
     notes = db.Column(db.Text, nullable=True)
-    # Commercial fields — restricted to Manager/Super Admin at the route
+    # Commercial fields — restricted to Super Admin at the route
     # layer (webapp/routes/spare_parts.py's _to_dict()); never float.
     buying_price = db.Column(db.Numeric(12, 2), nullable=True)
+    china_buying_price = db.Column(db.Numeric(12, 2), nullable=True)
+    local_buying_price = db.Column(db.Numeric(12, 2), nullable=True)
+    preferred_cost_source = db.Column(db.String(20), nullable=True)
     selling_price = db.Column(db.Numeric(12, 2), nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True, index=True)
     current_stock_cache = db.Column(db.Numeric(12, 3), nullable=False, default=0)

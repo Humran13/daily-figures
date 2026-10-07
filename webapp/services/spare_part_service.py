@@ -13,7 +13,11 @@ from webapp.extensions import db
 from webapp.models.audit_log import AuditLog
 from webapp.models.machine import Machine, MachineAlias
 from webapp.models.operational_department import SparePartDepartment
-from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSupplier, UNITS, profit_and_margin
+from webapp.models.spare_part import (
+    COST_SOURCE_CHINA, COST_SOURCE_LOCAL, COST_SOURCES, SparePart,
+    SparePartMachine, SparePartSupplier, UNITS, current_cost,
+    profit_and_margin,
+)
 from webapp.models.spare_part_category import SparePartCategory
 from webapp.models.spare_part_import_row import SparePartImportRow
 from webapp.models.spare_part_movement import SparePartMovement
@@ -161,7 +165,9 @@ def find_probable_duplicate(name, specifications=None, category_id=None, exclude
 
 
 def create_spare_part(*, name, model=None, size=None, specifications=None, category_id=None,
-                       unit="pcs", minimum_stock=None, buying_price=None, selling_price=None,
+                       unit="pcs", minimum_stock=None, buying_price=None,
+                       china_buying_price=None, local_buying_price=None,
+                       preferred_cost_source=None, selling_price=None,
                        location=None, notes=None, machine_ids=None):
     name = normalize_text(name)
     if not name:
@@ -175,11 +181,14 @@ def create_spare_part(*, name, model=None, size=None, specifications=None, categ
     spare_part = SparePart(
         name=name, model=normalize_text(model) or None, size=normalize_text(size) or None,
         specifications=specs, category_id=category_id,
-        unit=unit or "pcs", minimum_stock=minimum_stock, buying_price=buying_price, selling_price=selling_price,
+        unit=unit or "pcs", minimum_stock=minimum_stock, buying_price=buying_price,
+        china_buying_price=china_buying_price, local_buying_price=local_buying_price,
+        preferred_cost_source=preferred_cost_source, selling_price=selling_price,
         location=normalize_text(location) or None,
         notes=notes, active=True, current_stock_cache=0,
     )
     db.session.add(spare_part)
+    validate_pricing(spare_part)
     db.session.flush()
     _assign_code(spare_part)
 
@@ -215,7 +224,21 @@ def update_spare_part(spare_part, changes, machine_ids=None):
     if "minimum_stock" in changes:
         spare_part.minimum_stock = changes["minimum_stock"]
     if "buying_price" in changes:
-        spare_part.buying_price = changes["buying_price"]
+        # Backward-compatible API: once a source is selected, an old client
+        # editing buying_price edits that selected source rather than a hidden
+        # legacy fallback.
+        if spare_part.preferred_cost_source == COST_SOURCE_CHINA:
+            spare_part.china_buying_price = changes["buying_price"]
+        elif spare_part.preferred_cost_source == COST_SOURCE_LOCAL:
+            spare_part.local_buying_price = changes["buying_price"]
+        else:
+            spare_part.buying_price = changes["buying_price"]
+    if "china_buying_price" in changes:
+        spare_part.china_buying_price = changes["china_buying_price"]
+    if "local_buying_price" in changes:
+        spare_part.local_buying_price = changes["local_buying_price"]
+    if "preferred_cost_source" in changes:
+        spare_part.preferred_cost_source = changes["preferred_cost_source"]
     if "selling_price" in changes:
         spare_part.selling_price = changes["selling_price"]
     if "location" in changes:
@@ -224,6 +247,8 @@ def update_spare_part(spare_part, changes, machine_ids=None):
         spare_part.notes = changes["notes"]
     if "active" in changes:
         spare_part.active = bool(changes["active"])
+
+    validate_pricing(spare_part)
 
     if machine_ids is not None:
         for m_id in machine_ids:
@@ -359,6 +384,35 @@ def search_spare_parts(query=None, *, include_inactive=False, category_id=None):
 
 # ---------- financial figures (Super Admin only; see admin_spare_pricing routes) ----------
 
+def _usable_price(value):
+    return value is not None and value > 0
+
+
+def validate_pricing(spare_part):
+    for field in ("buying_price", "china_buying_price", "local_buying_price", "selling_price"):
+        value = getattr(spare_part, field)
+        if value is not None and value < 0:
+            raise SparePartError(f"{field} cannot be negative")
+    source = spare_part.preferred_cost_source
+    if source is not None and source not in COST_SOURCES:
+        raise SparePartError("preferred_cost_source must be 'china' or 'local_uganda'")
+    if source == COST_SOURCE_CHINA and not _usable_price(spare_part.china_buying_price):
+        raise SparePartError("China Buying Price must be greater than zero before China can be the preferred source")
+    if source == COST_SOURCE_LOCAL and not _usable_price(spare_part.local_buying_price):
+        raise SparePartError("Local Uganda Buying Price must be greater than zero before Local Uganda can be the preferred source")
+
+
+def pricing_snapshot(spare_part):
+    return {
+        "china_buying_price": spare_part.china_buying_price,
+        "local_buying_price": spare_part.local_buying_price,
+        "selling_price": spare_part.selling_price,
+        "preferred_cost_source": spare_part.preferred_cost_source,
+        # Kept only so changes through legacy API clients remain audited.
+        "buying_price": spare_part.buying_price,
+    }
+
+
 def pricing_summary(spare_part, stock):
     """
     Pricing & Profit figures for one spare part at a given stock quantity
@@ -366,44 +420,56 @@ def pricing_summary(spare_part, stock):
     missing price is None rather than guessed. Margin follows
     profit_and_margin()'s convention (Profit / Selling * 100).
     """
-    buying = spare_part.buying_price
+    buying = current_cost(spare_part)
+    china = spare_part.china_buying_price if _usable_price(spare_part.china_buying_price) else None
+    local = spare_part.local_buying_price if _usable_price(spare_part.local_buying_price) else None
     selling = spare_part.selling_price
     profit, margin = profit_and_margin(buying, selling)
+    china_profit, _ = profit_and_margin(china, selling)
+    local_profit, _ = profit_and_margin(local, selling)
+    difference = abs(china - local) if china is not None and local is not None else None
+    cheaper = None
+    if difference is not None:
+        cheaper = "same" if difference == 0 else (COST_SOURCE_CHINA if china < local else COST_SOURCE_LOCAL)
 
     def money(value):
         return value.quantize(Decimal("0.01")) if value is not None else None
 
     return {
         "buying_price": money(buying),
+        "china_buying_price": money(spare_part.china_buying_price),
+        "local_buying_price": money(spare_part.local_buying_price),
+        "preferred_cost_source": spare_part.preferred_cost_source,
+        "current_cost_source": spare_part.preferred_cost_source or ("legacy" if spare_part.buying_price is not None else None),
+        "current_cost_price": money(buying),
         "selling_price": money(selling),
         "profit_per_unit": money(profit),
         "margin_percent": money(margin),
+        "china_profit_per_unit": money(china_profit),
+        "local_profit_per_unit": money(local_profit),
+        "buying_cost_difference": money(difference),
+        "cheaper_source": cheaper,
         "current_stock": stock.quantize(Decimal("0.001")),
         "stock_value_at_buying": money(stock * buying) if buying is not None else None,
+        "current_stock_value": money(stock * buying) if buying is not None else None,
         "expected_sales_value": money(stock * selling) if selling is not None else None,
         "expected_gross_profit": money(stock * profit) if profit is not None else None,
     }
 
 
-def record_price_change(spare_part, before_buying, before_selling, actor):
+def record_price_change(spare_part, before, actor):
     """
     Price history lives in the existing audit_log (action=price_change),
     not in a second logging table. Each row holds the previous and new
-    buying/selling prices, the actor and the timestamp. No-op when neither
-    price actually changed.
+    changed financial fields, the actor and the timestamp. Unchanged fields
+    are omitted, and an unchanged save creates no history row.
     """
-    after_buying = spare_part.buying_price
-    after_selling = spare_part.selling_price
-    if before_buying == after_buying and before_selling == after_selling:
+    after = pricing_snapshot(spare_part)
+    changed = [field for field in after if before.get(field) != after[field]]
+    if not changed:
         return None
-    before = {
-        "buying_price": str(before_buying) if before_buying is not None else None,
-        "selling_price": str(before_selling) if before_selling is not None else None,
-    }
-    after = {
-        "buying_price": str(after_buying) if after_buying is not None else None,
-        "selling_price": str(after_selling) if after_selling is not None else None,
-    }
+    before = {field: str(before[field]) if before[field] is not None else None for field in changed}
+    after = {field: str(after[field]) if after[field] is not None else None for field in changed}
     return record_audit(actor, PRICE_CHANGE_ACTION, "spare_part", entity_id=spare_part.id,
                         before=before, after=after)
 

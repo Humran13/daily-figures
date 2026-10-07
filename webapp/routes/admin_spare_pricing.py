@@ -14,7 +14,6 @@ from webapp.models.spare_part import SparePart
 from webapp.models.user import ROLE_SUPER_ADMIN
 from webapp.services import spare_part_movement_service as movement_svc
 from webapp.services import spare_part_service as svc
-from webapp.services.audit_service import record_audit
 
 admin_spare_pricing_bp = Blueprint(
     "admin_spare_pricing", __name__, url_prefix="/api/admin/spare-parts/pricing",
@@ -47,7 +46,7 @@ def _totals(rows):
     for key in TOTAL_KEYS:
         values = [Decimal(r[key]) for r in rows if r[key] is not None]
         totals[key] = str(sum(values, Decimal("0")).quantize(Decimal("0.01"))) if values else None
-    totals["priced_count"] = sum(1 for r in rows if r["buying_price"] is not None and r["selling_price"] is not None)
+    totals["priced_count"] = sum(1 for r in rows if r["current_cost_price"] is not None and r["selling_price"] is not None)
     totals["unpriced_count"] = len(rows) - totals["priced_count"]
     return totals
 
@@ -59,6 +58,8 @@ def _parse_price(value, field):
         price = Decimal(str(value))
     except InvalidOperation:
         raise svc.SparePartError(f"{field} must be a number") from None
+    if not price.is_finite():
+        raise svc.SparePartError(f"{field} must be a finite number")
     if price < 0:
         raise svc.SparePartError(f"{field} cannot be negative")
     return price
@@ -80,17 +81,20 @@ def update_pricing(spare_part_id):
     if spare_part is None:
         return jsonify({"error": "not found"}), 404
     d = request.get_json(force=True) or {}
-    before_buying, before_selling = spare_part.buying_price, spare_part.selling_price
+    before = svc.pricing_snapshot(spare_part)
     try:
-        if "buying_price" in d:
-            spare_part.buying_price = _parse_price(d.get("buying_price"), "buying_price")
-        if "selling_price" in d:
-            spare_part.selling_price = _parse_price(d.get("selling_price"), "selling_price")
+        changes = {}
+        for field in ("buying_price", "china_buying_price", "local_buying_price", "selling_price"):
+            if field in d:
+                changes[field] = _parse_price(d.get(field), field)
+        if "preferred_cost_source" in d:
+            changes["preferred_cost_source"] = d.get("preferred_cost_source") or None
+        svc.update_spare_part(spare_part, changes)
     except svc.SparePartError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     db.session.flush()
-    svc.record_price_change(spare_part, before_buying, before_selling, current_user())
+    svc.record_price_change(spare_part, before, current_user())
     db.session.commit()
     return jsonify(_row(spare_part))
 

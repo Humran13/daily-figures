@@ -39,6 +39,8 @@
   label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:4px; }
   .row{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
   .row > div{ flex:1; min-width:140px; }
+  .row2{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .row2 > div{ flex:1 1 180px; min-width:0; }
   button{ font-family:var(--sans); cursor:pointer; border:none; border-radius:8px; padding:9px 14px; font-weight:700; font-size:13px; }
   .btn-primary{ background:var(--teal); color:white; }
   .btn-ghost{ background:var(--paper-dim); color:var(--ink); }
@@ -56,12 +58,12 @@
   .modal-sheet{ background:var(--paper); width:100%; max-width:420px; border-radius:14px; padding:20px; }
   .modal-sheet h3{ margin:0 0 12px; font-size:16px; }
   .table-wrap{ width:100%; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:10px; }
-  .pricing-table{ width:100%; min-width:960px; border-collapse:collapse; font-size:13px; }
+  .pricing-table{ width:100%; min-width:1480px; border-collapse:collapse; font-size:13px; }
   .pricing-table th, .pricing-table td{ text-align:left; padding:8px; border-bottom:1px solid var(--paper-dim); vertical-align:top; }
   .pricing-table th{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); background:var(--paper-dim); white-space:nowrap; }
   .pricing-table td.nowrap{ white-space:nowrap; }
   .pricing-table td.actions{ white-space:nowrap; }
-  .pricing-table .price-in{ width:120px; padding:6px; border:1.5px solid var(--line); border-radius:6px; font-size:13px; }
+  .pricing-compare{ min-width:190px; line-height:1.55; }
   .sp-totals{ display:flex; gap:10px; flex-wrap:wrap; margin:12px 0; }
   .sp-totals div{ background:var(--paper-dim); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--ink-soft); }
   .sp-totals strong{ display:block; color:var(--ink); font-size:14px; }
@@ -505,9 +507,9 @@
       <div class="card">
         <h2>Spare Parts — Pricing &amp; Profit</h2>
         <p class="small">
-          Buying and selling prices drive profit, margin, stock valuation and expected sales. Profit per unit is
-          Selling − Buying; margin is Profit ÷ Selling × 100. Every price change is kept in the audit log and shown
-          under History. Only Super Administrators can see or change these figures.
+          Choose China or Local Uganda as the current cost source. That source drives profit, margin and stock
+          valuation; source prices are compared without averaging. Migrated records keep their former cost unchanged
+          until a source is explicitly selected. Every pricing change remains in the audit history.
         </p>
         <div class="row">
           <input id="spPricingSearch" placeholder="Search name, specification, machine or code" autocomplete="off">
@@ -518,9 +520,10 @@
           <table class="pricing-table">
             <thead>
               <tr>
-                <th>Spare part</th><th>Stock</th><th>Buying (UGX)</th><th>Selling (UGX)</th>
-                <th>Profit / unit</th><th>Margin</th><th>Stock value (buying)</th>
-                <th>Expected sales</th><th>Expected gross profit</th><th>Actions</th>
+                <th>Spare part / specification</th><th>China buying</th><th>Local Uganda buying</th>
+                <th>Selling</th><th>Preferred source</th><th>Current cost</th><th>Current stock</th>
+                <th>Current stock value</th><th>Profit / unit</th><th>Margin</th>
+                <th>Expected sales</th><th>Expected gross profit</th><th>Source comparison</th><th>Actions</th>
               </tr>
             </thead>
             <tbody id="spPricingBody"></tbody>
@@ -532,10 +535,26 @@
         <h3>Price history — <span id="spHistoryName"></span></h3>
         <div class="table-wrap">
           <table class="pricing-table">
-            <thead><tr><th>When</th><th>Changed by</th><th>Buying (UGX)</th><th>Selling (UGX)</th></tr></thead>
+            <thead><tr><th>When</th><th>Changed by</th><th>Field changed</th><th>Previous value</th><th>New value</th></tr></thead>
             <tbody id="spHistoryBody"></tbody>
           </table>
         </div>
+      </div>
+    </div>
+    <div class="modal-backdrop hidden" id="spPricingModal">
+      <div class="modal-sheet">
+        <h3>Edit pricing — <span id="spPricingEditName"></span></h3>
+        <div class="row2">
+          <div><label>China Buying Price (UGX)</label><input id="spChinaPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
+          <div><label>Local Uganda Buying Price (UGX)</label><input id="spLocalPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
+        </div>
+        <div class="row2">
+          <div><label>Selling Price (UGX)</label><input id="spSellingPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
+          <div><label>Preferred Cost Source</label><select id="spPreferredSource"></select></div>
+        </div>
+        <p class="small">A preferred source needs a price greater than zero. Zero or blank means that source is not yet usable.</p>
+        <div class="row"><button class="btn-primary" id="spPricingSave">Save pricing</button><button class="btn-ghost" id="spPricingCancel">Cancel</button></div>
+        <div class="msg" id="spPricingEditMsg"></div>
       </div>
     </div>
   </div>
@@ -1563,6 +1582,11 @@ function fmtPct(value){
 }
 
 let spPricingTimer = null;
+let spPricingRows = new Map();
+let spPricingEditingId = null;
+function sourceLabel(source){
+  return source === 'china' ? 'China' : source === 'local_uganda' ? 'Local Uganda' : source === 'same' ? 'Same cost' : source === 'legacy' ? 'Legacy current cost' : '—';
+}
 async function loadSparePricing(){
   const params = new URLSearchParams();
   const q = document.getElementById('spPricingSearch').value.trim();
@@ -1571,58 +1595,83 @@ async function loadSparePricing(){
   const {status, data} = await api('/api/admin/spare-parts/pricing?' + params.toString());
   if(status !== 200){ document.getElementById('spPricingMsg').textContent = data.error || 'Could not load pricing.'; return; }
   const t = data.totals;
+  spPricingRows = new Map(data.rows.map(r => [String(r.id), r]));
   document.getElementById('spPricingTotals').innerHTML = `
-    <div>Stock value (buying)<strong>${fmtUGX(t.stock_value_at_buying)}</strong></div>
+    <div>Current stock value<strong>${fmtUGX(t.stock_value_at_buying)}</strong></div>
     <div>Expected sales<strong>${fmtUGX(t.expected_sales_value)}</strong></div>
     <div>Expected gross profit<strong>${fmtUGX(t.expected_gross_profit)}</strong></div>
     <div>Priced / unpriced<strong>${t.priced_count} / ${t.unpriced_count}</strong></div>`;
   document.getElementById('spPricingBody').innerHTML = data.rows.map(r => `
     <tr data-id="${r.id}">
       <td><strong>${escapeHtml(r.name)}</strong><div class="sub">${escapeHtml(r.specifications || '')}</div></td>
+      <td class="nowrap">${fmtUGX(r.china_buying_price)}</td>
+      <td class="nowrap">${fmtUGX(r.local_buying_price)}</td>
+      <td class="nowrap">${fmtUGX(r.selling_price)}</td>
+      <td>${escapeHtml(sourceLabel(r.current_cost_source))}</td>
+      <td class="nowrap">${fmtUGX(r.current_cost_price)}</td>
       <td class="nowrap">${escapeHtml(r.current_stock)} ${escapeHtml(r.unit)}</td>
-      <td><input class="price-in" type="number" step="any" min="0" inputmode="decimal" data-field="buying_price" value="${escapeHtml(r.buying_price ?? '')}"></td>
-      <td><input class="price-in" type="number" step="any" min="0" inputmode="decimal" data-field="selling_price" value="${escapeHtml(r.selling_price ?? '')}"></td>
+      <td class="nowrap">${fmtUGX(r.current_stock_value)}</td>
       <td class="nowrap">${fmtUGX(r.profit_per_unit)}</td>
       <td class="nowrap">${fmtPct(r.margin_percent)}</td>
-      <td class="nowrap">${fmtUGX(r.stock_value_at_buying)}</td>
       <td class="nowrap">${fmtUGX(r.expected_sales_value)}</td>
       <td class="nowrap">${fmtUGX(r.expected_gross_profit)}</td>
+      <td class="pricing-compare">China profit: ${fmtUGX(r.china_profit_per_unit)}<br>Local profit: ${fmtUGX(r.local_profit_per_unit)}<br>Cost difference: ${fmtUGX(r.buying_cost_difference)}<br>Cheaper: ${escapeHtml(sourceLabel(r.cheaper_source))}</td>
       <td class="actions">
-        <button class="btn-primary" data-sp-save="${r.id}">Save</button>
+        <button class="btn-primary" data-sp-edit="${r.id}">Edit</button>
         <button data-sp-history="${r.id}" data-sp-name="${escapeHtml(r.name)}">History</button>
       </td>
-    </tr>`).join('') || '<tr><td colspan="10" class="small">No spare parts match.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="14" class="small">No spare parts match.</td></tr>';
 }
 
 document.getElementById('spPricingBody').addEventListener('click', async (event)=>{
-  const save = event.target.closest('[data-sp-save]');
+  const edit = event.target.closest('[data-sp-edit]');
   const history = event.target.closest('[data-sp-history]');
-  if(save){
-    const row = save.closest('tr');
-    const body = {
-      buying_price: row.querySelector('[data-field="buying_price"]').value || null,
-      selling_price: row.querySelector('[data-field="selling_price"]').value || null,
-    };
-    const msg = document.getElementById('spPricingMsg');
-    const {status, data} = await api(`/api/admin/spare-parts/pricing/${save.dataset.spSave}`, {method:'PATCH', body: JSON.stringify(body)});
-    if(status === 200){ msg.textContent = 'Prices saved.'; msg.className = 'msg ok'; await loadSparePricing(); }
-    else { msg.textContent = data.error || 'Could not save prices.'; msg.className = 'msg err'; }
-  }
+  if(edit) openPricingEditor(edit.dataset.spEdit);
   if(history){ await openPriceHistory(history.dataset.spHistory, history.dataset.spName); }
+});
+
+function openPricingEditor(id){
+  const r = spPricingRows.get(String(id));
+  if(!r) return;
+  spPricingEditingId = id;
+  document.getElementById('spPricingEditName').textContent = r.name;
+  document.getElementById('spChinaPrice').value = r.china_buying_price ?? '';
+  document.getElementById('spLocalPrice').value = r.local_buying_price ?? '';
+  document.getElementById('spSellingPrice').value = r.selling_price ?? '';
+  const select = document.getElementById('spPreferredSource');
+  const legacy = r.preferred_cost_source == null && r.current_cost_source === 'legacy';
+  select.innerHTML = `${legacy ? '<option value="">Legacy current cost (select a source to replace)</option>' : '<option value="">Select a source</option>'}<option value="china">China</option><option value="local_uganda">Local Uganda</option>`;
+  select.value = r.preferred_cost_source || '';
+  document.getElementById('spPricingEditMsg').textContent = '';
+  document.getElementById('spPricingModal').classList.remove('hidden');
+}
+document.getElementById('spPricingCancel').addEventListener('click', ()=>document.getElementById('spPricingModal').classList.add('hidden'));
+document.getElementById('spPricingSave').addEventListener('click', async ()=>{
+  const body = {
+    china_buying_price: document.getElementById('spChinaPrice').value || null,
+    local_buying_price: document.getElementById('spLocalPrice').value || null,
+    selling_price: document.getElementById('spSellingPrice').value || null,
+    preferred_cost_source: document.getElementById('spPreferredSource').value || null,
+  };
+  const msg = document.getElementById('spPricingEditMsg');
+  const {status, data} = await api(`/api/admin/spare-parts/pricing/${spPricingEditingId}`, {method:'PATCH', body:JSON.stringify(body)});
+  if(status !== 200){ msg.textContent = data.error || 'Could not save pricing.'; msg.className = 'msg err'; return; }
+  document.getElementById('spPricingModal').classList.add('hidden');
+  const pageMsg = document.getElementById('spPricingMsg');
+  pageMsg.textContent = 'Pricing saved.'; pageMsg.className = 'msg ok';
+  await loadSparePricing();
 });
 
 async function openPriceHistory(id, name){
   const {status, data} = await api(`/api/admin/spare-parts/pricing/${id}/history`);
   document.getElementById('spHistoryName').textContent = name;
   document.getElementById('spHistoryBody').innerHTML = status === 200 && data.length
-    ? data.map(h => `
-      <tr>
-        <td class="nowrap">${escapeHtml((h.created_at || '').replace('T', ' ').slice(0, 16))}</td>
-        <td>${escapeHtml(h.username || '—')}</td>
-        <td class="nowrap">${fmtUGX(h.before && h.before.buying_price)} → ${fmtUGX(h.after && h.after.buying_price)}</td>
-        <td class="nowrap">${fmtUGX(h.before && h.before.selling_price)} → ${fmtUGX(h.after && h.after.selling_price)}</td>
-      </tr>`).join('')
-    : '<tr><td colspan="4" class="small">No price changes recorded yet.</td></tr>';
+    ? data.flatMap(h => Object.keys(h.after || {}).map(field => `
+      <tr><td class="nowrap">${escapeHtml((h.created_at || '').replace('T', ' ').slice(0, 16))}</td>
+        <td>${escapeHtml(h.username || '—')}</td><td>${escapeHtml(field.replaceAll('_', ' '))}</td>
+        <td class="nowrap">${field === 'preferred_cost_source' ? escapeHtml(sourceLabel(h.before && h.before[field])) : fmtUGX(h.before && h.before[field])}</td>
+        <td class="nowrap">${field === 'preferred_cost_source' ? escapeHtml(sourceLabel(h.after && h.after[field])) : fmtUGX(h.after && h.after[field])}</td></tr>`)).join('')
+    : '<tr><td colspan="5" class="small">No price changes recorded yet.</td></tr>';
   document.getElementById('spHistoryCard').classList.remove('hidden');
 }
 
