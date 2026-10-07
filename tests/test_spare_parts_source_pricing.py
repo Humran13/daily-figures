@@ -1,4 +1,4 @@
-"""China/Local Uganda source pricing and safe legacy-cost migration."""
+"""China/Local source pricing and safe legacy-cost migration."""
 import sqlite3
 from decimal import Decimal
 
@@ -98,6 +98,17 @@ def test_invalid_source_pricing_is_rejected(client, make_user, payload):
     assert response.status_code == 400
 
 
+def test_local_validation_uses_the_display_label(client, make_user):
+    _login(client, make_user, username="local_validation_label_admin")
+    part = _part(client, name="Local Validation Label")
+    response = client.patch(f"/api/admin/spare-parts/pricing/{part['id']}", json={
+        "preferred_cost_source": "local_uganda",
+    })
+    assert response.status_code == 400
+    assert "Local Buying Price" in response.get_json()["error"]
+    assert "Local Uganda" not in response.get_json()["error"]
+
+
 def test_source_prices_and_source_changes_use_existing_audit_history(client, make_user):
     _login(client, make_user, username="source_history_admin")
     part = _part(client, name="History Part")
@@ -132,7 +143,7 @@ def test_admin_pricing_page_exposes_source_fields_and_comparison(client, make_us
     _login(client, make_user, username="source_page_admin")
     html = client.get("/admin.html").get_data(as_text=True)
     for label in (
-        "China Buying Price", "Local Uganda Buying Price", "Preferred Cost Source",
+        "China Buying Price", "Local Buying Price", "Preferred Cost Source",
         "Current cost", "Current stock value", "Source comparison",
     ):
         assert label in html

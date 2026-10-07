@@ -395,11 +395,11 @@ def validate_pricing(spare_part):
             raise SparePartError(f"{field} cannot be negative")
     source = spare_part.preferred_cost_source
     if source is not None and source not in COST_SOURCES:
-        raise SparePartError("preferred_cost_source must be 'china' or 'local_uganda'")
+        raise SparePartError("Preferred Cost Source must be China or Local")
     if source == COST_SOURCE_CHINA and not _usable_price(spare_part.china_buying_price):
         raise SparePartError("China Buying Price must be greater than zero before China can be the preferred source")
     if source == COST_SOURCE_LOCAL and not _usable_price(spare_part.local_buying_price):
-        raise SparePartError("Local Uganda Buying Price must be greater than zero before Local Uganda can be the preferred source")
+        raise SparePartError("Local Buying Price must be greater than zero before Local can be the preferred source")
 
 
 def pricing_snapshot(spare_part):

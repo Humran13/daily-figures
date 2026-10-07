@@ -507,7 +507,7 @@
       <div class="card">
         <h2>Spare Parts — Pricing &amp; Profit</h2>
         <p class="small">
-          Choose China or Local Uganda as the current cost source. That source drives profit, margin and stock
+          Choose China or Local as the current cost source. That source drives profit, margin and stock
           valuation; source prices are compared without averaging. Migrated records keep their former cost unchanged
           until a source is explicitly selected. Every pricing change remains in the audit history.
         </p>
@@ -520,7 +520,7 @@
           <table class="pricing-table">
             <thead>
               <tr>
-                <th>Spare part / specification</th><th>China buying</th><th>Local Uganda buying</th>
+                <th>Spare part / specification</th><th>China buying</th><th>Local buying</th>
                 <th>Selling</th><th>Preferred source</th><th>Current cost</th><th>Current stock</th>
                 <th>Current stock value</th><th>Profit / unit</th><th>Margin</th>
                 <th>Expected sales</th><th>Expected gross profit</th><th>Source comparison</th><th>Actions</th>
@@ -546,7 +546,7 @@
         <h3>Edit pricing — <span id="spPricingEditName"></span></h3>
         <div class="row2">
           <div><label>China Buying Price (UGX)</label><input id="spChinaPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
-          <div><label>Local Uganda Buying Price (UGX)</label><input id="spLocalPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
+          <div><label>Local Buying Price (UGX)</label><input id="spLocalPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
         </div>
         <div class="row2">
           <div><label>Selling Price (UGX)</label><input id="spSellingPrice" type="number" step="0.01" min="0" inputmode="decimal"></div>
@@ -1585,7 +1585,7 @@ let spPricingTimer = null;
 let spPricingRows = new Map();
 let spPricingEditingId = null;
 function sourceLabel(source){
-  return source === 'china' ? 'China' : source === 'local_uganda' ? 'Local Uganda' : source === 'same' ? 'Same cost' : source === 'legacy' ? 'Legacy current cost' : '—';
+  return source === 'china' ? 'China' : source === 'local_uganda' ? 'Local' : source === 'same' ? 'Same cost' : source === 'legacy' ? 'Legacy current cost' : '—';
 }
 async function loadSparePricing(){
   const params = new URLSearchParams();
@@ -1640,7 +1640,7 @@ function openPricingEditor(id){
   document.getElementById('spSellingPrice').value = r.selling_price ?? '';
   const select = document.getElementById('spPreferredSource');
   const legacy = r.preferred_cost_source == null && r.current_cost_source === 'legacy';
-  select.innerHTML = `${legacy ? '<option value="">Legacy current cost (select a source to replace)</option>' : '<option value="">Select a source</option>'}<option value="china">China</option><option value="local_uganda">Local Uganda</option>`;
+  select.innerHTML = `${legacy ? '<option value="">Legacy current cost (select a source to replace)</option>' : '<option value="">Select a source</option>'}<option value="china">China</option><option value="local_uganda">Local</option>`;
   select.value = r.preferred_cost_source || '';
   document.getElementById('spPricingEditMsg').textContent = '';
   document.getElementById('spPricingModal').classList.remove('hidden');
