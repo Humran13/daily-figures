@@ -110,8 +110,14 @@
         <select id="spUnit"><option>pcs</option><option>rolls</option><option>metres</option><option>sets</option><option>litres</option><option>other</option></select>
         <label>Minimum Stock (optional)</label><input type="number" step="any" inputmode="decimal" id="spMinStock">
         <div class="row2 super-only">
-          <div><label>Buying Price (optional)</label><input type="number" step="any" inputmode="decimal" id="spBuyingPrice"></div>
-          <div><label>Selling Price (optional)</label><input type="number" step="any" inputmode="decimal" id="spSellingPrice"></div>
+          <div><label>China Buying Price (UGX)</label><input type="number" step="0.01" min="0" inputmode="decimal" id="spChinaBuyingPrice"></div>
+          <div><label>Local Buying Price (UGX)</label><input type="number" step="0.01" min="0" inputmode="decimal" id="spLocalBuyingPrice"></div>
+        </div>
+        <div class="row2 super-only">
+          <div><label>Selling Price (UGX, optional)</label><input type="number" step="0.01" min="0" inputmode="decimal" id="spSellingPrice"></div>
+          <div><label>Preferred Cost Source (optional)</label>
+            <select id="spPreferredCostSource"><option value="">Not set</option><option value="china" disabled>China</option><option value="local_uganda" disabled>Local</option></select>
+          </div>
         </div>
         <button class="btn btn-primary" id="createSpareBtn">Create</button>
         <div class="msg" id="spareMsg"></div>
@@ -340,6 +346,19 @@ function categoryOptions(selectedId){
     .map(c => `<option value="${c.id}" ${c.id===selectedId?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
 }
 
+function costSourceOptions(selectedSource, usesLegacyCost){
+  const blankLabel = usesLegacyCost ? 'Legacy current cost (unchanged)' : 'Not set';
+  return `<option value="" ${selectedSource == null ? 'selected' : ''}>${blankLabel}</option>` +
+    `<option value="china" ${selectedSource === 'china' ? 'selected' : ''}>China</option>` +
+    `<option value="local_uganda" ${selectedSource === 'local_uganda' ? 'selected' : ''}>Local</option>`;
+}
+
+function syncCostSourceAvailability(chinaInput, localInput, sourceSelect){
+  if(!chinaInput || !localInput || !sourceSelect) return;
+  sourceSelect.querySelector('option[value="china"]').disabled = !(Number(chinaInput.value) > 0);
+  sourceSelect.querySelector('option[value="local_uganda"]').disabled = !(Number(localInput.value) > 0);
+}
+
 function editFields(kind, r){
   const text = (key, label, value) => `<label>${label}</label><input data-key="${key}" value="${escapeHtml(value ?? '')}">`;
   if(kind === 'spare'){
@@ -348,8 +367,10 @@ function editFields(kind, r){
       `<label>Category</label><select data-key="category_id">${categoryOptions(r.category_id)}</select>` +
       `<label>Unit</label><select data-key="unit">${unitOpts}</select>` +
       `<label>Minimum Stock</label><input data-key="minimum_stock" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.minimum_stock ?? '')}">` +
-      (isSuper ? `<div class="row2"><div><label>Buying Price</label><input data-key="buying_price" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.buying_price ?? '')}"></div>` +
-                 `<div><label>Selling Price</label><input data-key="selling_price" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.selling_price ?? '')}"></div></div>` : '');
+      (isSuper ? `<div class="row2"><div><label>China Buying Price (UGX)</label><input data-key="china_buying_price" type="number" step="0.01" min="0" inputmode="decimal" value="${escapeHtml(r.china_buying_price ?? '')}"></div>` +
+                 `<div><label>Local Buying Price (UGX)</label><input data-key="local_buying_price" type="number" step="0.01" min="0" inputmode="decimal" value="${escapeHtml(r.local_buying_price ?? '')}"></div></div>` +
+                 `<div class="row2"><div><label>Selling Price (UGX)</label><input data-key="selling_price" type="number" step="0.01" min="0" inputmode="decimal" value="${escapeHtml(r.selling_price ?? '')}"></div>` +
+                 `<div><label>Preferred Cost Source</label><select data-key="preferred_cost_source">${costSourceOptions(r.preferred_cost_source, r.preferred_cost_source == null && r.buying_price != null)}</select></div></div>` : '');
   }
   if(kind === 'category' || kind === 'department') return text('name','Name', r.name);
   if(kind === 'machine') return text('name','Name', r.name) +
@@ -366,6 +387,15 @@ function openEditModal(kind, id){
   editing = {kind, id};
   document.getElementById('editModalTitle').textContent = 'Edit ' + ENTITY[kind].label.toLowerCase();
   document.getElementById('editModalFields').innerHTML = editFields(kind, r);
+  if(kind === 'spare' && isSuper){
+    const china = document.querySelector('#editModalFields [data-key="china_buying_price"]');
+    const local = document.querySelector('#editModalFields [data-key="local_buying_price"]');
+    const source = document.querySelector('#editModalFields [data-key="preferred_cost_source"]');
+    const sync = () => syncCostSourceAvailability(china, local, source);
+    china.addEventListener('input', sync);
+    local.addEventListener('input', sync);
+    sync();
+  }
   document.getElementById('editModalMsg').textContent = '';
   document.getElementById('editModal').classList.remove('hidden');
 }
@@ -377,7 +407,7 @@ function collectEditPayload(){
     const key = el.dataset.key;
     let value = el.value;
     if(key === 'category_id' || key === 'department_id') value = value ? Number(value) : null;
-    else if(key === 'minimum_stock' || key === 'buying_price' || key === 'selling_price') value = value === '' ? null : value;
+    else if(key === 'minimum_stock' || key === 'china_buying_price' || key === 'local_buying_price' || key === 'selling_price') value = value === '' ? null : value;
     else value = value.trim() === '' ? null : value.trim();
     payload[key] = value;
   });
@@ -496,7 +526,11 @@ document.getElementById('createDepartmentBtn').addEventListener('click', async (
 function priceCell(p){
   if(p.buying_price === undefined) return '<span class="muted">Super Admin only</span>';
   const parts = [];
-  if(p.buying_price != null) parts.push('Buy: '+escapeHtml(p.buying_price));
+  if(p.china_buying_price != null) parts.push('China: '+escapeHtml(p.china_buying_price));
+  if(p.local_buying_price != null) parts.push('Local: '+escapeHtml(p.local_buying_price));
+  if(p.current_cost_price != null) parts.push('Current: '+escapeHtml(p.current_cost_price));
+  if(p.preferred_cost_source != null) parts.push('Source: '+(p.preferred_cost_source === 'china' ? 'China' : 'Local'));
+  else if(p.buying_price != null) parts.push('Source: Legacy');
   if(p.selling_price != null) parts.push('Sell: '+escapeHtml(p.selling_price));
   if(p.profit != null) parts.push('Profit: '+escapeHtml(p.profit));
   if(p.margin_percent != null) parts.push('Margin: '+Number(p.margin_percent).toFixed(1)+'%');
@@ -539,8 +573,10 @@ function newSparePayload(){
 async function createSpare(confirmDuplicate){
   const body = newSparePayload();
   if(isSuper){
-    body.buying_price = document.getElementById('spBuyingPrice').value || null;
+    body.china_buying_price = document.getElementById('spChinaBuyingPrice').value || null;
+    body.local_buying_price = document.getElementById('spLocalBuyingPrice').value || null;
     body.selling_price = document.getElementById('spSellingPrice').value || null;
+    body.preferred_cost_source = document.getElementById('spPreferredCostSource').value || null;
   }
   if(confirmDuplicate) body.confirm_duplicate = true;
   const {status, data} = await api('/api/spare-parts', {method:'POST', body: JSON.stringify(body)});
@@ -549,7 +585,8 @@ async function createSpare(confirmDuplicate){
   if(status === 201){
     warning.classList.add('hidden');
     setMsg('spareMsg', 'Spare part created.', true);
-    ['spName','spSpecifications','spMinStock','spBuyingPrice','spSellingPrice'].forEach(id => document.getElementById(id).value='');
+    ['spName','spSpecifications','spMinStock','spChinaBuyingPrice','spLocalBuyingPrice','spSellingPrice','spPreferredCostSource'].forEach(id => document.getElementById(id).value='');
+    syncNewSpareSource();
     refreshAll();
   } else if(status === 409 && data.error === 'possible_duplicate'){
     warning.innerHTML = `A similar spare part already exists: <strong>${escapeHtml(data.existing.name)}</strong>`+
@@ -563,6 +600,13 @@ async function createSpare(confirmDuplicate){
   }
 }
 document.getElementById('createSpareBtn').addEventListener('click', () => createSpare(false));
+const newChinaPrice = document.getElementById('spChinaBuyingPrice');
+const newLocalPrice = document.getElementById('spLocalBuyingPrice');
+const newPreferredSource = document.getElementById('spPreferredCostSource');
+const syncNewSpareSource = () => syncCostSourceAvailability(newChinaPrice, newLocalPrice, newPreferredSource);
+newChinaPrice.addEventListener('input', syncNewSpareSource);
+newLocalPrice.addEventListener('input', syncNewSpareSource);
+syncNewSpareSource();
 
 // ---------- machines ----------
 async function loadMachines(){

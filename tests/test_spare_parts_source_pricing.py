@@ -150,6 +150,123 @@ def test_admin_pricing_page_exposes_source_fields_and_comparison(client, make_us
     assert 'id="spPricingModal"' in html
 
 
+def test_master_create_saves_both_prices_and_syncs_admin_pricing(client, make_user):
+    _login(client, make_user, username="master_source_create_admin")
+    response = client.post("/api/spare-parts", json={
+        "name": "Master Source Part", "specifications": "Both prices", "unit": "pcs",
+        "china_buying_price": "85000", "local_buying_price": "120000",
+        "selling_price": "150000", "preferred_cost_source": "china",
+    })
+    assert response.status_code == 201, response.get_json()
+    created = response.get_json()
+    assert Decimal(created["china_buying_price"]) == Decimal("85000")
+    assert Decimal(created["local_buying_price"]) == Decimal("120000")
+    assert created["preferred_cost_source"] == "china"
+    assert Decimal(created["current_cost_price"]) == Decimal("85000")
+
+    rows = client.get("/api/admin/spare-parts/pricing", query_string={"q": "Master Source Part"}).get_json()["rows"]
+    assert len(rows) == 1
+    assert Decimal(rows[0]["china_buying_price"]) == Decimal("85000")
+    assert Decimal(rows[0]["local_buying_price"]) == Decimal("120000")
+    assert rows[0]["preferred_cost_source"] == "china"
+
+
+def test_master_partial_price_edits_preserve_the_other_source_and_audit(client, make_user):
+    _login(client, make_user, username="master_source_edit_admin")
+    part = client.post("/api/spare-parts", json={
+        "name": "Master Edit Part", "unit": "pcs", "china_buying_price": "85000",
+        "local_buying_price": "120000", "preferred_cost_source": "china",
+    }).get_json()
+
+    response = client.patch(f"/api/spare-parts/{part['id']}", json={"china_buying_price": "90000"})
+    assert response.status_code == 200, response.get_json()
+    edited = response.get_json()
+    assert Decimal(edited["china_buying_price"]) == Decimal("90000")
+    assert Decimal(edited["local_buying_price"]) == Decimal("120000")
+
+    response = client.patch(f"/api/spare-parts/{part['id']}", json={"local_buying_price": "125000"})
+    edited = response.get_json()
+    assert Decimal(edited["china_buying_price"]) == Decimal("90000")
+    assert Decimal(edited["local_buying_price"]) == Decimal("125000")
+
+    history = client.get(f"/api/admin/spare-parts/pricing/{part['id']}/history").get_json()
+    assert history[0]["before"] == {"local_buying_price": "120000.00"}
+    assert history[0]["after"] == {"local_buying_price": "125000"}
+    assert history[1]["before"] == {"china_buying_price": "85000.00"}
+    assert history[1]["after"] == {"china_buying_price": "90000"}
+
+
+def test_master_switches_source_without_changing_saved_prices(client, make_user):
+    _login(client, make_user, username="master_source_switch_admin")
+    part = client.post("/api/spare-parts", json={
+        "name": "Master Switch Part", "unit": "pcs", "china_buying_price": "90000",
+        "local_buying_price": "120000", "preferred_cost_source": "china",
+    }).get_json()
+    response = client.patch(f"/api/spare-parts/{part['id']}", json={
+        "preferred_cost_source": "local_uganda",
+    })
+    assert response.status_code == 200, response.get_json()
+    edited = response.get_json()
+    assert Decimal(edited["current_cost_price"]) == Decimal("120000")
+    assert Decimal(edited["china_buying_price"]) == Decimal("90000")
+    assert Decimal(edited["local_buying_price"]) == Decimal("120000")
+
+
+@pytest.mark.parametrize(("price_field", "source"), [
+    ("china_buying_price", "china"),
+    ("local_buying_price", "local_uganda"),
+])
+def test_master_create_accepts_only_one_known_source_price(client, make_user, price_field, source):
+    _login(client, make_user, username=f"master_one_source_{source}")
+    response = client.post("/api/spare-parts", json={
+        "name": f"Only {source}", "unit": "pcs", price_field: "85000",
+        "preferred_cost_source": source,
+    })
+    assert response.status_code == 201, response.get_json()
+    assert Decimal(response.get_json()[price_field]) == Decimal("85000")
+
+
+def test_master_rejects_unpriced_preferred_source(client, make_user):
+    _login(client, make_user, username="master_invalid_source_admin")
+    response = client.post("/api/spare-parts", json={
+        "name": "Invalid Preferred Source", "unit": "pcs", "china_buying_price": "85000",
+        "preferred_cost_source": "local_uganda",
+    })
+    assert response.status_code == 400
+    assert "Local Buying Price" in response.get_json()["error"]
+
+
+def test_master_source_prices_are_hidden_and_protected_for_manager(app, client, make_user):
+    owner = app.test_client()
+    _login(owner, make_user, username="master_price_owner")
+    part = owner.post("/api/spare-parts", json={
+        "name": "Protected Source Prices", "unit": "pcs", "china_buying_price": "10",
+        "local_buying_price": "12", "preferred_cost_source": "china",
+    }).get_json()
+
+    _login(client, make_user, username="master_price_manager", role="manager")
+    visible = client.get(f"/api/spare-parts/{part['id']}").get_json()
+    for field in ("china_buying_price", "local_buying_price", "preferred_cost_source", "current_cost_price"):
+        assert field not in visible
+    assert client.patch(f"/api/spare-parts/{part['id']}", json={
+        "local_buying_price": "15",
+    }).status_code == 403
+
+
+def test_master_page_uses_independent_source_price_fields(client, make_user):
+    _login(client, make_user, username="master_source_page_admin")
+    html = client.get("/spare-parts-master.html").get_data(as_text=True)
+    for text in ("China Buying Price", "Local Buying Price", "Preferred Cost Source"):
+        assert text in html
+    for field in ("china_buying_price", "local_buying_price", "preferred_cost_source"):
+        assert f'data-key="{field}"' in html
+    assert 'id="spChinaBuyingPrice"' in html
+    assert 'id="spLocalBuyingPrice"' in html
+    assert 'id="spPreferredCostSource"' in html
+    assert "Local Uganda" not in html
+    assert "spBuyingPrice" not in html
+
+
 def test_legacy_buying_price_remains_current_until_source_selected(app, client, make_user):
     _login(client, make_user, username="legacy_cost_admin")
     response = client.post("/api/spare-parts", json={
