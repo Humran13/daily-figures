@@ -18,6 +18,14 @@ password. It discovers the real site user from the exact CloudPanel vhost and
 owned `htdocs/<domain>` directory; it never constructs a username from the
 domain or reads CloudPanel's internal database.
 
+If `/opt/daily-figures` is already a Git checkout, the bootstrap checks for
+`scripts/daily-figures`, verifies that tracked files are unchanged, confirms
+the checkout is clean `main` from the expected repository, fetches
+`origin/main`, and permits only a fast-forward. It stops without changing the
+worktree if there are staged/unstaged tracked edits, local/divergent commits,
+an unexpected remote, or tracked production data. Ignored/untracked `.env`
+files, SQLite files, uploads, and backups are not removed or replaced.
+
 Interactive passwords must be at least 12 characters and use letters, numbers,
 or `._~!@%+=,:/-`. For another valid Compose-env representation, supply a
 carefully prepared `--env-file` in noninteractive mode.
@@ -154,10 +162,28 @@ does not prove restorability. See [Backup and restore](docs/BACKUP-RESTORE.md).
 
 ## Existing `/opt` installation migration
 
-Git updates never move storage. Prepare and run the dedicated cutover:
+First inspect any tracked changes, then run the bootstrap in explicit existing
+mode:
 
 ```bash
+git -C /opt/daily-figures status --short
 curl -fsSL https://raw.githubusercontent.com/Humran13/daily-figures/main/install.sh -o /tmp/daily-figures-install.sh && sudo bash /tmp/daily-figures-install.sh --mode existing
+```
+
+This supports an older checkout that does not yet contain
+`scripts/daily-figures`: the bootstrap safely fast-forwards the code and then
+passes `--mode existing` to the newly installed utility. It does not stop or
+restart the running production container and does not migrate storage. After it
+returns, the live legacy database is still:
+
+```text
+/opt/daily-figures/data/production.db
+```
+
+Review the printed source and destination. Only an administrator's separate,
+explicit command starts the storage cutover:
+
+```bash
 sudo daily-figures migrate-storage
 ```
 
