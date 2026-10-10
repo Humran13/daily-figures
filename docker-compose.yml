@@ -7,10 +7,13 @@ services:
       # Bound to localhost only — CloudPanel's reverse proxy talks to this
       # over 127.0.0.1; the Flask/Gunicorn port is never exposed publicly.
       # Do not change this to "5000:5000" (all-interfaces) in production.
-      - "127.0.0.1:5000:5000"
+      - "${DAILY_FIGURES_BIND_ADDRESS:-127.0.0.1}:${DAILY_FIGURES_PORT:-5000}:5000"
     env_file:
-      - .env    # copy .env.example -> .env and fill in real values first; .env is git-ignored
+      - ${DAILY_FIGURES_ENV_FILE:-.env}
     environment:
       - DB_PATH=/app/data/production.db
     volumes:
-      - ./data:/app/data          # persists the SQLite database (and its backups/) on the host
+      # This fallback is deliberately for local development. Production adds
+      # docker-compose.production.yml, where an explicit absolute path is
+      # mandatory and replaces this mount by container target.
+      - ${DAILY_FIGURES_DATA_DIR:-./data}:/app/data

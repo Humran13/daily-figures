@@ -1,0 +1,11 @@
+services:
+  daily-figures:
+    build:
+      context: .
+      args:
+        APP_UID: ${DAILY_FIGURES_UID:?CloudPanel site UID is required}
+        APP_GID: ${DAILY_FIGURES_GID:?CloudPanel site GID is required}
+    env_file:
+      - ${DAILY_FIGURES_ENV_FILE:?Private environment file is required}
+    volumes:
+      - ${DAILY_FIGURES_DATA_DIR:?Private persistent data directory is required}:/app/data

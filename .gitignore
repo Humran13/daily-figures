@@ -5,6 +5,15 @@ data/*.db
 data/*.db-journal
 data/backups/
 data/uploads/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sha256
+*.partial
+backups/
 .env
 .env.*
 !.env.example

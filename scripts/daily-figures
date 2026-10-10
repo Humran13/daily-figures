@@ -1,0 +1,830 @@
+#!/usr/bin/env bash
+# Daily Figures production management utility.
+set -Eeuo pipefail
+umask 077
+
+PROGRAM=${0##*/}
+STATE_FILE=${DF_STATE_FILE:-/etc/daily-figures/install.conf}
+LOCK_FILE=${DF_LOCK_FILE:-/run/lock/daily-figures.lock}
+RUNTIME_DIR=${DF_RUNTIME_DIR:-/var/lib/daily-figures}
+SYSTEMD_DIR=${DF_SYSTEMD_DIR:-/etc/systemd/system}
+HOME_ROOT=${DF_HOME_ROOT:-/home}
+NGINX_DIRS=${DF_NGINX_DIRS:-/etc/nginx/sites-enabled:/etc/nginx/sites-available}
+DEFAULT_CODE_DIR=${DF_CODE_DIR:-/opt/daily-figures}
+DEFAULT_COMPOSE_FILE=docker-compose.production.yml
+
+log() { printf '[daily-figures] %s\n' "$*"; }
+warn() { printf '[daily-figures] WARNING: %s\n' "$*" >&2; }
+fatal() { printf '[daily-figures] FATAL: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Usage: daily-figures COMMAND [OPTIONS]
+
+Commands:
+  install              Configure a fresh, existing, or recovery installation
+  update               Safely update code, image, and database schema
+  backup               Create and verify a consistent SQLite snapshot
+  restore              Restore a verified SQLite database (--from FILE)
+  migrate-storage      Move the legacy /opt data to CloudPanel private storage
+  post-restore         Validate restored files, migrate, and activate recovery
+  configure-backups    Change timer schedule/retention
+  backup-check         Check local CloudPanel backup prerequisites
+  status               Show installation and container status
+  start|stop|restart   Control the application
+  logs                 Follow application logs (use --no-follow for a snapshot)
+  health               Check the local health endpoint
+  doctor               Run deployment diagnostics
+  verify-db             Run SQLite integrity verification [FILE]
+
+Run 'daily-figures COMMAND --help' for command-specific options.
+EOF
+}
+
+need_root() {
+    if [[ ${DF_TEST_MODE:-0} != 1 && ${EUID:-$(id -u)} -ne 0 ]]; then
+        fatal "this command must run as root (use sudo)"
+    fi
+}
+
+valid_domain() {
+    [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+        && [[ $1 == *.* ]] && [[ $1 != *..* ]] && [[ $1 != -* ]] && [[ $1 != *.-* ]]
+}
+
+valid_port() { [[ $1 =~ ^[0-9]+$ ]] && ((1 <= 10#$1 && 10#$1 <= 65535)); }
+
+validate_schedule() {
+    [[ $1 != *$'\n'* && $1 != *$'\r'* ]] || fatal "backup schedule contains an invalid newline"
+    command -v systemd-analyze >/dev/null 2>&1 || fatal "systemd-analyze is required to validate the backup schedule"
+    systemd-analyze calendar "$1" >/dev/null 2>&1 || fatal "invalid systemd OnCalendar expression: $1"
+}
+
+require_command() { command -v "$1" >/dev/null 2>&1 || fatal "required command not found: $1"; }
+
+check_operating_system() {
+    [[ -r /etc/os-release ]] || fatal "cannot identify the operating system"
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    [[ ${ID:-} == ubuntu || ${ID:-} == debian ]] \
+        || fatal "production installer supports Ubuntu or Debian (found ${ID:-unknown})"
+    log "Operating system: ${PRETTY_NAME:-$ID}"
+}
+
+check_resources() {
+    local memory_kib available_kib path
+    memory_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+    [[ $memory_kib =~ ^[0-9]+$ ]] || fatal "cannot determine available memory"
+    ((memory_kib >= 524288)) || fatal "at least 512 MiB RAM is required"
+    for path in "$DEFAULT_CODE_DIR" "$SITE_HOME"; do
+        available_kib=$(df -Pk "$path" | awk 'NR==2 {print $4}')
+        [[ $available_kib =~ ^[0-9]+$ ]] || fatal "cannot determine free space for $path"
+        ((available_kib >= 1048576)) || fatal "at least 1 GiB free disk space is required on the filesystem containing $path"
+    done
+}
+
+install_prerequisites() {
+    local missing=() command_name
+    for command_name in git curl python3 flock openssl ss; do
+        command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
+    done
+    if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+        missing+=(docker)
+    fi
+    ((${#missing[@]} == 0)) && return
+    [[ -r /etc/os-release ]] || fatal "missing prerequisites (${missing[*]}) and unsupported OS"
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    [[ ${ID:-} == ubuntu || ${ID:-} == debian ]] || fatal "automatic prerequisite installation supports Ubuntu/Debian only"
+    log "Installing missing prerequisites: ${missing[*]}"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y git curl python3 util-linux openssl ca-certificates iproute2
+    if ! command -v docker >/dev/null 2>&1; then
+        apt-get install -y docker.io
+    fi
+    if ! docker compose version >/dev/null 2>&1; then
+        apt-get install -y docker-compose-v2 2>/dev/null || apt-get install -y docker-compose-plugin
+    fi
+    systemctl enable --now docker
+}
+
+find_vhost() {
+    local domain=$1 dir candidate file
+    IFS=: read -r -a search_dirs <<<"$NGINX_DIRS"
+    for dir in "${search_dirs[@]}"; do
+        for candidate in "$dir/$domain.conf" "$dir/$domain"; do
+            if [[ -f $candidate ]] && grep -Eq "(^|[[:space:]])server_name[[:space:]][^;]*${domain//./\\.}([[:space:];]|$)" "$candidate"; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done
+    done
+    for dir in "${search_dirs[@]}"; do
+        [[ -d $dir ]] || continue
+        while IFS= read -r -d '' file; do
+            if grep -Eq "(^|[[:space:]])server_name[[:space:]][^;]*${domain//./\\.}([[:space:];]|$)" "$file"; then
+                printf '%s\n' "$file"
+                return 0
+            fi
+        done < <(find "$dir" -maxdepth 1 -type f -print0 2>/dev/null)
+    done
+    return 1
+}
+
+discover_site() {
+    local domain=$1 port=$2 site_dir user home vhost
+    valid_domain "$domain" || fatal "invalid domain: $domain"
+    valid_port "$port" || fatal "invalid application port: $port"
+    vhost=$(find_vhost "$domain") || fatal "CloudPanel vhost not found for $domain. Create a Reverse Proxy site first."
+    grep -Eq 'proxy_pass|reverse_proxy' "$vhost" || fatal "$domain is not configured as a reverse proxy"
+    grep -Eq "(127\\.0\\.0\\.1|localhost):${port}([^0-9]|$)" "$vhost" \
+        || fatal "CloudPanel vhost does not point to localhost port $port"
+
+    mapfile -d '' -t site_dirs < <(find "$HOME_ROOT" -mindepth 3 -maxdepth 3 -type d -path "$HOME_ROOT/*/htdocs/$domain" -print0 2>/dev/null)
+    ((${#site_dirs[@]} == 1)) || fatal "expected exactly one owned htdocs directory for $domain; found ${#site_dirs[@]}"
+    site_dir=${site_dirs[0]}
+    if [[ ${DF_TEST_MODE:-0} == 1 && -n ${DF_TEST_SITE_USER:-} ]]; then
+        user=$DF_TEST_SITE_USER
+        home=${site_dir%/htdocs/"$domain"}
+    else
+        user=$(stat -c '%U' "$site_dir")
+        [[ $user != UNKNOWN && $user != root ]] || fatal "invalid site directory owner for $site_dir: $user"
+        home=$(getent passwd "$user" | cut -d: -f6)
+        [[ -n $home && $site_dir == "$home/htdocs/$domain" ]] \
+            || fatal "site directory owner/home validation failed for $site_dir"
+    fi
+    SITE_USER=$user
+    SITE_HOME=$home
+    VHOST_FILE=$vhost
+}
+
+write_state() {
+    local parent=${STATE_FILE%/*} temporary
+    mkdir -p "$parent" "$RUNTIME_DIR" "${LOCK_FILE%/*}"
+    temporary=$(mktemp "$parent/.install.conf.XXXXXX")
+    {
+        printf 'DOMAIN=%q\n' "$DOMAIN"
+        printf 'SITE_USER=%q\n' "$SITE_USER"
+        printf 'SITE_HOME=%q\n' "$SITE_HOME"
+        printf 'SITE_UID=%q\n' "$SITE_UID"
+        printf 'SITE_GID=%q\n' "$SITE_GID"
+        printf 'CODE_DIR=%q\n' "$CODE_DIR"
+        printf 'DATA_DIR=%q\n' "$DATA_DIR"
+        printf 'CONFIG_DIR=%q\n' "$CONFIG_DIR"
+        printf 'BACKUP_ROOT=%q\n' "$BACKUP_ROOT"
+        printf 'PORT=%q\n' "$PORT"
+        printf 'COMPOSE_FILE=%q\n' "$COMPOSE_FILE"
+        printf 'BACKUP_RETENTION=%q\n' "$BACKUP_RETENTION"
+        printf 'BACKUP_ON_CALENDAR=%q\n' "$BACKUP_ON_CALENDAR"
+    } >"$temporary"
+    chmod 600 "$temporary"
+    mv -f "$temporary" "$STATE_FILE"
+}
+
+load_state() {
+    [[ -f $STATE_FILE ]] || fatal "installation state not found at $STATE_FILE; run '$PROGRAM install' first"
+    if [[ ${DF_TEST_MODE:-0} != 1 ]]; then
+        [[ $(stat -c '%u' "$STATE_FILE") == 0 ]] || fatal "state file must be owned by root"
+        local mode
+        mode=$(stat -c '%a' "$STATE_FILE")
+        [[ $mode == 600 || $mode == 400 ]] || fatal "state file permissions must be 0600 or 0400 (found $mode)"
+    fi
+    # The file is root-owned, mode 0600, and written only by this utility.
+    # shellcheck disable=SC1090
+    . "$STATE_FILE"
+    : "${DOMAIN:?}" "${SITE_USER:?}" "${SITE_HOME:?}" "${SITE_UID:?}" "${SITE_GID:?}"
+    : "${CODE_DIR:?}" "${DATA_DIR:?}" "${CONFIG_DIR:?}" "${BACKUP_ROOT:?}" "${PORT:?}" "${COMPOSE_FILE:?}"
+    BACKUP_RETENTION=${BACKUP_RETENTION:-14}
+    BACKUP_ON_CALENDAR=${BACKUP_ON_CALENDAR:-'*-*-* 04:00:00'}
+    DATABASE=$DATA_DIR/production.db
+    ENV_FILE=$CONFIG_DIR/.env
+    DB_BACKUP_DIR=$BACKUP_ROOT/database-backups
+    MIGRATION_BACKUP_DIR=$BACKUP_ROOT/migration-backups
+    BACKUP_STAGING_DIR=$SITE_HOME/tmp/daily-figures-backup-staging
+    [[ $DATA_DIR == "$SITE_HOME/app-data/daily-figures" ]] || fatal "unsafe data path in state file: $DATA_DIR"
+    [[ $CONFIG_DIR == "$SITE_HOME/app-config/daily-figures" ]] || fatal "unsafe config path in state file: $CONFIG_DIR"
+    [[ $BACKUP_ROOT == "$SITE_HOME/app-backups/daily-figures" ]] || fatal "unsafe backup path in state file: $BACKUP_ROOT"
+    local managed_path
+    for managed_path in "$DATA_DIR" "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"; do
+        [[ ! -L $managed_path ]] || fatal "refusing symbolic-link deployment path: $managed_path"
+        if [[ -e $managed_path && $(readlink -f "$managed_path") != "$managed_path" ]]; then
+            fatal "deployment path resolves outside its configured location: $managed_path"
+        fi
+    done
+}
+
+set_compose_environment() {
+    export DAILY_FIGURES_DATA_DIR=$DATA_DIR
+    export DAILY_FIGURES_ENV_FILE=$ENV_FILE
+    export DAILY_FIGURES_PORT=$PORT
+    export DAILY_FIGURES_BIND_ADDRESS=127.0.0.1
+    export DAILY_FIGURES_UID=$SITE_UID
+    export DAILY_FIGURES_GID=$SITE_GID
+}
+
+dc() {
+    set_compose_environment
+    docker compose --project-directory "$CODE_DIR" \
+        -f "$CODE_DIR/docker-compose.yml" -f "$CODE_DIR/$COMPOSE_FILE" "$@"
+}
+
+acquire_lock() {
+    mkdir -p "${LOCK_FILE%/*}"
+    exec 9>"$LOCK_FILE"
+    if [[ -n ${INVOCATION_ID:-} ]]; then
+        flock -n 9 || fatal "another Daily Figures operation holds $LOCK_FILE; scheduled backup skipped"
+    else
+        flock -w 60 9 || fatal "another Daily Figures operation did not finish within 60 seconds"
+    fi
+}
+
+python_tool() { python3 "$CODE_DIR/scripts/sqlite_backup.py" "$@"; }
+verify_database() {
+    [[ ! -L $1 ]] || fatal "refusing symbolic-link database path: $1"
+    python_tool verify --database "$1"
+}
+
+create_backup_locked() {
+    [[ -f $DATABASE ]] || fatal "database is missing: $DATABASE"
+    mkdir -p "$DB_BACKUP_DIR"
+    python_tool create --source "$DATABASE" --destination "$DB_BACKUP_DIR" \
+        --temporary-directory "$BACKUP_STAGING_DIR" \
+        --prefix production --retention "$BACKUP_RETENTION"
+}
+
+check_env() {
+    [[ -f $ENV_FILE ]] || fatal "runtime configuration is missing: $ENV_FILE"
+    [[ $(stat -c '%a' "$ENV_FILE") == 600 ]] || fatal "$ENV_FILE must have permissions 0600"
+    grep -Eq '^SECRET_KEY=.+$' "$ENV_FILE" || fatal "SECRET_KEY is missing or empty in $ENV_FILE"
+}
+
+check_port_available() {
+    [[ ${DF_SKIP_PORT_CHECK:-0} == 1 ]] && return
+    if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :$PORT" | tail -n +2 | grep -q .; then
+        if docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -Eq "^daily_figures_app .*127\\.0\\.0\\.1:${PORT}->"; then
+            log "Port $PORT is already owned by the existing Daily Figures container."
+        else
+            fatal "port $PORT is occupied by an unrelated process; choose another port or reconfigure CloudPanel"
+        fi
+    fi
+}
+
+verify_mount() {
+    local mounted
+    mounted=$(docker inspect daily_figures_app --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
+    [[ -n $mounted ]] || fatal "running container has no /app/data bind mount"
+    [[ $(readlink -f "$mounted") == "$(readlink -f "$DATA_DIR")" ]] \
+        || fatal "wrong data mount: container uses $mounted, expected $DATA_DIR"
+}
+
+health_command() {
+    load_state
+    curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$PORT/api/health"
+    printf '\n'
+}
+
+install_systemd_units() {
+    cat >"$SYSTEMD_DIR/daily-figures-backup.service" <<EOF
+[Unit]
+Description=Verified Daily Figures SQLite snapshot
+After=local-fs.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/daily-figures backup
+UMask=0077
+EOF
+    cat >"$SYSTEMD_DIR/daily-figures-backup.timer" <<EOF
+[Unit]
+Description=Daily Figures database backup schedule
+
+[Timer]
+OnCalendar=$BACKUP_ON_CALENDAR
+Persistent=true
+RandomizedDelaySec=0
+Unit=daily-figures-backup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 644 "$SYSTEMD_DIR"/daily-figures-backup.{service,timer}
+    if [[ ${DF_TEST_MODE:-0} != 1 ]]; then
+        systemctl daemon-reload
+    fi
+}
+
+enable_backup_timer() {
+    [[ ${DF_TEST_MODE:-0} == 1 ]] || systemctl enable --now daily-figures-backup.timer
+}
+
+install_utility() {
+    [[ ${DF_TEST_MODE:-0} == 1 ]] && return
+    ln -sfn "$CODE_DIR/scripts/daily-figures" /usr/local/sbin/daily-figures
+    chmod 755 "$CODE_DIR/scripts/daily-figures" "$CODE_DIR/scripts/sqlite_backup.py" "$CODE_DIR/scripts/backup_db.sh"
+}
+
+prepare_directories() {
+    local path
+    for path in "$DATA_DIR" "$DATA_DIR/uploads" "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"; do
+        [[ ! -L $path ]] || fatal "refusing symbolic-link deployment path: $path"
+    done
+    mkdir -p "$DATA_DIR/uploads" "$CONFIG_DIR" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"
+    for path in "$DATA_DIR" "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"; do
+        [[ $(readlink -f "$path") == "$path" ]] || fatal "deployment path resolves outside its configured location: $path"
+    done
+    chown "$SITE_UID:$SITE_GID" "$DATA_DIR" "$DATA_DIR/uploads"
+    chmod 750 "$DATA_DIR" "$DATA_DIR/uploads"
+    chown root:root "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR"
+    chown root:root "$BACKUP_STAGING_DIR"
+    chmod 700 "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"
+}
+
+create_fresh_env() {
+    local source_file=$1 password secret
+    if [[ -f $ENV_FILE ]]; then
+        fatal "configuration already exists at $ENV_FILE; refusing to replace it in fresh mode"
+    fi
+    if [[ -n $source_file ]]; then
+        [[ -f $source_file ]] || fatal "environment source file not found: $source_file"
+        install -o root -g root -m 600 "$source_file" "$ENV_FILE"
+    else
+        [[ -t 0 ]] || fatal "fresh noninteractive install requires --env-file with SECRET_KEY and SUPERADMIN_PASSWORD"
+        secret=$(openssl rand -hex 32)
+        read -r -s -p 'Initial super-admin password: ' password
+        printf '\n'
+        ((${#password} >= 12)) || fatal "initial password must contain at least 12 characters"
+        [[ $password =~ ^[A-Za-z0-9._~!@%+=,:/-]+$ ]] \
+            || fatal "password contains characters unsafe for an environment file; use letters, numbers, or ._~!@%+=,:/-"
+        {
+            printf 'SECRET_KEY=%s\n' "$secret"
+            printf 'SUPERADMIN_USERNAME=admin\n'
+            printf 'SUPERADMIN_PASSWORD=%s\n' "$password"
+            printf 'VAPID_PUBLIC_KEY=\nVAPID_PRIVATE_KEY=\nVAPID_SUBJECT=mailto:admin@example.com\n'
+        } >"$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+    fi
+    check_env
+    grep -Eq '^SUPERADMIN_PASSWORD=.+$' "$ENV_FILE" \
+        || fatal "SUPERADMIN_PASSWORD is missing or empty in fresh-install environment file"
+}
+
+report_server_schedule() {
+    local timezone remote_lines
+    timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || date +%Z)
+    log "Server timezone: $timezone"
+    remote_lines=$(grep -RhsE 'clpctl.*(remote|backup)|backup.*remote' /etc/cron.d 2>/dev/null \
+        | awk '{print $1, $2, $3, $4, $5}' || true)
+    if [[ -n $remote_lines ]]; then
+        log "Possible CloudPanel cron schedules (command arguments intentionally redacted; review in CloudPanel):"
+        printf '%s\n' "$remote_lines"
+    else
+        warn "CloudPanel remote-backup time was not discoverable from supported/read-only schedule files. Confirm it in CloudPanel."
+    fi
+}
+
+install_command() {
+    need_root
+    local domain='' mode='' port='' noninteractive=0 env_source='' schedule='' retention=''
+    while (($#)); do
+        case $1 in
+            --domain) domain=${2:?}; shift 2 ;;
+            --mode) mode=${2:?}; shift 2 ;;
+            --port) port=${2:?}; shift 2 ;;
+            --env-file) env_source=${2:?}; shift 2 ;;
+            --backup-on-calendar) schedule=${2:?}; shift 2 ;;
+            --retention) retention=${2:?}; shift 2 ;;
+            --non-interactive) noninteractive=1; shift ;;
+            --help)
+                cat <<'EOF'
+Usage: daily-figures install [--domain NAME] --mode fresh|existing|recovery
+       [--port 5000] [--env-file FILE] [--backup-on-calendar CALENDAR]
+       [--retention DAYS] [--non-interactive]
+
+Noninteractive mode requires --domain and --mode. Fresh mode also requires
+--env-file. Recovery mode prepares paths but never creates a database, runs
+migrations, or starts the application.
+EOF
+                return
+                ;;
+            *) fatal "unknown install option: $1" ;;
+        esac
+    done
+    if [[ -f $STATE_FILE ]]; then
+        load_state
+        domain=${domain:-$DOMAIN}
+        port=${port:-$PORT}
+        schedule=${schedule:-$BACKUP_ON_CALENDAR}
+        retention=${retention:-$BACKUP_RETENTION}
+        log "Reusing existing installation state from $STATE_FILE"
+    fi
+    port=${port:-5000}
+    retention=${retention:-14}
+    valid_port "$port" || fatal "invalid port: $port"
+    if [[ ! $retention =~ ^[0-9]+$ ]] || ((10#$retention < 1)); then
+        fatal "retention must be at least 1"
+    fi
+    if ((noninteractive)); then
+        [[ -n $domain && -n $mode ]] || fatal "noninteractive install requires --domain and --mode"
+    else
+        if [[ -z $domain ]]; then read -r -p 'Enter the CloudPanel domain or subdomain: ' domain; fi
+        if [[ -z $mode ]]; then
+            read -r -p 'Installation mode (fresh, existing, recovery): ' mode
+        fi
+        if [[ -z $schedule ]]; then
+            local entered_schedule
+            read -r -p 'SQLite backup OnCalendar [*-*-* 04:00:00]: ' entered_schedule
+            schedule=${entered_schedule:-'*-*-* 04:00:00'}
+        fi
+    fi
+    schedule=${schedule:-'*-*-* 04:00:00'}
+    validate_schedule "$schedule"
+    [[ $mode == fresh || $mode == existing || $mode == recovery ]] || fatal "mode must be fresh, existing, or recovery"
+    check_operating_system
+    install_prerequisites
+    discover_site "$domain" "$port"
+    [[ -d $DEFAULT_CODE_DIR/.git ]] || fatal "application repository is missing at $DEFAULT_CODE_DIR"
+    check_resources
+    SITE_UID=$(id -u "$SITE_USER")
+    SITE_GID=$(id -g "$SITE_USER")
+    ((SITE_UID >= 1000 && SITE_GID >= 1000)) || fatal "refusing unsafe runtime UID/GID $SITE_UID:$SITE_GID"
+    DOMAIN=$domain PORT=$port CODE_DIR=$DEFAULT_CODE_DIR COMPOSE_FILE=$DEFAULT_COMPOSE_FILE
+    DATA_DIR=$SITE_HOME/app-data/daily-figures
+    CONFIG_DIR=$SITE_HOME/app-config/daily-figures
+    BACKUP_ROOT=$SITE_HOME/app-backups/daily-figures
+    BACKUP_RETENTION=$retention BACKUP_ON_CALENDAR=$schedule
+    DATABASE=$DATA_DIR/production.db ENV_FILE=$CONFIG_DIR/.env
+    DB_BACKUP_DIR=$BACKUP_ROOT/database-backups MIGRATION_BACKUP_DIR=$BACKUP_ROOT/migration-backups
+    BACKUP_STAGING_DIR=$SITE_HOME/tmp/daily-figures-backup-staging
+    check_port_available
+    prepare_directories
+    install_utility
+    install_systemd_units
+
+    case $mode in
+        recovery)
+            if docker inspect daily_figures_app >/dev/null 2>&1; then
+                fatal "a Daily Figures container already exists; recovery preparation will not risk starting or replacing it"
+            fi
+            [[ ! -f $DATABASE ]] || verify_database "$DATABASE"
+            write_state
+            cat <<EOF
+Recovery preparation: SUCCESS
+Domain: $DOMAIN
+Code: $CODE_DIR
+Data restore target: $DATA_DIR
+Config restore target: $CONFIG_DIR
+Application state: NOT STARTED (intentional)
+
+Restore the CloudPanel archive into $SITE_HOME, then run:
+  sudo daily-figures post-restore
+EOF
+            return ;;
+        fresh)
+            [[ ! -e $DATABASE ]] || fatal "database already exists at $DATABASE; fresh mode will not touch it"
+            [[ ! -f $CODE_DIR/data/production.db ]] \
+                || fatal "legacy database found at $CODE_DIR/data/production.db; use --mode existing"
+            if docker inspect daily_figures_app >/dev/null 2>&1; then
+                fatal "a Daily Figures container already exists; use existing mode or remove the confirmed empty/stale container manually"
+            fi
+            create_fresh_env "$env_source" ;;
+        existing)
+            if [[ ! -f $ENV_FILE && -f $CODE_DIR/.env ]]; then
+                install -o root -g root -m 600 "$CODE_DIR/.env" "$ENV_FILE"
+            fi
+            check_env
+            write_state
+            if [[ -f $CODE_DIR/data/production.db && ! -f $DATABASE ]]; then
+                cat <<EOF
+Existing installation prepared safely. The legacy database was NOT moved.
+Review the plan, then run:
+  sudo daily-figures migrate-storage
+EOF
+                return
+            fi
+            [[ -f $DATABASE ]] || fatal "existing mode found no database at either legacy or target location"
+            verify_database "$DATABASE"
+            write_state
+            log "Existing target database preserved. Use post-restore or update for an explicitly approved migration."
+            return ;;
+    esac
+
+    write_state
+    check_env
+    dc config --quiet
+    dc build daily-figures
+    dc run --rm --no-deps daily-figures flask db upgrade
+    verify_database "$DATABASE"
+    chown "$SITE_UID:$SITE_GID" "$DATABASE"
+    chmod 600 "$DATABASE"
+    dc up -d daily-figures
+    sleep 5
+    health_command >/dev/null
+    verify_mount
+    enable_backup_timer
+    report_server_schedule
+    cat <<EOF
+Installation: SUCCESS
+Domain: $DOMAIN
+Port: $PORT
+Code: $CODE_DIR
+Data: $DATA_DIR
+Config: $CONFIG_DIR
+Backups: $BACKUP_ROOT
+Database: $DATABASE
+Health: HEALTHY
+EOF
+}
+
+backup_command() {
+    need_root; load_state; acquire_lock; create_backup_locked
+}
+
+start_command() {
+    need_root; load_state; acquire_lock; check_env
+    [[ -f $DATABASE ]] || fatal "database missing; refusing to start an empty production application"
+    verify_database "$DATABASE"
+    dc up -d daily-figures
+}
+
+stop_command() { need_root; load_state; acquire_lock; dc stop daily-figures; }
+
+restart_command() {
+    need_root; load_state; acquire_lock
+    [[ -f $DATABASE ]] || fatal "database missing; refusing restart"
+    dc restart daily-figures
+    sleep 3
+    health_command >/dev/null
+}
+
+status_command() {
+    load_state
+    cat <<EOF
+Domain: $DOMAIN
+Code: $CODE_DIR
+Data: $DATA_DIR
+Config: $CONFIG_DIR
+Backups: $BACKUP_ROOT
+Database: $DATABASE
+Port: 127.0.0.1:$PORT
+EOF
+    dc ps
+    if [[ -f $RUNTIME_DIR/update-in-progress ]]; then
+        warn "an incomplete update marker exists: $RUNTIME_DIR/update-in-progress"
+    fi
+}
+
+logs_command() {
+    load_state
+    if [[ ${1:-} == --no-follow ]]; then dc logs --tail=200 daily-figures; else dc logs --tail=200 -f daily-figures; fi
+}
+
+update_command() {
+    need_root; load_state; acquire_lock
+    [[ ! -f $RUNTIME_DIR/update-in-progress ]] || fatal "an incomplete update exists; inspect the marker and database before retrying"
+    check_env; verify_database "$DATABASE"; verify_mount
+    [[ $(git -C "$CODE_DIR" branch --show-current) == main ]] || fatal "updates require the main branch"
+    if ! git -C "$CODE_DIR" diff --quiet || ! git -C "$CODE_DIR" diff --cached --quiet; then
+        fatal "tracked local changes exist; refusing to overwrite them"
+    fi
+    create_backup_locked
+    local old_revision old_image new_revision cutover_snapshot
+    old_revision=$(git -C "$CODE_DIR" rev-parse HEAD)
+    old_image=$(docker inspect daily_figures_app --format '{{.Image}}' 2>/dev/null || true)
+    git -C "$CODE_DIR" fetch origin main
+    git -C "$CODE_DIR" merge --ff-only origin/main
+    new_revision=$(git -C "$CODE_DIR" rev-parse HEAD)
+    dc build daily-figures
+    {
+        printf 'started_at=%q\n' "$(date --iso-8601=seconds)"
+        printf 'old_revision=%q\nnew_revision=%q\nold_image=%q\n' "$old_revision" "$new_revision" "$old_image"
+        printf 'phase=cutover_pending\n'
+    } >"$RUNTIME_DIR/update-in-progress"
+    dc stop daily-figures
+    create_backup_locked
+    cutover_snapshot=$(find "$DB_BACKUP_DIR" -maxdepth 1 -type f -name 'production-*.db' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
+    printf 'cutover_snapshot=%q\n' "$cutover_snapshot" >>"$RUNTIME_DIR/update-in-progress"
+    sed -i 's/phase=cutover_pending/phase=migration_started/' "$RUNTIME_DIR/update-in-progress"
+    if ! dc run --rm --no-deps daily-figures flask db upgrade; then
+        fatal "database migration failed; application remains stopped. Do not blindly roll back code. See $RUNTIME_DIR/update-in-progress"
+    fi
+    verify_database "$DATABASE" \
+        || fatal "post-migration integrity check failed; application remains stopped"
+    dc up -d daily-figures
+    sleep 5
+    health_command >/dev/null || fatal "updated application failed health check; update marker retained"
+    verify_mount
+    mv "$RUNTIME_DIR/update-in-progress" "$RUNTIME_DIR/last-update.conf"
+    log "Update successful: $old_revision -> $new_revision"
+}
+
+confirm_destructive() {
+    local yes=$1 prompt=$2 answer
+    ((yes)) && return
+    [[ -t 0 ]] || fatal "$prompt; rerun with --yes after review"
+    read -r -p "$prompt Type RESTORE to continue: " answer
+    [[ $answer == RESTORE ]] || fatal "operation cancelled"
+}
+
+restore_command() {
+    need_root; load_state
+    check_env
+    local candidate='' yes=0
+    while (($#)); do
+        case $1 in
+            --from) candidate=${2:?}; shift 2 ;;
+            --yes) yes=1; shift ;;
+            --help) echo "Usage: daily-figures restore --from DATABASE [--yes]"; return ;;
+            *) fatal "unknown restore option: $1" ;;
+        esac
+    done
+    [[ -n $candidate && -f $candidate ]] || fatal "--from must name an existing SQLite database"
+    verify_database "$candidate"
+    local staged
+    staged=$DATA_DIR/.restore-candidate-$(date +%Y%m%d-%H%M%S).db
+    python_tool copy --source "$candidate" --destination-file "$staged"
+    trap 'rm -f -- "$staged"' EXIT
+    confirm_destructive "$yes" "This will replace $DATABASE after a verified safety backup."
+    acquire_lock
+    if [[ -f $DATABASE ]]; then create_backup_locked; fi
+    dc stop daily-figures || true
+    if [[ -f $DATABASE ]]; then
+        create_backup_locked
+        local old
+        old=$DATA_DIR/production.pre-restore-$(date +%Y%m%d-%H%M%S).db
+        mv "$DATABASE" "$old"
+        [[ ! -e $DATABASE-wal ]] || mv "$DATABASE-wal" "$old-wal"
+        [[ ! -e $DATABASE-shm ]] || mv "$DATABASE-shm" "$old-shm"
+        log "Previous database retained at $old"
+    fi
+    mv "$staged" "$DATABASE"
+    trap - EXIT
+    chown "$SITE_UID:$SITE_GID" "$DATABASE"; chmod 600 "$DATABASE"
+    verify_database "$DATABASE"
+    dc run --rm --no-deps daily-figures flask db upgrade \
+        || fatal "migration failed; application remains stopped and the pre-restore database is retained"
+    verify_database "$DATABASE" \
+        || fatal "post-migration integrity check failed; application remains stopped"
+    dc up -d daily-figures
+    sleep 5
+    health_command >/dev/null; verify_mount
+    log "Restore successful. Keep the pre-restore file until application records are confirmed."
+}
+
+migrate_storage_command() {
+    need_root; load_state
+    check_env
+    local source=$CODE_DIR/data/production.db yes=0
+    while (($#)); do
+        case $1 in
+            --source) source=${2:?}; shift 2 ;;
+            --yes) yes=1; shift ;;
+            --help) echo "Usage: daily-figures migrate-storage [--source FILE] [--yes]"; return ;;
+            *) fatal "unknown migration option: $1" ;;
+        esac
+    done
+    [[ -f $source ]] || fatal "legacy source database not found: $source"
+    verify_database "$source"
+    if [[ -f $DATABASE ]]; then
+        fatal "destination already contains a database. No automatic merge or overwrite is allowed. Choose the dataset explicitly via the restore workflow."
+    fi
+    cat <<EOF
+Migration plan:
+  Source:      $source
+  Destination: $DATABASE
+  Backup:      $MIGRATION_BACKUP_DIR
+  Cutover:     stop legacy container, take final online snapshot, activate target
+  Rollback:    stop the new service and start the unchanged legacy Compose mount
+EOF
+    confirm_destructive "$yes" "Proceed with the storage cutover."
+    acquire_lock
+    python_tool create --source "$source" --destination "$MIGRATION_BACKUP_DIR" --temporary-directory "$BACKUP_STAGING_DIR" --prefix pre-cutover --retention 30
+    docker compose --project-directory "$CODE_DIR" -f "$CODE_DIR/docker-compose.yml" stop daily-figures
+    python_tool create --source "$source" --destination "$MIGRATION_BACKUP_DIR" --temporary-directory "$BACKUP_STAGING_DIR" --prefix final-cutover --retention 30
+    local final_snapshot
+    final_snapshot=$(find "$MIGRATION_BACKUP_DIR" -maxdepth 1 -type f -name 'final-cutover-*.db' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
+    [[ -n $final_snapshot ]] || fatal "could not locate final verified migration snapshot"
+    python_tool copy --source "$final_snapshot" --destination-file "$DATABASE"
+    if [[ -d ${source%/*}/uploads && -z $(find "$DATA_DIR/uploads" -mindepth 1 -print -quit) ]]; then
+        cp -a "${source%/*}/uploads/." "$DATA_DIR/uploads/"
+    fi
+    chown -R "$SITE_UID:$SITE_GID" "$DATA_DIR"; chmod 750 "$DATA_DIR" "$DATA_DIR/uploads"; chmod 600 "$DATABASE"
+    dc build daily-figures
+    dc run --rm --no-deps daily-figures flask db upgrade \
+        || fatal "migration failed; target remains available and legacy source is unchanged"
+    dc up -d daily-figures
+    sleep 5
+    health_command >/dev/null; verify_mount; verify_database "$DATABASE"
+    enable_backup_timer
+    log "Storage migration successful. Legacy source was preserved at $source."
+}
+
+post_restore_command() {
+    need_root; load_state; acquire_lock
+    [[ -f $ENV_FILE ]] || fatal "restored runtime configuration is missing: $ENV_FILE"
+    chown root:root "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    check_env
+    [[ -f $DATABASE ]] || fatal "restored database is missing: $DATABASE"
+    verify_database "$DATABASE"
+    chown -R "$SITE_UID:$SITE_GID" "$DATA_DIR"; chmod 750 "$DATA_DIR" "$DATA_DIR/uploads"; chmod 600 "$DATABASE"
+    create_backup_locked
+    dc build daily-figures
+    dc run --rm --no-deps daily-figures flask db upgrade \
+        || fatal "post-restore migration failed; application was not started"
+    verify_database "$DATABASE" \
+        || fatal "post-restore integrity check failed; application was not started"
+    dc up -d daily-figures
+    sleep 5
+    health_command >/dev/null; verify_mount
+    enable_backup_timer
+    log "Recovery activation successful and healthy."
+}
+
+configure_backups_command() {
+    need_root; load_state
+    local schedule=$BACKUP_ON_CALENDAR retention=$BACKUP_RETENTION
+    while (($#)); do
+        case $1 in
+            --on-calendar) schedule=${2:?}; shift 2 ;;
+            --retention) retention=${2:?}; shift 2 ;;
+            --help) echo "Usage: daily-figures configure-backups [--on-calendar CALENDAR] [--retention DAYS]"; return ;;
+            *) fatal "unknown backup configuration option: $1" ;;
+        esac
+    done
+    if [[ ! $retention =~ ^[0-9]+$ ]] || ((10#$retention < 1)); then
+        fatal "retention must be at least 1"
+    fi
+    validate_schedule "$schedule"
+    BACKUP_ON_CALENDAR=$schedule BACKUP_RETENTION=$retention
+    write_state; install_systemd_units; enable_backup_timer
+    log "Backup schedule set to '$schedule' in server timezone; retention=$retention"
+}
+
+backup_check_command() {
+    load_state
+    local failed=0 path
+    for path in "$DATA_DIR" "$CONFIG_DIR" "$DB_BACKUP_DIR"; do
+        if [[ $path == "$SITE_HOME"/* && -e $path ]]; then log "INCLUDED PATH PRESENT: $path"; else warn "missing or outside site home: $path"; failed=1; fi
+    done
+    cat <<EOF
+CloudPanel verification still required (read-only/manual):
+  1. Confirm $DOMAIN is selected in the remote backup job.
+  2. Confirm no exclusion matches app-data, app-config, or app-backups.
+  3. Confirm the latest remote job completed.
+  4. Download an archive and confirm these directories and a verified *.db exist.
+  5. Run: sudo daily-figures verify-db /path/to/downloaded/production-*.db
+Upload success alone does not prove restorability.
+EOF
+    return "$failed"
+}
+
+doctor_command() {
+    load_state
+    local failed=0 timezone
+    timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || date +%Z)
+    log "Server timezone: $timezone"
+    for path in "$CODE_DIR/docker-compose.yml" "$CODE_DIR/$COMPOSE_FILE" "$ENV_FILE" "$DATA_DIR" "$DB_BACKUP_DIR"; do
+        if [[ -e $path ]]; then log "OK: $path"; else warn "MISSING: $path"; failed=1; fi
+    done
+    check_env || failed=1
+    if [[ -f $DATABASE ]]; then verify_database "$DATABASE" || failed=1; else warn "MISSING: $DATABASE"; failed=1; fi
+    dc config --quiet || failed=1
+    verify_mount || failed=1
+    health_command >/dev/null || { warn "health check failed"; failed=1; }
+    systemctl is-enabled daily-figures-backup.timer >/dev/null 2>&1 || { warn "backup timer is not enabled"; failed=1; }
+    backup_check_command || failed=1
+    ((failed == 0)) || fatal "diagnostics found one or more problems"
+    log "Diagnostics: PASS"
+}
+
+verify_db_command() { load_state; verify_database "${1:-$DATABASE}"; }
+
+main() {
+    local command=${1:-}
+    [[ -n $command ]] || { usage; exit 2; }
+    shift || true
+    case $command in
+        install) install_command "$@" ;;
+        update) update_command "$@" ;;
+        backup) backup_command "$@" ;;
+        restore) restore_command "$@" ;;
+        migrate-storage) migrate_storage_command "$@" ;;
+        post-restore) post_restore_command "$@" ;;
+        configure-backups) configure_backups_command "$@" ;;
+        backup-check) backup_check_command "$@" ;;
+        status) status_command "$@" ;;
+        start) start_command "$@" ;;
+        stop) stop_command "$@" ;;
+        restart) restart_command "$@" ;;
+        logs) logs_command "$@" ;;
+        health) health_command "$@" ;;
+        doctor) doctor_command "$@" ;;
+        verify-db) verify_db_command "$@" ;;
+        _test-discover-site) discover_site "${1:?domain}" "${2:-5000}"; printf '%s|%s|%s\n' "$SITE_USER" "$SITE_HOME" "$VHOST_FILE" ;;
+        help|-h|--help) usage ;;
+        *) fatal "unknown command: $command" ;;
+    esac
+}
+
+main "$@"

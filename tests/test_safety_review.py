@@ -5,6 +5,8 @@ on draft dispatches, strengthened (normalized, all-status) import duplicate
 detection, and the deployment backup script's fail-safe behavior.
 """
 import pathlib
+import os
+import sqlite3
 import subprocess
 
 import pytest
@@ -13,6 +15,11 @@ from webapp.extensions import db
 from webapp.models.customer import Customer, normalize_name
 
 _BACKUP_SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "backup_db.sh"
+_SH = (
+    r"C:\Program Files\Git\bin\sh.exe"
+    if os.name == "nt" and pathlib.Path(r"C:\Program Files\Git\bin\sh.exe").exists()
+    else "sh"
+)
 
 
 @pytest.fixture
@@ -257,12 +264,13 @@ def _first_user():
 
 def test_backup_script_fails_and_creates_nothing_when_target_blocked(tmp_path):
     db_file = tmp_path / "fake.db"
-    db_file.write_text("not a real db, just needs to exist")
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("CREATE TABLE records (value TEXT)")
     blocked_backups_dir = tmp_path / "backups"
     blocked_backups_dir.write_text("a file, not a directory")  # sabotages mkdir -p
 
     result = subprocess.run(
-        ["sh", str(_BACKUP_SCRIPT), str(db_file)],
+        [_SH, str(_BACKUP_SCRIPT), str(db_file)],
         capture_output=True, text=True,
     )
     assert result.returncode != 0
@@ -271,28 +279,31 @@ def test_backup_script_fails_and_creates_nothing_when_target_blocked(tmp_path):
 
 def test_backup_script_succeeds_and_never_overwrites(tmp_path):
     db_file = tmp_path / "real.db"
-    db_file.write_text("db contents")
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("CREATE TABLE records (value TEXT)")
+        conn.execute("INSERT INTO records VALUES ('first')")
 
-    first = subprocess.run(["sh", str(_BACKUP_SCRIPT), str(db_file)], capture_output=True, text=True)
+    first = subprocess.run([_SH, str(_BACKUP_SCRIPT), str(db_file)], capture_output=True, text=True)
     assert first.returncode == 0
     backups_dir = tmp_path / "backups"
     first_backups = list(backups_dir.glob("*.db"))
     assert len(first_backups) == 1
-    original_content = first_backups[0].read_text()
+    original_content = first_backups[0].read_bytes()
 
     # run again immediately (same-second collision is likely) — must never
     # overwrite the first backup's content
-    db_file.write_text("MODIFIED contents")
-    second = subprocess.run(["sh", str(_BACKUP_SCRIPT), str(db_file)], capture_output=True, text=True)
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("INSERT INTO records VALUES ('second')")
+    second = subprocess.run([_SH, str(_BACKUP_SCRIPT), str(db_file)], capture_output=True, text=True)
     assert second.returncode == 0
     all_backups = list(backups_dir.glob("*.db"))
     assert len(all_backups) == 2
-    assert first_backups[0].read_text() == original_content  # untouched by the second run
+    assert first_backups[0].read_bytes() == original_content  # untouched by the second run
 
 
 def test_backup_script_skips_cleanly_when_no_database_exists(tmp_path):
     missing = tmp_path / "does_not_exist.db"
-    result = subprocess.run(["sh", str(_BACKUP_SCRIPT), str(missing)], capture_output=True, text=True)
+    result = subprocess.run([_SH, str(_BACKUP_SCRIPT), str(missing)], capture_output=True, text=True)
     assert result.returncode == 0
     assert not (tmp_path / "backups").exists()
 
