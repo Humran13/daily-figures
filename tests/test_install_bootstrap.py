@@ -8,7 +8,6 @@ import subprocess
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
 
@@ -133,10 +132,9 @@ def test_existing_old_checkout_fast_forwards_without_moving_production_data(tmp_
         remote,
         code_dir,
         args_file,
-        "--mode",
-        "existing",
         "--domain",
         "figures.example.com",
+        "--non-interactive",
     )
 
     assert result.returncode == 0, result.stderr
@@ -145,10 +143,9 @@ def test_existing_old_checkout_fast_forwards_without_moving_production_data(tmp_
     assert (code_dir / "scripts" / "daily-figures").is_file()
     assert args_file.read_text().splitlines() == [
         "install",
-        "--mode",
-        "existing",
         "--domain",
         "figures.example.com",
+        "--non-interactive",
     ]
     assert env_file.read_bytes() == b"SECRET=unchanged\n"
     assert database.read_bytes() == b"legacy sqlite bytes"
@@ -157,17 +154,21 @@ def test_existing_old_checkout_fast_forwards_without_moving_production_data(tmp_
     assert not (tmp_path / "home" / "daily-figures" / "data" / "production.db").exists()
 
 
-@pytest.mark.parametrize("mode", ["fresh", "recovery"])
-def test_new_checkout_still_supports_fresh_and_recovery_modes(tmp_path, mode):
+def test_new_checkout_passes_domain_only_install_arguments(tmp_path):
     remote, _old_commit, new_commit = _make_remote(tmp_path)
     code_dir = tmp_path / "opt" / "daily-figures"
-    args_file = tmp_path / f"{mode}-arguments.txt"
+    args_file = tmp_path / "arguments.txt"
 
-    result = _run_installer(remote, code_dir, args_file, "--mode", mode)
+    result = _run_installer(
+        remote, code_dir, args_file,
+        "--domain", "stock.example.com", "--non-interactive",
+    )
 
     assert result.returncode == 0, result.stderr
     assert _git(code_dir, "rev-parse", "HEAD") == new_commit
-    assert args_file.read_text().splitlines() == ["install", "--mode", mode]
+    assert args_file.read_text().splitlines() == [
+        "install", "--domain", "stock.example.com", "--non-interactive",
+    ]
 
 
 @pytest.mark.parametrize("staged", [False, True])
@@ -181,7 +182,7 @@ def test_existing_checkout_refuses_tracked_local_modifications(tmp_path, staged)
         _git(code_dir, "add", "README.md")
     args_file = tmp_path / "arguments.txt"
 
-    result = _run_installer(remote, code_dir, args_file, "--mode", "existing")
+    result = _run_installer(remote, code_dir, args_file, "--domain", "figures.example.com")
 
     assert result.returncode != 0
     assert "modifications exist" in result.stderr
@@ -197,7 +198,7 @@ def test_existing_checkout_refuses_tracked_environment_file_before_fetch(tmp_pat
     _clone_old(remote, old_commit, code_dir)
     args_file = tmp_path / "arguments.txt"
 
-    result = _run_installer(remote, code_dir, args_file, "--mode", "existing")
+    result = _run_installer(remote, code_dir, args_file, "--domain", "figures.example.com")
 
     assert result.returncode != 0
     assert "protected production data is tracked" in result.stderr
@@ -214,7 +215,7 @@ def test_existing_checkout_refuses_index_flags_that_can_hide_modifications(tmp_p
     (code_dir / "README.md").write_text("hidden local change\n", encoding="utf-8")
     args_file = tmp_path / "arguments.txt"
 
-    result = _run_installer(remote, code_dir, args_file, "--mode", "existing")
+    result = _run_installer(remote, code_dir, args_file, "--domain", "figures.example.com")
 
     assert result.returncode != 0
     assert "skip-worktree/assume-unchanged" in result.stderr

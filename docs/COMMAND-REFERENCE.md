@@ -4,7 +4,7 @@ Production commands use `sudo` and `/etc/daily-figures/install.conf`.
 
 | Command | Purpose |
 |---|---|
-| `daily-figures install` | Fresh/existing/recovery setup |
+| `daily-figures install` | Auto-detected fresh/existing/recovery setup |
 | `daily-figures update` | Backup, fast-forward, build, cutover, migrate, verify |
 | `daily-figures backup` | Atomic verified SQLite snapshot |
 | `daily-figures restore --from FILE` | Staged confirmed database replacement |
@@ -19,9 +19,10 @@ Production commands use `sudo` and `/etc/daily-figures/install.conf`.
 | `daily-figures doctor` | Deployment diagnostics |
 | `daily-figures verify-db [FILE]` | Integrity/hash report |
 
-Install flags are `--domain`, `--mode fresh|existing|recovery`, `--port`,
-`--env-file`, `--backup-on-calendar`, `--retention`, and `--non-interactive`.
-Noninteractive requires domain/mode; fresh also requires an environment file.
+Install accepts only `--domain` and `--non-interactive`. With no flags it asks
+only for the CloudPanel domain. Mode, port 5000, configuration repair, storage,
+and backup defaults are automatic. Noninteractive installation requires the
+domain.
 
 Restore/migration require typing `RESTORE`; `--yes` is the explicit automation
 equivalent. Conflicting operations share one lock. Scheduled backup skips with a

@@ -12,10 +12,11 @@ and [CloudPanel root CLI commands](https://www.cloudpanel.io/docs/v2/cloudpanel-
 The installer reads the enabled vhost and owned
 `/home/*/htdocs/<exact-domain>` directory. It rejects ambiguous ownership, a
 missing account, non-reverse-proxy config, and a different port. It never reads
-CloudPanel's internal database or rewrites Nginx.
+CloudPanel's internal database. It adds an idempotent deny rule for `/data`,
+validates Nginx, and rolls the vhost back if validation fails.
 
-For another port, update CloudPanel first and pass `--port`. Production binds
-only loopback. It never kills an unrelated listener.
+Production always uses port 5000 and binds only loopback. It never kills an
+unrelated listener.
 
 ```bash
 sudo ss -ltnp 'sport = :5000'
@@ -28,6 +29,6 @@ CloudPanel's built-in Google Drive provider is documented for paid Google
 Workspace; this project neither switches providers nor creates a new personal
 Google OAuth connection.
 Run `sudo daily-figures backup-check`, then confirm in CloudPanel that the site
-and private directories are included and no exclusion matches them. Confirm the
+and its `htdocs/<domain>/data` directory are included and no exclusion matches it. Confirm the
 remote schedule follows the local SQLite timer. The installer reports the VPS
 timezone; 05:00 is an example, not a hardcoded assumption.

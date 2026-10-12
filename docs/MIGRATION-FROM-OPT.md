@@ -2,7 +2,7 @@
 
 Source: `/opt/daily-figures/data/production.db`
 
-Target: `/home/<actual-site-user>/app-data/daily-figures/production.db`
+Target: `/home/<actual-site-user>/htdocs/<domain>/data/production.db`
 
 ## Preflight and cutover
 
@@ -11,7 +11,7 @@ Inspect the old checkout before updating it:
 
 ```bash
 git -C /opt/daily-figures status --short
-curl -fsSL https://raw.githubusercontent.com/Humran13/daily-figures/main/install.sh -o /tmp/daily-figures-install.sh && sudo bash /tmp/daily-figures-install.sh --mode existing
+curl -fsSL https://raw.githubusercontent.com/Humran13/daily-figures/main/install.sh -o /tmp/daily-figures-install.sh && sudo bash /tmp/daily-figures-install.sh
 ```
 
 The bootstrap recognizes an older Git checkout even when it has no
@@ -22,24 +22,11 @@ If a safety check fails, resolve it manually; do not force-reset the production
 checkout. Existing `.env` files, SQLite databases, uploads, and backups remain
 in place.
 
-`--mode existing` only prepares management metadata and private destination
-directories. It does not move the database, run schema migrations, or restart
-the running container. At this point the production database remains at
-`/opt/daily-figures/data/production.db`.
-
-Check that exact path, review the source/destination printed by the utility,
-and only then start the separately authorized cutover:
-
-```bash
-test -f /opt/daily-figures/data/production.db
-sudo daily-figures migrate-storage
-```
-
-Read the plan and type `RESTORE`. The tool verifies source, makes an online
-pre-cutover snapshot, stops legacy writes, makes a final snapshot, refuses any
-existing destination DB, copies through SQLite, copies uploads only to an empty
-target, fixes ownership, migrates once, starts, and verifies integrity/mount/
-health. Original data and migration snapshots remain intact.
+The installer detects the legacy database automatically. When the website
+destination has no database, it verifies the source, stops legacy writes,
+copies through SQLite, copies uploads only into an empty target, fixes
+ownership, migrates once, starts, and verifies integrity/mount/health. Original
+legacy data remains intact. It never overwrites an existing website database.
 
 If both paths contain data, the command stops. Never merge automatically;
 inspect and deliberately use `daily-figures restore --from ...` for the chosen

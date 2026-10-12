@@ -10,6 +10,8 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKUP_TOOL = ROOT / "scripts" / "sqlite_backup.py"
@@ -133,10 +135,13 @@ def _bash_path(path: Path) -> str:
     return result.stdout.strip()
 
 
-def test_cloudpanel_fixture_discovers_owned_site(tmp_path):
-    domain = "figures.example.com"
+@pytest.mark.parametrize(
+    ("domain", "site_user"),
+    [("figures.example.com", "fixture-user"), ("stock.other.test", "another-user")],
+)
+def test_cloudpanel_fixture_discovers_owned_site(tmp_path, domain, site_user):
     nginx = tmp_path / "nginx"
-    site = tmp_path / "home" / "fixture-user" / "htdocs" / domain
+    site = tmp_path / "home" / site_user / "htdocs" / domain
     nginx.mkdir()
     site.mkdir(parents=True)
     (nginx / f"{domain}.conf").write_text(
@@ -144,7 +149,7 @@ def test_cloudpanel_fixture_discovers_owned_site(tmp_path):
     )
     env = os.environ | {
         "DF_TEST_MODE": "1",
-        "DF_TEST_SITE_USER": "fixture-user",
+        "DF_TEST_SITE_USER": site_user,
         "DF_HOME_ROOT": _bash_path(tmp_path / "home"),
         "DF_NGINX_DIRS": _bash_path(nginx),
     }
@@ -155,7 +160,8 @@ def test_cloudpanel_fixture_discovers_owned_site(tmp_path):
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "fixture-user" in result.stdout
+    assert site_user in result.stdout
+    assert _bash_path(site) in result.stdout
 
 
 def test_cloudpanel_fixture_rejects_wrong_port(tmp_path):
@@ -172,6 +178,7 @@ def test_cloudpanel_fixture_rejects_wrong_port(tmp_path):
         "DF_TEST_SITE_USER": "fixture-user",
         "DF_HOME_ROOT": _bash_path(tmp_path / "home"),
         "DF_NGINX_DIRS": _bash_path(nginx),
+        "DF_RUNTIME_DIR": _bash_path(tmp_path / "runtime"),
     }
     result = subprocess.run(
         [_bash(), str(MANAGER), "_test-discover-site", domain, "5000"],
@@ -217,14 +224,103 @@ def test_noninteractive_install_never_prompts_for_missing_values(tmp_path):
         timeout=10,
     )
     assert result.returncode != 0
-    assert "requires --domain and --mode" in result.stderr
+    assert "requires --domain" in result.stderr
+
+
+def test_installer_has_exactly_one_interactive_question():
+    source = MANAGER.read_text(encoding="utf-8")
+    install_body = source.split("install_command() {", 1)[1].split("\nbackup_command()", 1)[0]
+    prompt_lines = [line for line in install_body.splitlines() if "read -r" in line]
+    assert prompt_lines == [
+        "        if [[ -z $domain ]]; then read -r -p 'Enter your CloudPanel domain or subdomain: ' domain; fi"
+    ]
+    forbidden = ("Installation mode", "backup OnCalendar", "Initial super-admin password")
+    assert not any(text in install_body for text in forbidden)
+
+
+def test_cloudpanel_vhost_data_protection_is_idempotent(tmp_path):
+    domain = "figures.example.com"
+    nginx = tmp_path / "nginx"
+    site = tmp_path / "home" / "fixture-user" / "htdocs" / domain
+    nginx.mkdir()
+    site.mkdir(parents=True)
+    vhost = nginx / f"{domain}.conf"
+    vhost.write_text(
+        "server {\n"
+        f"  server_name {domain};\n"
+        "  location / { proxy_pass http://127.0.0.1:5000; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    env = os.environ | {
+        "DF_TEST_MODE": "1",
+        "DF_TEST_SITE_USER": "fixture-user",
+        "DF_HOME_ROOT": _bash_path(tmp_path / "home"),
+        "DF_NGINX_DIRS": _bash_path(nginx),
+        "DF_RUNTIME_DIR": _bash_path(tmp_path / "runtime"),
+    }
+    command = [_bash(), str(MANAGER), "_test-protect-data", domain, "5000"]
+    first = subprocess.run(command, env=env, capture_output=True, text=True)
+    second = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    protected = vhost.read_text(encoding="utf-8")
+    assert protected.count("DAILY FIGURES PRIVATE DATA - MANAGED") == 1
+    assert "location = /data { return 404; }" in protected
+    assert "location ^~ /data/ { return 404; }" in protected
+
+
+def test_missing_configuration_is_generated_without_replacing_secret(tmp_path):
+    code_dir = tmp_path / "code"
+    site_home = tmp_path / "home" / "site-user"
+    env_file = site_home / "htdocs" / "figures.example.com" / "data" / ".env"
+    code_dir.mkdir()
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("SECRET_KEY=preserve-this-secret\n", encoding="utf-8")
+    env = os.environ | {"DF_TEST_MODE": "1"}
+    command = [
+        _bash(), str(MANAGER), "_test-repair-env",
+        _bash_path(env_file), _bash_path(code_dir), _bash_path(site_home),
+    ]
+    first = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    repaired = env_file.read_text(encoding="utf-8")
+    assert repaired.count("SECRET_KEY=preserve-this-secret") == 1
+    assert "SUPERADMIN_USERNAME=admin" in repaired
+    assert "SUPERADMIN_PASSWORD=" in repaired
+    second = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert second.returncode == 0, second.stderr
+    assert env_file.read_text(encoding="utf-8") == repaired
 
 
 def test_production_compose_requires_explicit_paths():
     text = (ROOT / "docker-compose.production.yml").read_text()
     assert "DAILY_FIGURES_DATA_DIR:?" in text
     assert "DAILY_FIGURES_ENV_FILE:?" in text
+    assert ":/app/data" in text
+    assert "\nvolumes:" not in text
     assert "127.0.0.1" in (ROOT / "docker-compose.yml").read_text()
+
+
+def test_install_layout_is_domain_derived_and_uses_htdocs_data():
+    source = MANAGER.read_text(encoding="utf-8")
+    assert 'DATA_DIR=$SITE_DIR/data' in source
+    assert 'DATABASE=$DATA_DIR/production.db' in source
+    assert 'BACKUP_ROOT=$DATA_DIR/backups' in source
+    assert 'CONFIG_DIR=$DATA_DIR' in source
+    assert 'DATA_DIR=$SITE_HOME/app-data/daily-figures' not in source
+    assert "BACKUP_RETENTION=14" in source
+    assert "BACKUP_ON_CALENDAR='*-*-* 04:00:00'" in source
+
+
+def test_install_auto_detects_restored_and_legacy_databases_without_overwrite():
+    source = MANAGER.read_text(encoding="utf-8")
+    install_body = source.split("install_command() {", 1)[1].split("\nbackup_command()", 1)[0]
+    destination_check = install_body.index('if [[ -f $DATABASE ]]')
+    legacy_search = install_body.index('for candidate in "$CODE_DIR/data/production.db"')
+    copy_call = install_body.index('python_tool copy --source "$legacy_source" --destination-file "$DATABASE"')
+    assert destination_check < legacy_search < copy_call
+    assert "No existing database found; a new database will be initialized." in install_body
 
 
 def test_container_entrypoint_does_not_migrate_or_backup_implicitly():

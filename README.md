@@ -1,292 +1,191 @@
 # Daily Figures
 
-Production Flask inventory and daily-operations application, deployed behind a
-CloudPanel reverse proxy with SQLite data stored outside the Git checkout and
-outside Docker's writable layer.
+Daily Figures is a Flask inventory and daily-operations application deployed in
+Docker behind a CloudPanel reverse proxy. Production listens on
+`127.0.0.1:5000` and keeps all persistent application data inside the matching
+CloudPanel website directory.
 
-## Quick installation
+## One-line CloudPanel installation
 
-After installing CloudPanel and creating a **Reverse Proxy** site pointing to
-`http://127.0.0.1:5000`, run this one line:
+First create the domain or subdomain in CloudPanel as a Reverse Proxy site that
+points to `http://127.0.0.1:5000`. Then run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Humran13/daily-figures/main/install.sh -o /tmp/daily-figures-install.sh && sudo bash /tmp/daily-figures-install.sh
 ```
 
-The installer asks for the domain, mode, and fresh-install administrator
-password. It discovers the real site user from the exact CloudPanel vhost and
-owned `htdocs/<domain>` directory; it never constructs a username from the
-domain or reads CloudPanel's internal database.
+The installer asks exactly one question:
 
-If `/opt/daily-figures` is already a Git checkout, the bootstrap checks for
-`scripts/daily-figures`, verifies that tracked files are unchanged, confirms
-the checkout is clean `main` from the expected repository, fetches
-`origin/main`, and permits only a fast-forward. It stops without changing the
-worktree if there are staged/unstaged tracked edits, local/divergent commits,
-an unexpected remote, or tracked production data. Ignored/untracked `.env`
-files, SQLite files, uploads, and backups are not removed or replaced.
+```text
+Enter your CloudPanel domain or subdomain: stock.example.com
+```
 
-Interactive passwords must be at least 12 characters and use letters, numbers,
-or `._~!@%+=,:/-`. For another valid Compose-env representation, supply a
-carefully prepared `--env-file` in noninteractive mode.
+It does not ask for an installation mode, password, port, Docker path, backup
+schedule, or retention. Port `5000`, daily SQLite snapshots at `04:00` server
+time, and retention of 14 snapshots are automatic defaults. For automation,
+the equivalent noninteractive form is:
+
+```bash
+sudo bash /tmp/daily-figures-install.sh --domain stock.example.com --non-interactive
+```
+
+The entered domain is validated against CloudPanel's enabled Nginx vhost. The
+installer then finds exactly one owned `/home/<site-user>/htdocs/<domain>`
+directory and verifies its real Linux owner. It never derives a username from
+the domain and never hardcodes a site user or website path. If the site does not
+exist, is ambiguous, is not a reverse proxy to port `5000`, or has unsafe
+ownership, installation stops with an explanation.
 
 Supported production hosts are current Ubuntu/Debian CloudPanel servers with
-root/sudo, Git, Docker Engine/Compose v2, Python 3, `flock`, curl, at least
-512 MiB RAM (1 GB recommended), and 1 GiB free on code/data filesystems.
-Ordinary missing packages are installed on supported systems. Create the
-CloudPanel site first.
+root/sudo and at least 512 MiB RAM and 1 GiB free disk space. Missing ordinary
+prerequisites, including Docker Compose v2, are installed noninteractively.
 
-Expected completion output includes:
+## Persistent storage layout
 
-```text
-Installation: SUCCESS
-Domain: figures.example.com
-Port: 5000
-Code: /opt/daily-figures
-Data: /home/<actual-site-user>/app-data/daily-figures
-Config: /home/<actual-site-user>/app-config/daily-figures
-Backups: /home/<actual-site-user>/app-backups/daily-figures
-Health: HEALTHY
-```
-
-For automation, prepare a root-readable mode-0600 environment file containing
-`SECRET_KEY`, `SUPERADMIN_USERNAME`, and `SUPERADMIN_PASSWORD`, then:
-
-```bash
-sudo bash /tmp/daily-figures-install.sh --non-interactive --domain figures.example.com --mode fresh --port 5000 --env-file /root/daily-figures.env --backup-on-calendar '*-*-* 04:00:00' --retention 14
-```
-
-Noninteractive mode never prompts; required missing values fail clearly.
-
-## Architecture and file storage
+For a domain such as `stock.example.com`, CloudPanel may own the site with any
+valid site user. The discovered layout is:
 
 ```text
-/opt/daily-figures/                         versioned application code
-/etc/daily-figures/install.conf             root-owned metadata (0600)
-/home/<site-user>/
-├── htdocs/<domain>/                        CloudPanel site marker/public root
-├── app-data/daily-figures/
-│   ├── production.db                       live SQLite database (0600)
-│   └── uploads/                            persistent uploaded files
-├── app-config/daily-figures/
-│   └── .env                                runtime secrets (0600)
-└── app-backups/daily-figures/
-    ├── database-backups/                   verified scheduled/manual snapshots
-    └── migration-backups/                  cutover recovery points
+/opt/daily-figures/                              versioned application code
+/etc/daily-figures/install.conf                  root-owned state (0600)
+/home/<actual-site-user>/htdocs/stock.example.com/
+└── data/
+    ├── .env                                     runtime secrets (0600)
+    ├── production.db                            live SQLite database (0600)
+    ├── uploads/                                 persistent private uploads
+    └── backups/
+        ├── production-YYYYMMDD-HHMMSS.db        consistent snapshots
+        ├── production-....db.sha256             snapshot checksums
+        └── migration/                           legacy cutover snapshots
 ```
 
-Only `/opt/daily-figures` is updated by Git. Production Compose requires an
-explicit absolute data path and binds it to `/app/data`; it cannot silently use
-the checkout's `data/`. Local development may intentionally use `./data`. The
-app is published only on `127.0.0.1`. Its container runs with the actual
-CloudPanel site UID/GID.
+Production Compose requires the absolute discovered `data` path and bind-mounts
+it at `/app/data`. The application always uses
+`/app/data/production.db`. There is no Docker named or anonymous volume for the
+live database. Rebuilding or restarting the container therefore cannot replace
+the website copy of the database.
 
-Container startup does not migrate or back up. Those are explicit, locked
-management operations, so a Docker restart cannot unexpectedly change schema.
-See [CloudPanel setup](docs/CLOUDPANEL-SETUP.md).
+The installer adds managed Nginx locations that return 404 for both `/data` and
+`/data/`, validates the complete Nginx configuration, restores the original
+vhost if validation fails, and reloads Nginx only after a successful check.
+Filesystem permissions are also restrictive. This prevents direct HTTP access
+to the database, uploads, backups, `.env`, and any alternate file route beneath
+the website's `data` directory.
 
-## Routine operations
+## Automatic fresh install, update, and recovery
 
-```bash
-sudo daily-figures update
-sudo daily-figures backup
-sudo daily-figures status
-sudo daily-figures health
-sudo daily-figures logs
-sudo daily-figures restart
-sudo daily-figures doctor
-```
+The same command handles every installation state:
 
-Update verifies the database and bind mount, makes a consistent online snapshot,
-records old Git/image references, fast-forwards `main`, builds while the current
-app serves, stops writes, makes a final cutover snapshot, migrates in a one-off
-container, starts, and verifies mount/health. Update, restore, storage migration,
-post-restore, and backup share a `flock` lock.
+- If `htdocs/<domain>/data/production.db` exists, its integrity is checked and
+  it is reused. Existing users, records, uploads, and configuration are kept.
+- If the destination is empty but a legacy database exists under
+  `/opt/daily-figures/data` or the previous `app-data/daily-figures` layout, the
+  old app is stopped and SQLite's online backup API copies it only into the
+  empty destination. The source remains untouched.
+- If no database exists, migrations initialize a new one.
+- If `.env` is absent, it is generated automatically. If it exists, valid
+  secrets and credentials are preserved and only missing values are appended.
+- A fresh install generates an initial `admin` password and prints it once at
+  completion. Change it immediately after signing in.
+- A partial previous installation is safe to rerun; completed data and valid
+  configuration are reused.
 
-If migration starts and fails, the app remains stopped and the incomplete marker
-is retained. Code rollback is not automatically claimed safe after schema
-changes; inspect `/var/lib/daily-figures/update-in-progress` and use a verified
-cutover snapshot when restoration is necessary.
+Before applying migrations to an existing or restored database, the installer
+stops application writes and creates a verified snapshot under `data/backups`.
+The database is never overwritten with an empty file.
 
-See [Command reference](docs/COMMAND-REFERENCE.md).
+## Restore on a new VPS
 
-## SQLite backups
-
-```bash
-sudo daily-figures backup
-```
-
-Python's SQLite online backup API reads a consistent view in WAL mode. It writes
-a hidden `.partial` file under the site's normally excluded private `tmp/`
-staging directory, runs `PRAGMA integrity_check`, calculates SHA-256, fsyncs,
-atomically publishes `production-YYYYMMDD-HHMMSS.db`, writes `.sha256`, and only
-then applies retention. It checks free space and exits nonzero on error.
-
-```bash
-journalctl -u daily-figures-backup.service
-systemctl list-timers daily-figures-backup.timer
-sudo daily-figures configure-backups --on-calendar '*-*-* 04:00:00' --retention 14
-```
-
-Systemd interprets the time in the VPS timezone shown by `timedatectl`. `04:00`
-is an example intended to precede an example 05:00 CloudPanel remote job. Confirm
-the actual CloudPanel schedule and leave an appropriate buffer.
-
-## CloudPanel remote/Google Drive backups
-
-Private directories live under the site home so CloudPanel can include them.
-The app does not alter Rclone, OAuth credentials, an existing `remote:` custom
-configuration, provider choice, or exclusions. Preserve a working Custom Rclone
-Config for a personal Google account. Do not switch it to CloudPanel's built-in
-Google Drive provider: CloudPanel currently documents that provider for paid
-Google Workspace accounts, and this project does not create a new personal
-Google OAuth integration.
-
-CloudPanel normally archives a site's vhost and home while excluding `.ssh`,
-`logs`, and `tmp`, which is why persistent data/config/backups are under the home
-and temporary SQLite files are under `tmp`. Treat that as a default to verify,
-not an assumption about the production exclusion list.
-
-Run `sudo daily-figures backup-check`, then confirm in CloudPanel that the site
-is selected and exclusions do not remove these directories. Download an archive,
-inspect it, and verify a snapshot:
-
-```bash
-sudo daily-figures verify-db /path/to/downloaded/production-YYYYMMDD-HHMMSS.db
-```
-
-In Google Drive, open the configured `backups` directory, select the newest
-completed site/server archive, and locate `app-data/daily-figures`,
-`app-config/daily-figures`, and `app-backups/daily-figures`. Upload success alone
-does not prove restorability. See [Backup and restore](docs/BACKUP-RESTORE.md).
-
-## Existing `/opt` installation migration
-
-First inspect any tracked changes, then run the bootstrap in explicit existing
-mode:
-
-```bash
-git -C /opt/daily-figures status --short
-curl -fsSL https://raw.githubusercontent.com/Humran13/daily-figures/main/install.sh -o /tmp/daily-figures-install.sh && sudo bash /tmp/daily-figures-install.sh --mode existing
-```
-
-This supports an older checkout that does not yet contain
-`scripts/daily-figures`: the bootstrap safely fast-forwards the code and then
-passes `--mode existing` to the newly installed utility. It does not stop or
-restart the running production container and does not migrate storage. After it
-returns, the live legacy database is still:
-
-```text
-/opt/daily-figures/data/production.db
-```
-
-Review the printed source and destination. Only an administrator's separate,
-explicit command starts the storage cutover:
-
-```bash
-sudo daily-figures migrate-storage
-```
-
-It displays source/destination, verifies source, makes an online pre-cutover
-snapshot, requires confirmation, stops writes, makes a final snapshot, refuses
-an existing destination database, copies through SQLite, preserves uploads,
-migrates explicitly, and verifies health/mount/data. The legacy database remains
-for rollback. See [Migration from `/opt`](docs/MIGRATION-FROM-OPT.md).
-
-## Complete VPS disaster recovery
+The intended CloudPanel/Google Drive recovery flow is:
 
 1. Install CloudPanel on the new VPS.
-2. Recreate the Reverse Proxy site/domain targeting `127.0.0.1:5000`.
-3. Prepare without starting an empty application:
+2. Recreate the same Reverse Proxy site, targeting `127.0.0.1:5000`.
+3. Restore that website directory from the existing CloudPanel backup so
+   `htdocs/<domain>/data/production.db`, uploads, backups, and preferably `.env`
+   are present.
+4. Run the one-line installer and enter the domain.
 
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/Humran13/daily-figures/main/install.sh -o /tmp/daily-figures-install.sh && sudo bash /tmp/daily-figures-install.sh --mode recovery
-   ```
+The installer discovers the restored website directory, verifies the database,
+repairs safe missing configuration, binds that exact `data` directory into
+Docker, runs pending migrations, and starts the app. It does not require a
+recovery mode.
 
-4. Download the chosen CloudPanel backup. Extract it only in private staging,
-   inspect it, and restore the original `app-data/daily-figures`,
-   `app-config/daily-figures`, and optionally `app-backups/daily-figures` to the
-   printed paths. Never extract an unverified archive over a running install.
-5. Activate:
+## Replace the database manually
 
-   ```bash
-   sudo daily-figures post-restore
-   ```
-
-`post-restore` requires `.env` and `production.db`, verifies integrity, repairs
-ownership, makes a safety snapshot, builds, migrates once, starts, and checks the
-exact mount and health. Recovery mode itself never creates a database, migrates,
-or starts. See [Disaster recovery](docs/DISASTER-RECOVERY.md).
-
-To restore one verified database:
+Do not copy over `production.db` while the application is running. Put the
+candidate database in a private staging path and use the managed restore command:
 
 ```bash
 sudo daily-figures restore --from /private/staging/production.db
 ```
 
-This stages/verifies first, requires confirmation, takes safety snapshots, stops
-writes, retains the old database as `production.pre-restore-*`, then migrates and
-validates the restored application.
+The command verifies and stages the candidate first, asks for explicit restore
+confirmation, obtains the deployment lock, snapshots the current database,
+stops the application, retains the previous database as
+`production.pre-restore-<timestamp>.db`, fixes ownership and permissions, runs
+migrations, restarts, and checks health and the exact Docker mount. For reviewed
+automation, add `--yes`.
 
-## CloudPanel configuration
+## SQLite and CloudPanel backups
 
-Choose **Add Site → Create a Reverse Proxy**, enter the exact domain/site user,
-and set `http://127.0.0.1:5000` (or the explicitly selected installer port).
-Configure DNS and SSL. The installer validates exact vhost, target port, htdocs
-ownership, Linux account, and home directory. It does not rewrite other sites.
+Create a transactionally consistent snapshot at any time:
 
-## Troubleshooting
+```bash
+sudo daily-figures backup
+```
 
-- **Port occupied:** `sudo ss -ltnp 'sport = :5000'`. Unrelated processes are
-  never killed.
-- **Site not found/wrong user:** confirm the exact Reverse Proxy site and that
-  `/home/<user>/htdocs/<domain>` has the site's Linux owner.
-- **HTTP 502:** run `status`, `health`, and `logs`; compare the CloudPanel port.
-- **Docker failure:** use `sudo daily-figures logs --no-follow` and `docker info`.
-- **Database missing/no records:** stop immediately; use `doctor` and inspect the
-  `/app/data` mount. Never replace restored data with a new empty database.
-- **Integrity failure:** keep stopped and select another verified snapshot.
-- **Migration failure:** inspect logs and update marker; restore only through the
-  confirmed managed workflow.
-- **Permissions:** run `doctor`; never use `chmod 777`.
-- **Backup failure:** inspect journald, `df -h`, timer status, and permissions.
+The scheduled and manual backup path is the website's `data/backups` directory.
+Snapshots use SQLite's online backup API, pass `PRAGMA integrity_check`, receive
+a SHA-256 sidecar, are atomically published, and are pruned only after a new
+snapshot succeeds.
 
-## Security
+The project does not create or modify a Google Drive/Rclone integration. Because
+the live database, uploads, configuration, and snapshots are inside the website
+directory, they are available to the existing CloudPanel website-backup scope.
+CloudPanel backup selections and provider-side exclusions cannot be proven from
+the application installer. Check them with:
 
-`.env`, database, backups, and state use restrictive permissions; secrets are
-not logged. Keep port 5000 on loopback, secure root/SSH and Google/Rclone access,
-and never commit `.env`, databases, snapshots, uploads, tokens, or archives.
-Because `.env` is under the site home, it may be included in CloudPanel remote
-backups; the destination/account must be private and access-controlled.
+```bash
+sudo daily-figures backup-check
+```
 
-## FAQ
+Then confirm in CloudPanel that the domain is selected, no exclusion removes
+`htdocs/<domain>/data`, and a downloaded archive contains `production.db`,
+uploads, and at least one verified snapshot. Upload success alone does not prove
+that a backup is restorable.
 
-**Database?** `/home/<site-user>/app-data/daily-figures/production.db`.
+## Operations
 
-**Backups?** `/home/<site-user>/app-backups/daily-figures/database-backups/`.
+```bash
+sudo daily-figures status
+sudo daily-figures health
+sudo daily-figures logs
+sudo daily-figures restart
+sudo daily-figures update
+sudo daily-figures backup
+sudo daily-figures doctor
+```
 
-**Can I reinstall/rebuild Docker without losing records?** Yes; data is an
-external bind mount and existing databases are not replaced.
+`update` checks the database and mount, creates online and stopped-write
+snapshots, fast-forwards clean `main`, builds the image, applies migrations while
+the app is stopped, and verifies health afterward. The backup, update, restore,
+and migration paths share a filesystem lock.
 
-**What if Docker or the VPS is lost?** Files survive Docker removal. For total
-loss, restore the CloudPanel archive on a new VPS and run `post-restore`.
+## Development and tests
 
-**Restore from Google Drive?** Stage and inspect the downloaded CloudPanel
-archive, restore private directories, then run `post-restore`.
-
-**Change domain?** Create/validate the new CloudPanel site first; do not edit
-`install.conf` manually.
-
-**Update safely?** `daily-figures update` makes online and cutover recovery
-points and leaves data outside Git/Docker.
-
-## Development
+Local development may use the `./data` fallback in `docker-compose.yml`:
 
 ```bash
 cp .env.example .env
-# fill in local secrets
+# Fill in local-only values.
 docker compose up -d --build
 ```
 
-Production always uses both Compose files through the management utility. No
-test or installer contacts the production VPS.
+Production always adds `docker-compose.production.yml`, which requires explicit
+absolute data and environment paths. Run tests with:
+
+```bash
+python -m pytest
+```
+
+No test or installer test contacts the production VPS.

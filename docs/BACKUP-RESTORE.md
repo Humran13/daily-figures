@@ -42,8 +42,8 @@ checks mount/health. `--yes` is the explicit noninteractive confirmation.
    server/site archive, not an in-progress object.
 5. Download into private staging. List the archive and reject absolute paths,
    `..`, or unexpected links; never extract over live paths.
-6. Confirm `app-data/daily-figures/production.db`, uploads,
-   `app-config/daily-figures/.env`, and snapshots are present.
+6. Confirm `htdocs/<domain>/data/production.db`, uploads, `.env`, and
+   `data/backups` snapshots are present.
 7. Verify the database, then use individual restore or the disaster runbook.
 
 An upload success message alone does not prove restorability. Rehearse on a
