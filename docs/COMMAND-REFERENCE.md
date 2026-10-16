@@ -24,6 +24,14 @@ only for the CloudPanel domain. Mode, port 5000, configuration repair, storage,
 and backup defaults are automatic. Noninteractive installation requires the
 domain.
 
+Every production lifecycle command loads `/etc/daily-figures/install.conf`,
+validates the private CloudPanel paths, and uses both Compose files. Do not use
+bare `docker compose up`, `build`, or `restart` commands in production because
+they can use local-development fallbacks instead of the configured bind mount.
+If a database exists in `/opt/daily-figures/data` or under `htdocs` while the
+saved private path points elsewhere, commands stop without copying or creating
+a database.
+
 Restore/migration require typing `RESTORE`; `--yes` is the explicit automation
 equivalent. Conflicting operations share one lock. Scheduled backup skips with a
 clear failure rather than racing a cutover. Commands never print `.env`.

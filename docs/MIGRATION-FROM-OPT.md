@@ -2,7 +2,7 @@
 
 Source: `/opt/daily-figures/data/production.db`
 
-Target: `/home/<actual-site-user>/htdocs/<domain>/data/production.db`
+Target: `/home/<actual-site-user>/app-data/daily-figures/production.db`
 
 ## Preflight and cutover
 
@@ -22,24 +22,18 @@ If a safety check fails, resolve it manually; do not force-reset the production
 checkout. Existing `.env` files, SQLite databases, uploads, and backups remain
 in place.
 
-The installer detects the legacy database automatically. When the website
-destination has no database, it verifies the source, stops legacy writes,
-copies through SQLite, copies uploads only into an empty target, fixes
-ownership, migrates once, starts, and verifies integrity/mount/health. Original
-legacy data remains intact. It never overwrites an existing website database.
+The installer does not migrate or copy a legacy database automatically. If it
+finds `/opt/daily-figures/data/production.db` while private storage is
+configured, it stops and reports the mismatch. Any cutover must be separately
+reviewed and explicitly invoked with `daily-figures migrate-storage`; it never
+overwrites an existing private database.
 
 If both paths contain data, the command stops. Never merge automatically;
 inspect and deliberately use `daily-figures restore --from ...` for the chosen
 dataset.
 
-Before any successful schema migration, the unchanged legacy mount can be
-started for rollback:
-
-```bash
-cd /opt/daily-figures
-docker compose -f docker-compose.yml up -d daily-figures
-```
-
-After migration starts, do not assume old code/schema compatibility. Keep the
-app stopped, inspect state, and restore a verified final-cutover snapshot through
-the managed workflow if required.
+Do not use a bare Compose command for a production start or update. After an
+explicit cutover, use the management utility so it loads the saved production
+paths and Compose overlay. After migration starts, do not assume old
+code/schema compatibility; keep the app stopped, inspect state, and restore a
+verified final-cutover snapshot through the managed workflow if required.

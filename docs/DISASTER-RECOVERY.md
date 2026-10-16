@@ -4,8 +4,9 @@ This starts with an empty replacement VPS and never needs the failed server.
 
 1. Install CloudPanel on supported Ubuntu/Debian.
 2. Recreate the exact Reverse Proxy site/SSL targeting `127.0.0.1:5000`.
-3. Restore the CloudPanel website directory from the completed Drive archive so
-   `htdocs/<domain>/data/production.db` and uploads are already present.
+3. Restore the CloudPanel site user's private home directories from the
+   completed Drive archive so `app-data/daily-figures/production.db`, uploads,
+   `app-config/daily-figures/.env`, and backups are already present.
 4. Run the installer:
 
    ```bash
@@ -23,6 +24,6 @@ This starts with an empty replacement VPS and never needs the failed server.
 
 The installer automatically recognizes the restored database, preserves it,
 creates a safety snapshot, applies pending migrations, and mounts that exact
-website `data` directory at `/app/data`. If no records appear, stop immediately
+private `app-data/daily-figures` directory at `/app/data`. If no records appear, stop immediately
 and inspect the mount; do not enter new data until the intended database is
 confirmed.

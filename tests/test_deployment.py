@@ -135,6 +135,54 @@ def _bash_path(path: Path) -> str:
     return result.stdout.strip()
 
 
+def _write_install_state(tmp_path: Path, *, data_dir: Path | None = None, omit: set[str] | None = None) -> dict[str, Path]:
+    omit = omit or set()
+    domain = "figures.example.com"
+    site_home = tmp_path / "home" / "fixture-user"
+    site_dir = site_home / "htdocs" / domain
+    code_dir = tmp_path / "opt" / "daily-figures"
+    data_dir = data_dir or site_home / "app-data" / "daily-figures"
+    config_dir = site_home / "app-config" / "daily-figures"
+    backup_root = site_home / "app-backups" / "daily-figures"
+    vhost = tmp_path / "nginx" / f"{domain}.conf"
+    state = tmp_path / "install.conf"
+    for path in (site_dir, code_dir, data_dir, config_dir, backup_root, vhost.parent):
+        path.mkdir(parents=True, exist_ok=True)
+    vhost.write_text(f"server {{ server_name {domain}; proxy_pass http://127.0.0.1:5000; }}\n")
+    values = {
+        "DOMAIN": domain,
+        "SITE_USER": "fixture-user",
+        "SITE_HOME": _bash_path(site_home),
+        "SITE_DIR": _bash_path(site_dir),
+        "VHOST_FILE": _bash_path(vhost),
+        "SITE_UID": "1001",
+        "SITE_GID": "1001",
+        "CODE_DIR": _bash_path(code_dir),
+        "DATA_DIR": _bash_path(data_dir),
+        "CONFIG_DIR": _bash_path(config_dir),
+        "BACKUP_ROOT": _bash_path(backup_root),
+        "PORT": "5000",
+        "COMPOSE_FILE": "docker-compose.production.yml",
+        "BACKUP_RETENTION": "14",
+        "BACKUP_ON_CALENDAR": "*-*-* 04:00:00",
+    }
+    state.write_text("".join(f"{key}='{value}'\n" for key, value in values.items() if key not in omit))
+    return {
+        "state": state, "site_home": site_home, "site_dir": site_dir, "code_dir": code_dir,
+        "data_dir": data_dir, "config_dir": config_dir, "backup_root": backup_root,
+    }
+
+
+def _load_state(paths: dict[str, Path]) -> subprocess.CompletedProcess[str]:
+    env = os.environ | {
+        "DF_TEST_MODE": "1",
+        "DF_STATE_FILE": _bash_path(paths["state"]),
+    }
+    return subprocess.run(
+        [_bash(), str(MANAGER), "_test-load-state"], env=env, capture_output=True, text=True,
+    )
+
+
 @pytest.mark.parametrize(
     ("domain", "site_user"),
     [("figures.example.com", "fixture-user"), ("stock.other.test", "another-user")],
@@ -238,42 +286,69 @@ def test_installer_has_exactly_one_interactive_question():
     assert not any(text in install_body for text in forbidden)
 
 
-def test_cloudpanel_vhost_data_protection_is_idempotent(tmp_path):
-    domain = "figures.example.com"
-    nginx = tmp_path / "nginx"
-    site = tmp_path / "home" / "fixture-user" / "htdocs" / domain
-    nginx.mkdir()
-    site.mkdir(parents=True)
-    vhost = nginx / f"{domain}.conf"
-    vhost.write_text(
-        "server {\n"
-        f"  server_name {domain};\n"
-        "  location / { proxy_pass http://127.0.0.1:5000; }\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    env = os.environ | {
-        "DF_TEST_MODE": "1",
-        "DF_TEST_SITE_USER": "fixture-user",
-        "DF_HOME_ROOT": _bash_path(tmp_path / "home"),
-        "DF_NGINX_DIRS": _bash_path(nginx),
-        "DF_RUNTIME_DIR": _bash_path(tmp_path / "runtime"),
-    }
-    command = [_bash(), str(MANAGER), "_test-protect-data", domain, "5000"]
-    first = subprocess.run(command, env=env, capture_output=True, text=True)
-    second = subprocess.run(command, env=env, capture_output=True, text=True)
-    assert first.returncode == 0, first.stderr
-    assert second.returncode == 0, second.stderr
-    protected = vhost.read_text(encoding="utf-8")
-    assert protected.count("DAILY FIGURES PRIVATE DATA - MANAGED") == 1
-    assert "location = /data { return 404; }" in protected
-    assert "location ^~ /data/ { return 404; }" in protected
+def test_existing_private_database_and_saved_paths_are_preserved(tmp_path):
+    paths = _write_install_state(tmp_path)
+    database = paths["data_dir"] / "production.db"
+    database.write_bytes(b"existing-production-database")
+
+    result = _load_state(paths)
+
+    assert result.returncode == 0, result.stderr
+    assert _bash_path(paths["data_dir"]) in result.stdout
+    assert _bash_path(paths["config_dir"]) in result.stdout
+    assert _bash_path(paths["backup_root"]) in result.stdout
+    assert database.read_bytes() == b"existing-production-database"
+
+
+def test_state_rejects_htdocs_storage_path_mismatch(tmp_path):
+    site_home = tmp_path / "home" / "fixture-user"
+    paths = _write_install_state(tmp_path, data_dir=site_home / "htdocs" / "figures.example.com" / "data")
+    result = _load_state(paths)
+    assert result.returncode != 0
+    assert "unsafe data path" in result.stderr or "production data path mismatch" in result.stderr
+
+
+def test_state_requires_production_data_path(tmp_path):
+    paths = _write_install_state(tmp_path, omit={"DATA_DIR"})
+    result = _load_state(paths)
+    assert result.returncode != 0
+    assert "DATA_DIR" in result.stderr
+
+
+def test_private_configuration_rejects_opt_database_fallback(tmp_path):
+    paths = _write_install_state(tmp_path)
+    legacy = paths["code_dir"] / "data" / "production.db"
+    legacy.parent.mkdir()
+    legacy.write_bytes(b"must-not-be-copied")
+
+    result = _load_state(paths)
+
+    assert result.returncode != 0
+    assert "database location mismatch" in result.stderr
+    assert not (paths["data_dir"] / "production.db").exists()
+    assert legacy.read_bytes() == b"must-not-be-copied"
+
+
+def test_conflicting_database_locations_stop_without_overwrite(tmp_path):
+    paths = _write_install_state(tmp_path)
+    configured = paths["data_dir"] / "production.db"
+    configured.write_bytes(b"configured")
+    conflicting = paths["site_dir"] / "data" / "production.db"
+    conflicting.parent.mkdir()
+    conflicting.write_bytes(b"conflicting")
+
+    result = _load_state(paths)
+
+    assert result.returncode != 0
+    assert "database location mismatch" in result.stderr
+    assert configured.read_bytes() == b"configured"
+    assert conflicting.read_bytes() == b"conflicting"
 
 
 def test_missing_configuration_is_generated_without_replacing_secret(tmp_path):
     code_dir = tmp_path / "code"
     site_home = tmp_path / "home" / "site-user"
-    env_file = site_home / "htdocs" / "figures.example.com" / "data" / ".env"
+    env_file = site_home / "app-config" / "daily-figures" / ".env"
     code_dir.mkdir()
     env_file.parent.mkdir(parents=True)
     env_file.write_text("SECRET_KEY=preserve-this-secret\n", encoding="utf-8")
@@ -293,34 +368,74 @@ def test_missing_configuration_is_generated_without_replacing_secret(tmp_path):
     assert env_file.read_text(encoding="utf-8") == repaired
 
 
-def test_production_compose_requires_explicit_paths():
+def test_production_compose_fails_closed_when_private_paths_are_undefined():
     text = (ROOT / "docker-compose.production.yml").read_text()
     assert "DAILY_FIGURES_DATA_DIR:?" in text
     assert "DAILY_FIGURES_ENV_FILE:?" in text
+    assert "DAILY_FIGURES_DATA_DIR:-" not in text
+    assert "DAILY_FIGURES_ENV_FILE:-" not in text
     assert ":/app/data" in text
     assert "\nvolumes:" not in text
     assert "127.0.0.1" in (ROOT / "docker-compose.yml").read_text()
 
 
-def test_install_layout_is_domain_derived_and_uses_htdocs_data():
+def test_install_layout_is_domain_derived_and_uses_private_cloudpanel_storage():
     source = MANAGER.read_text(encoding="utf-8")
-    assert 'DATA_DIR=$SITE_DIR/data' in source
+    assert 'DATA_DIR=$SITE_HOME/app-data/daily-figures' in source
     assert 'DATABASE=$DATA_DIR/production.db' in source
-    assert 'BACKUP_ROOT=$DATA_DIR/backups' in source
-    assert 'CONFIG_DIR=$DATA_DIR' in source
-    assert 'DATA_DIR=$SITE_HOME/app-data/daily-figures' not in source
+    assert 'CONFIG_DIR=$SITE_HOME/app-config/daily-figures' in source
+    assert 'BACKUP_ROOT=$SITE_HOME/app-backups/daily-figures' in source
+    assert 'DATA_DIR=$SITE_DIR/data' not in source
     assert "BACKUP_RETENTION=14" in source
     assert "BACKUP_ON_CALENDAR='*-*-* 04:00:00'" in source
 
 
-def test_install_auto_detects_restored_and_legacy_databases_without_overwrite():
+def test_install_never_auto_copies_or_silently_switches_database_locations():
     source = MANAGER.read_text(encoding="utf-8")
     install_body = source.split("install_command() {", 1)[1].split("\nbackup_command()", 1)[0]
-    destination_check = install_body.index('if [[ -f $DATABASE ]]')
-    legacy_search = install_body.index('for candidate in "$CODE_DIR/data/production.db"')
-    copy_call = install_body.index('python_tool copy --source "$legacy_source" --destination-file "$DATABASE"')
-    assert destination_check < legacy_search < copy_call
-    assert "No existing database found; a new database will be initialized." in install_body
+    assert "validate_database_location" in install_body
+    assert 'python_tool copy --source "$legacy_source"' not in install_body
+    assert 'for candidate in "$CODE_DIR/data/production.db"' not in install_body
+    assert "refusing to initialize a replacement" in install_body
+
+
+def test_installer_rerun_preserves_saved_private_paths_and_existing_database():
+    source = MANAGER.read_text(encoding="utf-8")
+    install_body = source.split("install_command() {", 1)[1].split("\nbackup_command()", 1)[0]
+    state_load = install_body.index("load_state")
+    restore_paths = install_body.index("DATA_DIR=$saved_data_dir")
+    database_preflight = install_body.index("validate_database_location")
+    existing_database = install_body.index('if [[ -f $DATABASE ]]')
+    assert state_load < restore_paths < database_preflight < existing_database
+    assert 'saved installation database is missing at $DATABASE' in install_body
+
+
+def test_update_and_lifecycle_commands_use_saved_production_compose_state():
+    source = MANAGER.read_text(encoding="utf-8")
+    update_body = source.split("update_command() {", 1)[1].split("\nconfirm_destructive()", 1)[0]
+    assert "load_state" in update_body
+    assert "verify_mount" in update_body
+    assert "dc build daily-figures" in update_body
+    assert "docker compose" not in update_body
+    dc_body = source.split("dc() {", 1)[1].split("\n}", 1)[0]
+    assert 'set_compose_environment' in dc_body
+    assert '-f "$CODE_DIR/docker-compose.yml" -f "$CODE_DIR/$COMPOSE_FILE"' in dc_body
+
+
+def test_container_rebuild_keeps_configured_host_directory_bound_to_app_data():
+    compose = (ROOT / "docker-compose.production.yml").read_text()
+    source = MANAGER.read_text(encoding="utf-8")
+    assert "${DAILY_FIGURES_DATA_DIR:?Private persistent data directory is required}:/app/data" in compose
+    assert "export DAILY_FIGURES_DATA_DIR=$DATA_DIR" in source
+    assert "dc build daily-figures" in source
+    assert "dc up -d daily-figures" in source
+
+
+def test_directory_ownership_keeps_runtime_data_with_cloudpanel_site_user():
+    source = MANAGER.read_text(encoding="utf-8")
+    body = source.split("prepare_directories() {", 1)[1].split("\n}", 1)[0]
+    assert 'chown "$SITE_UID:$SITE_GID" "$DATA_DIR" "$DATA_DIR/uploads"' in body
+    assert 'chown root:root "$CONFIG_DIR" "$BACKUP_ROOT"' in body
 
 
 def test_container_entrypoint_does_not_migrate_or_backup_implicitly():
