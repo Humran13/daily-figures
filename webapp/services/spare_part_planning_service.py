@@ -45,11 +45,24 @@ SOURCE_LOCAL = "local_uganda"
 SOURCE_BEST_PRICE = "best_price"
 SOURCE_CHOICES = (SOURCE_CHINA, SOURCE_LOCAL, SOURCE_BEST_PRICE)
 
-# Default safety stock, used only when a part has no minimum_stock set
-# (minimum_stock itself IS the per-part safety-stock override — see
-# safety_stock_for()'s docstring; this avoids adding a second, duplicate
-# "safety stock" column to the schema).
+# Default safety stock, used only when a part has no safety_stock_override
+# set. minimum_stock/reorder level and safety stock are DIFFERENT concepts
+# — minimum_stock drives the existing low-stock alert and is never read
+# here (see safety_stock_for()'s docstring) — so this uses its own
+# dedicated, nullable column rather than conflating the two.
 DEFAULT_SAFETY_STOCK_MONTHS = Decimal("1")
+
+# This application has no purchase-order/pending-receipt system yet.
+# Flipping this to True (once a real source is wired in) is the only
+# change needed for incoming_stock_display() to start showing the real
+# quantity instead of "Not tracked" — see confirmed_incoming_stock_for().
+INCOMING_STOCK_TRACKED = False
+
+# A row without enough price information to be ranked by consumption
+# value is explicitly Unclassified — never silently given a fabricated
+# "C" (low-value) class it was never actually shown to deserve (see
+# classify_abc()).
+ABC_UNCLASSIFIED = "Unclassified"
 
 # Stock-coverage thresholds (in months) that drive procurement priority —
 # see procurement_priority()'s docstring for the full rule cascade.
@@ -115,30 +128,48 @@ def _quantize_money(value):
 
 # ---------- safety stock / recommended purchase / coverage ----------
 
-def safety_stock_for(minimum_stock, average_monthly_consumption_value):
+def safety_stock_for(safety_stock_override, average_monthly_consumption_value):
     """
-    Safety stock reuses the EXISTING minimum_stock field as its per-part
-    override (minimum_stock is already "the quantity we always want on
-    hand" everywhere else in the app — adding a second, parallel
-    "safety_stock" column would duplicate it). When a part has no
-    minimum_stock configured, the application default applies instead:
-    DEFAULT_SAFETY_STOCK_MONTHS worth of its own average monthly
-    consumption. Never negative.
+    Safety stock is DELIBERATELY independent of minimum_stock. minimum_stock
+    is the existing reorder-level/low-stock-alert field
+    (is_low_stock()/stock_status_for()) and keeps meaning exactly that,
+    completely unaffected by this function. safety_stock_override is its
+    own nullable column (migration d4f6a8b0c2e4): when a part has one
+    set, it is used as-is; when NULL (every part by default), the
+    application default rule applies instead — DEFAULT_SAFETY_STOCK_MONTHS
+    worth of that part's own average monthly consumption. Never negative.
     """
-    if minimum_stock is not None:
-        return minimum_stock
+    if safety_stock_override is not None:
+        return safety_stock_override
     return average_monthly_consumption_value * DEFAULT_SAFETY_STOCK_MONTHS
 
 
 def confirmed_incoming_stock_for(spare_part):
     """
     The application has no purchase-order/pending-receipt concept yet, so
-    confirmed incoming stock is always zero — architected as its own
-    function (rather than a literal 0 inlined at every call site) so a
-    real incoming-stock source can be wired in here later without
-    touching recommended_purchase(), the route, or the template.
+    confirmed incoming stock is always zero for the FORECAST MATH —
+    architected as its own function (rather than a literal 0 inlined at
+    every call site) so a real incoming-stock source can be wired in here
+    later without touching recommended_purchase(), the route, or the
+    template. See incoming_stock_display() for the human-facing
+    representation, which must never imply this zero was verified.
     """
     return Decimal("0")
+
+
+def incoming_stock_display(incoming_stock_value):
+    """
+    Human-facing (UI/export) representation of incoming stock. While
+    INCOMING_STOCK_TRACKED is False, always "Not tracked" — a bare "0"
+    would wrongly imply the system verified there are no pending purchase
+    orders, when in fact it simply has no way to know. Once a real
+    incoming-stock source is wired in and INCOMING_STOCK_TRACKED is
+    flipped to True, this starts reporting the actual quantity instead —
+    the only change needed anywhere in the UI/export layer.
+    """
+    if not INCOMING_STOCK_TRACKED:
+        return "Not tracked"
+    return str(incoming_stock_value.quantize(Decimal("0.001")))
 
 
 def recommended_purchase(projected_demand, safety_stock, current_stock, incoming_stock):
@@ -231,11 +262,17 @@ def classify_abc(rows):
     ABC_B_CUTOFF_PERCENT). Falls back to a quantity-only ranking for the
     WHOLE report (never a per-row mix, which would not be a defensible,
     explainable single methodology) whenever fewer than
-    ABC_MIN_PRICE_COVERAGE of the rows have a usable unit cost. A missing
-    price is never treated as zero value — under value-based ABC, a row
-    with no usable cost simply cannot be ranked by value and is placed in
-    class C with that reason implicit in `methodology`/`price_coverage_ratio`
-    (never silently given a fabricated price).
+    ABC_MIN_PRICE_COVERAGE of the rows have a usable unit cost.
+
+    A missing price is NEVER treated as zero value, and is never silently
+    folded into class C either — "C" means "genuinely low consumption
+    value", which is a claim this function cannot make about a row whose
+    value it cannot compute. Under value-based ABC, a row with no usable
+    cost is given the explicit ABC_UNCLASSIFIED class instead, so a
+    high-consumption item with simply no price on file is never
+    misread as low-priority. (Under the quantity-based fallback, every
+    row participates in the ranking regardless of pricing, so
+    Unclassified never applies there.)
     """
     rows = list(rows)
     if not rows:
@@ -255,7 +292,7 @@ def classify_abc(rows):
             pct = (cumulative / total_value * Decimal("100")) if total_value > 0 else Decimal("100")
             class_by_id[r["id"]] = _bucket_for(pct)
         for r in rows:
-            class_by_id.setdefault(r["id"], "C")  # unpriced rows: never ranked, never fabricated
+            class_by_id.setdefault(r["id"], ABC_UNCLASSIFIED)  # no usable price: never ranked, never fabricated
     else:
         ranked = sorted(rows, key=lambda r: r["annual_quantity"], reverse=True)
         total_qty = sum((r["annual_quantity"] for r in ranked), Decimal("0"))
@@ -486,7 +523,7 @@ def build_planning_report(
         recent_monthly = analytics.average_monthly_consumption(recent_total, min(half_days, history_days or half_days))
 
         forecast = analytics.forecast_monthly_demand(avg_monthly)
-        safety_stock = safety_stock_for(part.minimum_stock, avg_monthly)
+        safety_stock = safety_stock_for(part.safety_stock_override, avg_monthly)
         incoming_stock = confirmed_incoming_stock_for(part)
         coverage_months = stock_coverage_months(current_stock, forecast)
         stockout_date = estimated_stockout_date(current_stock, forecast, as_of)
@@ -539,7 +576,8 @@ def build_planning_report(
             "current_stock": str(_quantize_qty(current_stock)),
             "minimum_stock": str(part.minimum_stock) if part.minimum_stock is not None else None,
             "safety_stock": str(_quantize_qty(safety_stock)),
-            "incoming_stock": str(_quantize_qty(incoming_stock)),
+            "incoming_stock": incoming_stock_display(incoming_stock),
+            "safety_stock_override": str(part.safety_stock_override) if part.safety_stock_override is not None else None,
             "quantity_used_30d": str(_quantize_qty(consumption.get(30, {}).get(part.id, Decimal("0")))),
             "quantity_used_90d": str(_quantize_qty(consumption.get(90, {}).get(part.id, Decimal("0")))),
             "quantity_used_180d": str(_quantize_qty(consumption.get(180, {}).get(part.id, Decimal("0")))),
@@ -575,7 +613,7 @@ def build_planning_report(
 
     abc_result = classify_abc([{"id": r["id"], "annual_quantity": r["_annual_quantity"], "unit_cost": r["_unit_cost"]} for r in rows])
     for r in rows:
-        r["abc_class"] = abc_result.class_by_id.get(r["id"], "C")
+        r["abc_class"] = abc_result.class_by_id.get(r["id"], ABC_UNCLASSIFIED)
         r["procurement_priority"] = procurement_priority(
             stock_status=r["stock_status"],
             coverage_months=Decimal(r["stock_coverage_months"]) if r["stock_coverage_months"] else None,
@@ -601,6 +639,7 @@ def build_planning_report(
             "analysis_period_days": analysis_period_days,
             "horizon_months": horizon_months,
             "source": source,
+            "incoming_stock_tracked": INCOMING_STOCK_TRACKED,
         },
     }
 
@@ -626,10 +665,12 @@ def _apply_view(rows, view):
     if view == VIEW_HIGHEST_VALUE:
         return sorted(rows, key=lambda r: Decimal(r.get("selected_source_projected_cost") or "0"), reverse=True)
     if view == VIEW_CHINA_SAVINGS:
-        return sorted(
-            [r for r in rows if r.get("estimated_savings")],
-            key=lambda r: Decimal(r["estimated_savings"]), reverse=True,
-        )
+        # r.get("estimated_savings") alone would be a string-truthiness
+        # check, which treats "0.00" (zero savings -- both sources cost
+        # the same) as truthy and wrongly lets it through. Only a
+        # genuinely positive, parseable savings figure qualifies.
+        savers = [r for r in rows if r.get("estimated_savings") and Decimal(r["estimated_savings"]) > 0]
+        return sorted(savers, key=lambda r: Decimal(r["estimated_savings"]), reverse=True)
     if view == VIEW_SLOW_MOVING:
         return [r for r in rows if r["is_slow_moving"]]
     if view == VIEW_DEAD_STOCK:

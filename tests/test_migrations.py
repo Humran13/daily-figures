@@ -172,6 +172,57 @@ def test_downgrade_removes_critical_flag_but_keeps_spare_parts_table(bare_app):
     conn.close()
 
 
+def test_upgrade_adds_safety_stock_override_without_touching_minimum_stock(bare_app):
+    db_path = bare_app
+    _seed_legacy_entries_table(db_path)
+
+    from webapp import create_app
+    from flask_migrate import upgrade
+
+    flask_app = create_app()
+    with flask_app.app_context():
+        upgrade()
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(spare_parts)")}
+    assert "safety_stock_override" in columns
+    assert "minimum_stock" in columns  # untouched, pre-existing column
+
+    conn.execute(
+        "INSERT INTO spare_parts (name, unit, current_stock_cache, active, critical, "
+        "minimum_stock, created_at, updated_at) "
+        "VALUES ('Legacy Part', 'pcs', 0, 1, 0, 5, '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT minimum_stock, safety_stock_override FROM spare_parts WHERE name='Legacy Part'"
+    ).fetchone()
+    # minimum_stock keeps its own value; safety_stock_override defaults to
+    # NULL ("use the application default rule") for every existing row.
+    assert row[0] == 5
+    assert row[1] is None
+    conn.close()
+
+
+def test_downgrade_removes_safety_stock_override_but_keeps_minimum_stock(bare_app):
+    db_path = bare_app
+    _seed_legacy_entries_table(db_path)
+
+    from webapp import create_app
+    from flask_migrate import upgrade, downgrade
+
+    flask_app = create_app()
+    with flask_app.app_context():
+        upgrade()
+        downgrade(revision="c3d5e7f9a1b2")
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(spare_parts)")}
+    assert "safety_stock_override" not in columns
+    assert "minimum_stock" in columns
+    conn.close()
+
+
 def test_no_single_migration_ever_drops_entries():
     """Static guard: scan every migration script and fail loudly if one is
     ever added that touches the entries table."""

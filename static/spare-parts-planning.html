@@ -65,6 +65,8 @@
   .badge-A{ background:#E6F4EE; color:var(--teal); }
   .badge-B{ background:#FBF0DC; color:#8A6410; }
   .badge-C{ background:#F1EEE7; color:var(--ink-soft); }
+  .badge-Unclassified{ background:#F1EEE7; color:var(--ink-soft); font-style:italic; }
+  .incoming-untracked{ color:var(--ink-soft); font-style:italic; }
   .badge-Urgent{ background:#FBE4E1; color:var(--red); }
   .badge-High{ background:#FBF0DC; color:#8A6410; }
   .badge-Medium{ background:#E8EEF5; color:#3D5A80; }
@@ -133,7 +135,7 @@
         <label>Preferred Source <select id="fPreferredSource">
           <option value="">Any</option><option value="china">China</option><option value="local_uganda">Local</option>
         </select></label>
-        <label>ABC Class <select id="fAbc"><option value="">All</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label>
+        <label>ABC Class <select id="fAbc"><option value="">All</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="Unclassified">Unclassified (no price)</option></select></label>
         <label>Stock Status <select id="fStockStatus">
           <option value="">All</option><option value="stockout">Stockout</option>
           <option value="below_minimum">Below Minimum</option><option value="healthy">Healthy</option>
@@ -180,6 +182,16 @@ function escapeHtml(s){
 }
 function fmtQty(v){ return v==null ? '—' : String(Number(v)); }
 function fmtMoney(v){ return v==null ? '—' : Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtSource(v){ return v==null ? '—' : (v === 'china' ? 'China' : (v === 'local_uganda' ? 'Local' : v)); }
+function fmtIncoming(v){
+  // "Not tracked" (or any other non-numeric status string) is shown
+  // verbatim, never run through Number() — see incoming_stock_display()
+  // in spare_part_planning_service.py for why a bare "0" would be
+  // misleading here.
+  if(v == null) return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : `<span class="incoming-untracked">${escapeHtml(v)}</span>`;
+}
 
 let canSeePricing = false;
 let canEditCritical = false;
@@ -211,6 +223,7 @@ const BASE_COLUMNS = [
   {key:'recommended_purchase_9m', label:'Buy 9mo'},
   {key:'recommended_purchase_12m', label:'Buy 12mo'},
   {key:'recommended_purchase_selected', label:'Buy (Selected)'},
+  {key:'preferred_cost_source', label:'Preferred Source'},
   {key:'selected_source', label:'Source'},
   {key:'abc_class', label:'ABC'},
   {key:'procurement_priority', label:'Priority'},
@@ -269,13 +282,14 @@ function renderRows(rows){
       <td>${coverage}</td>
       <td>${escapeHtml(stockout)}</td>
       <td>${fmtQty(r.safety_stock)}</td>
-      <td>${fmtQty(r.incoming_stock)}</td>
+      <td>${fmtIncoming(r.incoming_stock)}</td>
       <td>${fmtQty(r.recommended_purchase_3m)}</td>
       <td>${fmtQty(r.recommended_purchase_6m)}</td>
       <td>${fmtQty(r.recommended_purchase_9m)}</td>
       <td>${fmtQty(r.recommended_purchase_12m)}</td>
       <td><strong>${fmtQty(r.recommended_purchase_selected)}</strong></td>
-      <td>${escapeHtml(r.selected_source||'—')}</td>
+      <td>${fmtSource(r.preferred_cost_source)}</td>
+      <td>${fmtSource(r.selected_source)}</td>
       <td><span class="badge badge-${r.abc_class}">${escapeHtml(r.abc_class)}</span></td>
       <td><span class="badge badge-${r.procurement_priority}">${escapeHtml(r.procurement_priority)}</span></td>
       <td>${escapeHtml(r.stock_status)}</td>
@@ -374,8 +388,10 @@ async function loadReport(){
   renderRows(data.rows);
   const m = data.methodology;
   document.getElementById('methodologyNote').textContent =
-    `ABC methodology: ${m.abc_methodology} (price coverage ${Math.round(m.abc_price_coverage*100)}%). ` +
-    `As of ${m.as_of}. Analysis window: ${m.analysis_period_days} days. Horizon: ${m.horizon_months} months. Source: ${m.source}.`;
+    `ABC methodology: ${m.abc_methodology} (price coverage ${Math.round(m.abc_price_coverage*100)}%; ` +
+    `items without enough pricing data are shown as Unclassified, never assumed low-value). ` +
+    `As of ${m.as_of}. Analysis window: ${m.analysis_period_days} days. Horizon: ${m.horizon_months} months. Source: ${m.source}. ` +
+    `Incoming stock: ${m.incoming_stock_tracked ? 'tracked' : 'Not tracked — pending purchase orders are not included'}.`;
   ['exportCsv','exportXlsx','exportPdf'].forEach((id,i) => {
     const fmt = ['csv','xlsx','pdf'][i];
     document.getElementById(id).href = '/api/spare-parts/planning/export.' + fmt + '?' + params.toString();
@@ -418,7 +434,12 @@ document.getElementById('applyFiltersBtn').addEventListener('click', loadReport)
   const s = await (await fetch('/api/session')).json();
   if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
   canSeePricing = s.user.role === 'super_admin';
-  canEditCritical = s.user.role === 'manager' || s.user.role === 'super_admin';
+  // Critical status drives procurement priority directly, so changing it
+  // is Super-Administrator-only (same rule as pricing) — enforced
+  // server-side in webapp/routes/spare_parts.py's
+  // _critical_forbidden_response(); this just hides the control for
+  // anyone who could not actually use it.
+  canEditCritical = s.user.role === 'super_admin';
   renderHead();
   await loadLookups();
   await loadReport();

@@ -44,14 +44,24 @@ small day-to-day noise doesn't flip the label constantly.
 today it simply returns `average_monthly_consumption`, but a future,
 smarter method can replace its body without touching the route or page.
 
-**Safety stock** reuses the *existing* `minimum_stock` field as a per-part
-override (no duplicate column). When unset, the application default
-applies: 1 month of that part's own average monthly consumption.
+**Safety stock** is DELIBERATELY separate from `minimum_stock`.
+`minimum_stock` is the existing reorder-level/low-stock-alert field
+(`is_low_stock()`, `stock_status_for()`) and keeps meaning exactly that —
+unchanged by this feature. Safety stock has its own nullable column,
+`safety_stock_override` (migration `d4f6a8b0c2e4`): when a part has one
+set, it is used as-is; when `NULL` (every part by default), the
+application default applies instead — 1 month of that part's own average
+monthly consumption. `safety_stock_for()` never reads `minimum_stock`.
 
-**Confirmed incoming stock** is always `0` — this application has no
-purchase-order/pending-receipt concept yet. It is its own function
-(`confirmed_incoming_stock_for()`) specifically so a real source can be
-wired in later without touching the recommended-purchase formula.
+**Confirmed incoming stock** is always `0` for the forecast math — this
+application has no purchase-order/pending-receipt concept yet. It is its
+own function (`confirmed_incoming_stock_for()`) specifically so a real
+source can be wired in later without touching the recommended-purchase
+formula. The UI/export-facing value is never a bare "0", which would
+wrongly imply a verified absence of pending orders — `incoming_stock_display()`
+always shows **"Not tracked"** while `INCOMING_STOCK_TRACKED` is `False`
+(flipping that one flag, once a real source exists, is the only change
+needed to show the real quantity instead).
 
 ## Recommended purchase
 
@@ -78,8 +88,16 @@ Pareto cutoffs at the first ~80% of cumulative value = A, next ~15% = B,
 remaining ~5% = C). Falls back to a **quantity-only** ranking for the
 *entire* report — never a per-row mix, which would not be one defensible
 method — whenever fewer than 50% of the in-scope rows have a usable unit
-cost. A missing price is never treated as zero value; an unpriced row
-under value-based ABC is placed in class C rather than ranked.
+cost (the threshold is inclusive: exactly 50% still uses value-based ABC).
+
+A missing price is never treated as zero value, and — design review
+correction — is never silently folded into class C either. Under
+value-based ABC, a row with no usable cost is explicitly
+**`Unclassified`**, never `C`: `C` asserts "genuinely low consumption
+value", a claim this method cannot make about a row whose value it
+cannot compute, no matter how large that row's quantity is. Under the
+quantity-based fallback every row is ranked regardless of pricing, so
+`Unclassified` never appears there.
 
 ## Procurement priority
 
@@ -91,10 +109,17 @@ ever touching historical consumption numbers.
 
 ## Critical parts
 
-Manager or Super Administrator may mark a part Critical (with an optional
+**Super Administrator only** may mark a part Critical (with an optional
 note) via the existing `PATCH /api/spare-parts/<id>` endpoint — already
-audited by that route. Critical status is not a pricing field and is
-visible to every Spare Parts role.
+audited by that route. This is restricted the same way pricing is
+(`_critical_forbidden_response()`), because Critical status drives
+procurement priority directly, even though Manager may still edit this
+same spare part's other fields (name, category, `minimum_stock`,
+`safety_stock_override`, machine associations, ...) — a request that
+bundles `critical`/`critical_note` with other fields is rejected as a
+whole, never partially applied. *Viewing* Critical status follows normal
+Spare Parts section access and is visible to every role — only *changing*
+it is restricted.
 
 ## Slow Moving / Dead Stock
 
@@ -117,8 +142,11 @@ valid for that row.
 - View the planning page/API: any role with Spare Parts section access
   (same as the existing Dashboard/History screens) — `GET
   /api/spare-parts/planning`, `GET /api/spare-parts/planning/export.<fmt>`.
-- Mark a part Critical: Manager or Super Administrator (existing
-  `PATCH /api/spare-parts/<id>` rule).
+- Mark a part Critical: **Super Administrator only** (existing
+  `PATCH /api/spare-parts/<id>` endpoint, gated by
+  `_critical_forbidden_response()`). Manager may still edit this same
+  spare part's other fields; a mixed request containing `critical`/
+  `critical_note` is rejected in full.
 - Pricing/cost figures (unit prices, projected procurement cost, savings,
   cost-based summary cards): **Super Administrator only** — identical to
   every other financial figure in Spare Parts (`_may_see_pricing()`); even
@@ -132,7 +160,10 @@ generated date, and the assumptions above are always included).
 
 ## Known limitations
 
-- Confirmed incoming stock is always 0 (no purchase-order tracking yet).
+- Confirmed incoming stock is always "Not tracked" (no purchase-order
+  tracking yet) — never shown as a bare 0, which would wrongly imply a
+  verified absence of pending orders. Procurement reports/exports state
+  this explicitly in their assumptions text.
 - "Department" and "machine" filters mean "ever issued to/associated with
   that department/machine", not "every machine this SKU could physically
   fit" in the department case.

@@ -10,10 +10,12 @@ consistent with how it is already withheld everywhere else in Spare Parts.
 
 Marking a part Critical reuses the EXISTING PATCH /api/spare-parts/<id>
 endpoint (webapp/services/spare_part_service.py's update_spare_part()
-already accepts critical/critical_note) rather than a parallel endpoint —
-same Manager-or-Super-Administrator rule as every other spare-part
-master-data edit, and already audited by that route's existing before/
-after diff.
+already accepts critical/critical_note) rather than a parallel endpoint.
+Unlike most other spare-part master-data edits, changing Critical status
+is Super-Administrator-only (see that route's _critical_forbidden_response())
+— it drives procurement priority directly, so it is restricted the same
+way pricing is, even though Manager may still edit this same spare part's
+other fields. Already audited by that route's existing before/after diff.
 """
 from flask import Blueprint, Response, jsonify, request
 
@@ -81,9 +83,10 @@ _EXPORT_COLUMNS = [
     ("display_name", "Spare Part"), ("category_name", "Category"),
     ("unit", "Unit"), ("current_stock", "Current Stock"), ("minimum_stock", "Minimum Stock"),
     ("average_monthly_consumption", "Avg Monthly Consumption"),
+    ("safety_stock", "Safety Stock"), ("incoming_stock", "Incoming Stock"),
     ("recommended_purchase_selected", "Recommended Purchase (Selected Horizon)"),
     ("selected_horizon_months", "Horizon (Months)"),
-    ("selected_source", "Procurement Source"),
+    ("preferred_cost_source", "Preferred Source"), ("selected_source", "Procurement Source"),
     ("abc_class", "ABC Class"), ("critical", "Critical"), ("procurement_priority", "Priority"),
     ("stock_status", "Stock Status"),
 ]
@@ -121,10 +124,17 @@ def export_planning_report(fmt):
         "view": kwargs["view"],
         "assumptions": (
             "Recommended purchase = projected demand (average monthly consumption x horizon) "
-            "+ safety stock - current usable stock - confirmed incoming stock (always 0; not "
-            "yet tracked by this application), clamped to zero. Consumption is genuine Stock "
-            "Out activity only; adjustments, opening balances, receipts, and voided entries are "
-            "excluded. Confirm pricing and lead times before ordering."
+            "+ safety stock - current usable stock - confirmed incoming stock, clamped to zero. "
+            "Incoming stock: Not tracked -- this application has no purchase-order/pending-"
+            "receipt system yet, so pending purchase orders are NOT included in this plan; this "
+            "is not a verified absence of incoming stock. Safety stock uses each part's "
+            "configured override where set, otherwise one month of its own average "
+            "consumption -- separate from, and never derived from, its Minimum Stock reorder "
+            "level. Consumption is genuine Stock Out activity only; adjustments, opening "
+            "balances, receipts, and voided entries are excluded. An ABC class of "
+            "'Unclassified' means there is not enough pricing data to rank that item by "
+            "value -- it is not a claim of low value. Confirm pricing, incoming orders, and "
+            "lead times before ordering."
         ),
     }
     filters = {k: v for k, v in filters.items() if v not in (None, "", [])}
