@@ -48,6 +48,31 @@ def current_stock(spare_part_id):
     return total
 
 
+def bulk_current_stock(spare_part_ids):
+    """
+    Authoritative current stock for MANY parts in one query — the same
+    ledger derivation as current_stock() above, just grouped, so screens
+    like Consumption & Procurement Planning never do one query per row
+    (see spare_part_planning_service.py). Returns a dict keyed by every id
+    in `spare_part_ids`, defaulting absent/no-movement parts to Decimal(0).
+    """
+    ids = list(spare_part_ids)
+    stocks = {pid: Decimal("0") for pid in ids}
+    if not ids:
+        return stocks
+    rows = (
+        db.session.query(SparePartMovement.spare_part_id, SparePartMovement.movement_type, SparePartMovement.quantity)
+        .filter(SparePartMovement.spare_part_id.in_(ids), SparePartMovement.status == STATUS_ACTIVE)
+        .all()
+    )
+    for spare_part_id, movement_type, quantity in rows:
+        if movement_type in INCREASING_TYPES:
+            stocks[spare_part_id] = stocks.get(spare_part_id, Decimal("0")) + quantity
+        else:
+            stocks[spare_part_id] = stocks.get(spare_part_id, Decimal("0")) - quantity
+    return stocks
+
+
 def is_low_stock(spare_part, stock=None):
     if spare_part.minimum_stock is None:
         return False

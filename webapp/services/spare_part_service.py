@@ -168,7 +168,8 @@ def create_spare_part(*, name, model=None, size=None, specifications=None, categ
                        unit="pcs", minimum_stock=None, buying_price=None,
                        china_buying_price=None, local_buying_price=None,
                        preferred_cost_source=None, selling_price=None,
-                       location=None, notes=None, machine_ids=None):
+                       location=None, notes=None, machine_ids=None,
+                       critical=False, critical_note=None):
     name = normalize_text(name)
     if not name:
         raise SparePartError("name is required")
@@ -186,6 +187,7 @@ def create_spare_part(*, name, model=None, size=None, specifications=None, categ
         preferred_cost_source=preferred_cost_source, selling_price=selling_price,
         location=normalize_text(location) or None,
         notes=notes, active=True, current_stock_cache=0,
+        critical=bool(critical), critical_note=normalize_text(critical_note) or None,
     )
     db.session.add(spare_part)
     validate_pricing(spare_part)
@@ -247,6 +249,10 @@ def update_spare_part(spare_part, changes, machine_ids=None):
         spare_part.notes = changes["notes"]
     if "active" in changes:
         spare_part.active = bool(changes["active"])
+    if "critical" in changes:
+        spare_part.critical = bool(changes["critical"])
+    if "critical_note" in changes:
+        spare_part.critical_note = normalize_text(changes["critical_note"]) or None
 
     validate_pricing(spare_part)
 

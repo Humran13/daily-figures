@@ -22,6 +22,7 @@
     { key: 'stock-in', label: 'Stock In', href: '/spare-parts-stock-in.html', roles: ['operator', 'manager', 'super_admin'] },
     { key: 'stock-out', label: 'Stock Out', href: '/spare-parts-stock-out.html', roles: ['operator', 'manager', 'super_admin'] },
     { key: 'history', label: 'History', href: '/spare-parts-history.html', roles: null },
+    { key: 'planning', label: 'Planning', href: '/spare-parts-planning.html', roles: null },
     { key: 'master', label: 'Master Data', href: '/spare-parts-master.html', roles: ['manager', 'super_admin'] },
     { key: 'admin', label: 'Admin', href: '/admin.html', roles: ['super_admin'] },
   ];
@@ -32,6 +33,7 @@
     if (path === '/spare-parts-stock-in.html') return 'stock-in';
     if (path === '/spare-parts-stock-out.html') return 'stock-out';
     if (path === '/spare-parts-history.html') return 'history';
+    if (path === '/spare-parts-planning.html') return 'planning';
     if (path === '/spare-parts-master.html') return 'master';
     return null;
   }

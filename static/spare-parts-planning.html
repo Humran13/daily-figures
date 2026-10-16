@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1B2430">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Spare Parts">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app-shell.css">
+<title>Consumption &amp; Procurement Planning — Spare Parts</title>
+<style>
+  :root{
+    --ink:#1B2430; --ink-soft:#3D4756; --paper:#FCFAF6; --paper-dim:#F1EEE7; --line:#DEDACF;
+    --teal:#1F8A70; --amber:#E2A93B; --red:#C1443A;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:var(--sans); background:var(--ink); color:var(--ink); min-height:100vh; }
+  .shell{ max-width:1200px; margin:0 auto; min-height:100vh; background:var(--paper); display:flex; flex-direction:column; }
+  .sp-identity-bar{ background:var(--ink); color:var(--paper); padding:12px 16px; }
+  .sp-identity-row{ display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:8px; }
+  .sp-username{ font-weight:700; }
+  .sp-role{ color:#8A94A6; }
+  .sp-change-section{ margin-left:auto; background:none; border:1px solid #3D4756; color:#8A94A6; border-radius:6px; padding:4px 8px; font-size:11px; cursor:pointer; }
+  .sp-nav{ display:flex; gap:12px; overflow-x:auto; }
+  .sp-nav-link{ color:#8A94A6; text-decoration:none; font-size:12px; font-weight:600; padding-bottom:4px; white-space:nowrap; }
+  .sp-nav-link.active{ color:var(--paper); border-bottom:2px solid var(--amber); }
+  header{ padding:18px 20px 10px; }
+  header .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 4px; }
+  header h1{ margin:0; font-size:19px; font-weight:700; }
+  main{ flex:1; padding:16px; padding-bottom:60px; }
+
+  .panel{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px; }
+  .panel-title{ font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); margin:0 0 8px; }
+  .controls-row{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .controls-row label{ font-size:11px; color:var(--ink-soft); display:flex; flex-direction:column; gap:3px; }
+  .controls-row input, .controls-row select{ padding:7px 8px; border:1.5px solid var(--line); border-radius:8px; font-size:13px; min-width:110px; }
+  .controls-row input[type="checkbox"]{ min-width:auto; width:16px; height:16px; }
+  .checkbox-field{ flex-direction:row !important; align-items:center; gap:6px !important; }
+  #applyBtn{ background:var(--teal); color:white; border:none; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:600; cursor:pointer; align-self:flex-end; }
+  .hidden{ display:none !important; }
+
+  .cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin-bottom:12px; }
+  .card{ background:white; border:1.5px solid var(--line); border-radius:12px; padding:10px 12px; }
+  .card .num{ font-size:19px; font-weight:800; }
+  .card .label{ font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.03em; }
+  .card.risk .num{ color:var(--red); }
+  .card.money .num{ font-size:15px; }
+
+  .export-links a{ font-size:12px; color:var(--teal); text-decoration:underline; margin-right:10px; }
+  .methodology-note{ font-size:11px; color:var(--ink-soft); margin:6px 0 12px; }
+
+  .table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; }
+  table{ border-collapse:collapse; width:100%; font-size:12px; white-space:nowrap; }
+  th, td{ padding:7px 9px; border-bottom:1px solid var(--paper-dim); text-align:left; }
+  th{ background:var(--paper-dim); font-weight:700; position:sticky; top:0; cursor:pointer; user-select:none; }
+  th.sorted::after{ content:' \2193'; }
+  tbody tr:hover{ background:var(--paper-dim); }
+  .spec-sub{ color:var(--ink-soft); font-size:11px; }
+  .badge{ display:inline-block; padding:2px 7px; border-radius:999px; font-size:10.5px; font-weight:700; }
+  .badge-A{ background:#E6F4EE; color:var(--teal); }
+  .badge-B{ background:#FBF0DC; color:#8A6410; }
+  .badge-C{ background:#F1EEE7; color:var(--ink-soft); }
+  .badge-Urgent{ background:#FBE4E1; color:var(--red); }
+  .badge-High{ background:#FBF0DC; color:#8A6410; }
+  .badge-Medium{ background:#E8EEF5; color:#3D5A80; }
+  .badge-Low{ background:#F1EEE7; color:var(--ink-soft); }
+  .trend-up{ color:var(--red); } .trend-down{ color:var(--teal); } .trend-flat{ color:var(--ink-soft); }
+  .critical-flag{ color:var(--red); font-weight:700; }
+  .critical-toggle{ cursor:pointer; background:none; border:1px solid var(--line); border-radius:6px; padding:2px 6px; font-size:10.5px; }
+  .no-pricing-note{ font-size:11px; color:var(--ink-soft); margin-bottom:8px; }
+  .empty-state{ padding:30px; text-align:center; color:var(--ink-soft); font-size:13px; }
+</style>
+</head>
+<body>
+
+<div class="shell" id="appShell">
+  <div id="appIdentityBar"></div>
+  <header>
+    <p class="eyebrow">Store Department · Spare Parts</p>
+    <h1>Consumption &amp; Procurement Planning</h1>
+  </header>
+  <main>
+    <div class="panel">
+      <p class="panel-title">Planning Controls</p>
+      <div class="controls-row">
+        <label>Planning Horizon
+          <select id="cHorizon">
+            <option value="3">3 months</option>
+            <option value="6">6 months</option>
+            <option value="9">9 months</option>
+            <option value="12" selected>12 months</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </label>
+        <label id="cHorizonCustomWrap" class="hidden">Custom months
+          <input type="number" id="cHorizonCustom" min="1" step="1" value="12">
+        </label>
+        <label>Procurement Source
+          <select id="cSource">
+            <option value="best_price" selected>Best Price</option>
+            <option value="china">China</option>
+            <option value="local_uganda">Local</option>
+          </select>
+        </label>
+        <label>Historical Analysis Period
+          <select id="cPeriod">
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="180">Last 180 days</option>
+            <option value="365" selected>Last 365 days</option>
+            <option value="custom">Custom range…</option>
+          </select>
+        </label>
+        <label id="cFromWrap" class="hidden">From <input type="date" id="cFrom"></label>
+        <label id="cToWrap" class="hidden">To <input type="date" id="cTo"></label>
+        <button id="applyBtn" type="button">Apply</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-title">Filters</p>
+      <div class="controls-row">
+        <label>Search <input id="fSearch" placeholder="Name or specification"></label>
+        <label>Category <select id="fCategory"><option value="">All</option></select></label>
+        <label>Machine <select id="fMachine"><option value="">All</option></select></label>
+        <label>Department <select id="fDepartment"><option value="">All</option></select></label>
+        <label>Supplier <select id="fSupplier"><option value="">All</option></select></label>
+        <label>Preferred Source <select id="fPreferredSource">
+          <option value="">Any</option><option value="china">China</option><option value="local_uganda">Local</option>
+        </select></label>
+        <label>ABC Class <select id="fAbc"><option value="">All</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label>
+        <label>Stock Status <select id="fStockStatus">
+          <option value="">All</option><option value="stockout">Stockout</option>
+          <option value="below_minimum">Below Minimum</option><option value="healthy">Healthy</option>
+        </select></label>
+        <label>View <select id="fView">
+          <option value="">Default (priority)</option>
+          <option value="most_consumed">Most Consumed</option>
+          <option value="fastest_moving">Fastest Moving</option>
+          <option value="increasing_consumption">Increasing Consumption</option>
+          <option value="stockout_risk">Stockout Risk</option>
+          <option value="below_minimum_stock">Below Minimum Stock</option>
+          <option value="critical_parts">Critical Parts</option>
+          <option value="highest_procurement_value">Highest Procurement Value</option>
+          <option value="china_savings_opportunity">China Savings Opportunity</option>
+          <option value="slow_moving">Slow Moving</option>
+          <option value="dead_stock">Dead Stock</option>
+        </select></label>
+        <label class="checkbox-field"><input type="checkbox" id="fCriticalOnly"> Critical only</label>
+        <label class="checkbox-field"><input type="checkbox" id="fIncludeInactive"> Include inactive</label>
+        <button id="applyFiltersBtn" type="button">Filter</button>
+      </div>
+    </div>
+
+    <div class="cards" id="summaryCards"></div>
+    <p class="methodology-note" id="methodologyNote"></p>
+    <div class="export-links" id="exportLinks">
+      Export: <a id="exportCsv" href="#">CSV</a><a id="exportXlsx" href="#">XLSX</a><a id="exportPdf" href="#">PDF (printable report)</a>
+    </div>
+
+    <div class="table-wrap">
+      <table id="planningTable">
+        <thead><tr id="planningHead"></tr></thead>
+        <tbody id="planningBody"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="/pwa.js" defer></script>
+<script src="/spare-parts-shell.js" defer></script>
+<script>
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtQty(v){ return v==null ? '—' : String(Number(v)); }
+function fmtMoney(v){ return v==null ? '—' : Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+let canSeePricing = false;
+let canEditCritical = false;
+let currentRows = [];
+
+const BASE_COLUMNS = [
+  {key:'rank', label:'#'},
+  {key:'display_name', label:'Spare Part'},
+  {key:'category_name', label:'Category'},
+  {key:'machine_names', label:'Machine(s)'},
+  {key:'department_names', label:'Department(s)'},
+  {key:'unit', label:'Unit'},
+  {key:'current_stock', label:'Current Stock'},
+  {key:'minimum_stock', label:'Min Stock'},
+  {key:'critical', label:'Critical'},
+  {key:'quantity_used_30d', label:'Used 30d'},
+  {key:'quantity_used_90d', label:'Used 90d'},
+  {key:'quantity_used_180d', label:'Used 180d'},
+  {key:'quantity_used_365d', label:'Used 365d'},
+  {key:'average_monthly_consumption', label:'Avg/Month'},
+  {key:'recent_monthly_consumption', label:'Recent/Month'},
+  {key:'consumption_trend', label:'Trend'},
+  {key:'stock_coverage_months', label:'Coverage (mo)'},
+  {key:'estimated_stockout_date', label:'Est. Stockout'},
+  {key:'safety_stock', label:'Safety Stock'},
+  {key:'incoming_stock', label:'Incoming'},
+  {key:'recommended_purchase_3m', label:'Buy 3mo'},
+  {key:'recommended_purchase_6m', label:'Buy 6mo'},
+  {key:'recommended_purchase_9m', label:'Buy 9mo'},
+  {key:'recommended_purchase_12m', label:'Buy 12mo'},
+  {key:'recommended_purchase_selected', label:'Buy (Selected)'},
+  {key:'selected_source', label:'Source'},
+  {key:'abc_class', label:'ABC'},
+  {key:'procurement_priority', label:'Priority'},
+  {key:'stock_status', label:'Status'},
+];
+const PRICING_COLUMNS = [
+  {key:'china_buying_price', label:'China Price'},
+  {key:'local_buying_price', label:'Local Price'},
+  {key:'china_projected_cost', label:'China Cost'},
+  {key:'local_projected_cost', label:'Local Cost'},
+  {key:'selected_source_projected_cost', label:'Selected Cost'},
+  {key:'estimated_savings', label:'Savings'},
+];
+
+function renderHead(){
+  const cols = canSeePricing ? BASE_COLUMNS.concat(PRICING_COLUMNS) : BASE_COLUMNS;
+  document.getElementById('planningHead').innerHTML = cols.map(c => `<th>${escapeHtml(c.label)}</th>`).join('');
+}
+
+function trendArrow(label){
+  if(label === 'Increasing') return '<span class="trend-up">▲ Increasing</span>';
+  if(label === 'Decreasing') return '<span class="trend-down">▼ Decreasing</span>';
+  if(label === 'Stable') return '<span class="trend-flat">▬ Stable</span>';
+  return '<span class="trend-flat">Insufficient Data</span>';
+}
+
+function renderRows(rows){
+  currentRows = rows;
+  const body = document.getElementById('planningBody');
+  if(!rows.length){
+    body.innerHTML = `<tr><td colspan="40"><div class="empty-state">No spare parts match the current filters.</div></td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((r, i) => {
+    const coverage = r.stock_coverage_months == null ? 'No recent consumption' : r.stock_coverage_months;
+    const stockout = r.estimated_stockout_date || (r.stock_coverage_months == null ? '—' : 'Beyond planning horizon');
+    let cells = `
+      <td>${i+1}</td>
+      <td><strong>${escapeHtml(r.display_name)}</strong></td>
+      <td>${escapeHtml(r.category_name||'—')}</td>
+      <td>${escapeHtml((r.machine_names||[]).join(', ')||'—')}</td>
+      <td>${escapeHtml((r.department_names||[]).join(', ')||'—')}</td>
+      <td>${escapeHtml(r.unit)}</td>
+      <td>${fmtQty(r.current_stock)}</td>
+      <td>${r.minimum_stock==null?'—':fmtQty(r.minimum_stock)}</td>
+      <td>${canEditCritical
+        ? `<button class="critical-toggle" data-id="${r.id}" data-critical="${r.critical}">${r.critical?'✓ Critical':'Mark Critical'}</button>`
+        : (r.critical ? '<span class="critical-flag">Critical</span>' : '—')}</td>
+      <td>${fmtQty(r.quantity_used_30d)}</td>
+      <td>${fmtQty(r.quantity_used_90d)}</td>
+      <td>${fmtQty(r.quantity_used_180d)}</td>
+      <td>${fmtQty(r.quantity_used_365d)}</td>
+      <td>${fmtQty(r.average_monthly_consumption)}</td>
+      <td>${fmtQty(r.recent_monthly_consumption)}</td>
+      <td>${trendArrow(r.consumption_trend)}</td>
+      <td>${coverage}</td>
+      <td>${escapeHtml(stockout)}</td>
+      <td>${fmtQty(r.safety_stock)}</td>
+      <td>${fmtQty(r.incoming_stock)}</td>
+      <td>${fmtQty(r.recommended_purchase_3m)}</td>
+      <td>${fmtQty(r.recommended_purchase_6m)}</td>
+      <td>${fmtQty(r.recommended_purchase_9m)}</td>
+      <td>${fmtQty(r.recommended_purchase_12m)}</td>
+      <td><strong>${fmtQty(r.recommended_purchase_selected)}</strong></td>
+      <td>${escapeHtml(r.selected_source||'—')}</td>
+      <td><span class="badge badge-${r.abc_class}">${escapeHtml(r.abc_class)}</span></td>
+      <td><span class="badge badge-${r.procurement_priority}">${escapeHtml(r.procurement_priority)}</span></td>
+      <td>${escapeHtml(r.stock_status)}</td>
+    `;
+    if(canSeePricing){
+      cells += `
+        <td>${fmtMoney(r.china_buying_price)}</td>
+        <td>${fmtMoney(r.local_buying_price)}</td>
+        <td>${fmtMoney(r.china_projected_cost)}</td>
+        <td>${fmtMoney(r.local_projected_cost)}</td>
+        <td>${fmtMoney(r.selected_source_projected_cost)}</td>
+        <td>${fmtMoney(r.estimated_savings)}</td>
+      `;
+    }
+    return `<tr>${cells}</tr>`;
+  }).join('');
+
+  body.querySelectorAll('.critical-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      const isCritical = btn.getAttribute('data-critical') === 'true';
+      await fetch(`/api/spare-parts/${id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({critical: !isCritical}),
+      });
+      await loadReport();
+    });
+  });
+}
+
+function renderSummary(summary){
+  const cards = [
+    {label:'Active Parts', value: summary.active_parts_count},
+    {label:'Qty Issued (365d)', value: summary.total_quantity_issued},
+    {label:'Fast-Moving (ABC A)', value: summary.fast_moving_count},
+    {label:'Stockout Risk', value: summary.stockout_risk_count, risk:true},
+    {label:'Below Minimum', value: summary.below_minimum_count, risk:true},
+    {label:'Critical At Risk', value: summary.critical_at_risk_count, risk:true},
+    {label:'Slow Moving', value: summary.slow_moving_count},
+    {label:'Dead Stock', value: summary.dead_stock_count},
+  ];
+  if(canSeePricing){
+    cards.push(
+      {label:'3-Month Spend', value: fmtMoney(summary.procurement_value_3m), money:true},
+      {label:'6-Month Spend', value: fmtMoney(summary.procurement_value_6m), money:true},
+      {label:'12-Month Spend', value: fmtMoney(summary.procurement_value_12m), money:true},
+      {label:'Selected-Horizon Spend', value: fmtMoney(summary.procurement_value_selected), money:true},
+      {label:'China Sourcing Total', value: fmtMoney(summary.china_sourcing_total), money:true},
+      {label:'Local Sourcing Total', value: fmtMoney(summary.local_sourcing_total), money:true},
+      {label:'Potential Savings', value: fmtMoney(summary.potential_savings), money:true},
+    );
+  }
+  document.getElementById('summaryCards').innerHTML = cards.map(c => `
+    <div class="card ${c.risk?'risk':''} ${c.money?'money':''}">
+      <div class="num">${escapeHtml(String(c.value==null?'—':c.value))}</div>
+      <div class="label">${escapeHtml(c.label)}</div>
+    </div>`).join('');
+}
+
+function currentHorizon(){
+  const sel = document.getElementById('cHorizon').value;
+  return sel === 'custom' ? (document.getElementById('cHorizonCustom').value || '12') : sel;
+}
+
+function paramsFromControls(){
+  const params = new URLSearchParams();
+  params.set('horizon_months', currentHorizon());
+  params.set('source', document.getElementById('cSource').value);
+  const period = document.getElementById('cPeriod').value;
+  if(period === 'custom'){
+    const from = document.getElementById('cFrom').value, to = document.getElementById('cTo').value;
+    if(from) params.set('date_from', from);
+    if(to) params.set('date_to', to);
+  } else {
+    params.set('analysis_period_days', period);
+  }
+  const q = document.getElementById('fSearch').value; if(q) params.set('q', q);
+  const category = document.getElementById('fCategory').value; if(category) params.set('category_id', category);
+  const machine = document.getElementById('fMachine').value; if(machine) params.set('machine_id', machine);
+  const department = document.getElementById('fDepartment').value; if(department) params.set('department_id', department);
+  const supplier = document.getElementById('fSupplier').value; if(supplier) params.set('supplier_id', supplier);
+  const preferredSource = document.getElementById('fPreferredSource').value; if(preferredSource) params.set('preferred_source', preferredSource);
+  const abc = document.getElementById('fAbc').value; if(abc) params.set('abc_class', abc);
+  const stockStatus = document.getElementById('fStockStatus').value; if(stockStatus) params.set('stock_status', stockStatus);
+  const view = document.getElementById('fView').value; if(view) params.set('view', view);
+  if(document.getElementById('fCriticalOnly').checked) params.set('critical_only', '1');
+  if(document.getElementById('fIncludeInactive').checked) params.set('include_inactive', '1');
+  return params;
+}
+
+async function loadReport(){
+  const params = paramsFromControls();
+  const res = await fetch('/api/spare-parts/planning?' + params.toString());
+  const data = await res.json();
+  renderSummary(data.summary);
+  renderRows(data.rows);
+  const m = data.methodology;
+  document.getElementById('methodologyNote').textContent =
+    `ABC methodology: ${m.abc_methodology} (price coverage ${Math.round(m.abc_price_coverage*100)}%). ` +
+    `As of ${m.as_of}. Analysis window: ${m.analysis_period_days} days. Horizon: ${m.horizon_months} months. Source: ${m.source}.`;
+  ['exportCsv','exportXlsx','exportPdf'].forEach((id,i) => {
+    const fmt = ['csv','xlsx','pdf'][i];
+    document.getElementById(id).href = '/api/spare-parts/planning/export.' + fmt + '?' + params.toString();
+  });
+}
+
+async function loadLookups(){
+  const [categories, machines, departments, suppliers] = await Promise.all([
+    fetch('/api/spare-parts/categories').then(r => r.json()),
+    fetch('/api/spare-parts/machines').then(r => r.json()),
+    fetch('/api/spare-parts/departments').then(r => r.json()),
+    fetch('/api/spare-parts/suppliers').then(r => r.json()),
+  ]);
+  const fill = (id, items) => {
+    const sel = document.getElementById(id);
+    items.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.id; opt.textContent = item.name;
+      sel.appendChild(opt);
+    });
+  };
+  fill('fCategory', categories);
+  fill('fMachine', machines);
+  fill('fDepartment', departments);
+  fill('fSupplier', suppliers);
+}
+
+document.getElementById('cHorizon').addEventListener('change', e => {
+  document.getElementById('cHorizonCustomWrap').classList.toggle('hidden', e.target.value !== 'custom');
+});
+document.getElementById('cPeriod').addEventListener('change', e => {
+  const isCustom = e.target.value === 'custom';
+  document.getElementById('cFromWrap').classList.toggle('hidden', !isCustom);
+  document.getElementById('cToWrap').classList.toggle('hidden', !isCustom);
+});
+document.getElementById('applyBtn').addEventListener('click', loadReport);
+document.getElementById('applyFiltersBtn').addEventListener('click', loadReport);
+
+(async function init(){
+  const s = await (await fetch('/api/session')).json();
+  if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
+  canSeePricing = s.user.role === 'super_admin';
+  canEditCritical = s.user.role === 'manager' || s.user.role === 'super_admin';
+  renderHead();
+  await loadLookups();
+  await loadReport();
+})();
+</script>
+</body>
+</html>

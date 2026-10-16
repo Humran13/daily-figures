@@ -227,3 +227,16 @@ def spare_parts_master_page():
     return _guard_page(
         "spare-parts-master.html", (ROLE_MANAGER, ROLE_SUPER_ADMIN), section_code=SECTION_SPARE_PARTS,
     )
+
+
+@pages_bp.route("/spare-parts-planning.html")
+def spare_parts_planning_page():
+    # Consumption & Procurement Planning — every role with Spare Parts
+    # section access may view it, same as the Dashboard/History screens.
+    # Financial figures (unit prices, projected cost, savings) are hidden
+    # client-side and never sent by the API to anyone but a Super
+    # Administrator (see webapp/routes/spare_part_planning.py's
+    # _may_see_pricing()); marking a part Critical still requires
+    # Manager/Super Administrator, enforced by the existing
+    # PATCH /api/spare-parts/<id> endpoint this page calls.
+    return _guard_page("spare-parts-planning.html", ROLES, section_code=SECTION_SPARE_PARTS)

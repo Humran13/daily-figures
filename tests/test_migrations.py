@@ -122,6 +122,56 @@ def test_downgrade_to_base_removes_new_tables_but_keeps_entries(bare_app):
     conn.close()
 
 
+def test_upgrade_adds_spare_part_critical_flag_and_planning_index(bare_app):
+    db_path = bare_app
+    _seed_legacy_entries_table(db_path)
+
+    from webapp import create_app
+    from flask_migrate import upgrade
+
+    flask_app = create_app()
+    with flask_app.app_context():
+        upgrade()
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(spare_parts)")}
+    assert "critical" in columns
+    assert "critical_note" in columns
+    # Every existing row defaults to "not critical" — additive only.
+    conn.execute(
+        "INSERT INTO spare_parts (name, unit, current_stock_cache, active, created_at, updated_at) "
+        "VALUES ('Legacy Part', 'pcs', 0, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    row = conn.execute("SELECT critical, critical_note FROM spare_parts WHERE name='Legacy Part'").fetchone()
+    assert row[0] == 0
+    assert row[1] is None
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list(spare_part_movements)")}
+    assert "ix_spare_part_movements_consumption_window" in indexes
+    conn.close()
+
+
+def test_downgrade_removes_critical_flag_but_keeps_spare_parts_table(bare_app):
+    db_path = bare_app
+    _seed_legacy_entries_table(db_path)
+
+    from webapp import create_app
+    from flask_migrate import upgrade, downgrade
+
+    flask_app = create_app()
+    with flask_app.app_context():
+        upgrade()
+        downgrade(revision="b9d4e6f8a1c3")
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(spare_parts)")}
+    assert "critical" not in columns
+    assert "critical_note" not in columns
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list(spare_part_movements)")}
+    assert "ix_spare_part_movements_consumption_window" not in indexes
+    conn.close()
+
+
 def test_no_single_migration_ever_drops_entries():
     """Static guard: scan every migration script and fail loudly if one is
     ever added that touches the entries table."""
