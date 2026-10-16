@@ -1603,7 +1603,7 @@ async function loadSparePricing(){
     <div>Priced / unpriced<strong>${t.priced_count} / ${t.unpriced_count}</strong></div>`;
   document.getElementById('spPricingBody').innerHTML = data.rows.map(r => `
     <tr data-id="${r.id}">
-      <td><strong>${escapeHtml(r.name)}</strong><div class="sub">${escapeHtml(r.specifications || '')}</div></td>
+      <td><strong>${escapeHtml(r.display_name || r.name)}</strong></td>
       <td class="nowrap">${fmtUGX(r.china_buying_price)}</td>
       <td class="nowrap">${fmtUGX(r.local_buying_price)}</td>
       <td class="nowrap">${fmtUGX(r.selling_price)}</td>
@@ -1618,7 +1618,7 @@ async function loadSparePricing(){
       <td class="pricing-compare">China profit: ${fmtUGX(r.china_profit_per_unit)}<br>Local profit: ${fmtUGX(r.local_profit_per_unit)}<br>Cost difference: ${fmtUGX(r.buying_cost_difference)}<br>Cheaper: ${escapeHtml(sourceLabel(r.cheaper_source))}</td>
       <td class="actions">
         <button class="btn-primary" data-sp-edit="${r.id}">Edit</button>
-        <button data-sp-history="${r.id}" data-sp-name="${escapeHtml(r.name)}">History</button>
+        <button data-sp-history="${r.id}" data-sp-name="${escapeHtml(r.display_name || r.name)}">History</button>
       </td>
     </tr>`).join('') || '<tr><td colspan="14" class="small">No spare parts match.</td></tr>';
 }
@@ -1634,7 +1634,7 @@ function openPricingEditor(id){
   const r = spPricingRows.get(String(id));
   if(!r) return;
   spPricingEditingId = id;
-  document.getElementById('spPricingEditName').textContent = r.name;
+  document.getElementById('spPricingEditName').textContent = r.display_name || r.name;
   document.getElementById('spChinaPrice').value = r.china_buying_price ?? '';
   document.getElementById('spLocalPrice').value = r.local_buying_price ?? '';
   document.getElementById('spSellingPrice').value = r.selling_price ?? '';

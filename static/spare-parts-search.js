@@ -20,9 +20,12 @@
     document.head.appendChild(style);
   })();
 
-  // "Bearing — 22213" (name first, then specifications when present).
+  // Shared presentation identity supplied by the API. The fallback keeps
+  // this compatible with older cached responses during a rolling deploy.
   function label(part) {
-    return part.specifications ? part.name + ' — ' + part.specifications : part.name;
+    if (part.display_name) return part.display_name;
+    var specification = String(part.specifications == null ? '' : part.specifications).trim();
+    return specification ? part.name + ' [' + specification + ']' : part.name;
   }
 
   // Secondary line in a results list: current stock, shown separately.

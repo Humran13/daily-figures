@@ -35,12 +35,21 @@
   main{ flex:1; padding:16px; padding-bottom:60px; }
   .cards{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
   .card{ background:white; border:1.5px solid var(--line); border-radius:14px; padding:14px; }
+  .card-link{ display:block; color:inherit; text-decoration:none; cursor:pointer; transition:border-color .15s ease, box-shadow .15s ease; }
+  .card-link:hover{ border-color:var(--teal); box-shadow:0 2px 8px rgba(27,36,48,.12); }
+  .card-link:focus-visible{ outline:3px solid rgba(31,138,112,.35); outline-offset:2px; }
   .card .num{ font-size:24px; font-weight:800; }
   .card .label{ font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; }
   .card.low .num{ color:var(--red); }
   .section-title{ font-size:13px; font-weight:700; margin:18px 0 8px; }
   .list-item{ background:white; border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; font-size:13px; }
   .list-item .meta{ color:var(--ink-soft); font-size:11px; }
+  .inventory-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin:18px 0 8px; }
+  .inventory-head .section-title{ margin:0; }
+  .clear-filter{ color:var(--teal); font-size:12px; }
+  .inventory-row{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; }
+  .inventory-row strong{ overflow-wrap:anywhere; }
+  .inventory-row .stock{ text-align:right; white-space:nowrap; font-weight:700; }
   .hidden{ display:none !important; }
 </style>
 </head>
@@ -55,14 +64,19 @@
   <main>
     <div class="cards">
       <div class="card"><div class="num" id="cardTotalActive">-</div><div class="label">Active Spare Parts</div></div>
-      <div class="card"><div class="num" id="cardWithStock">-</div><div class="label">Items With Stock</div></div>
-      <div class="card low"><div class="num" id="cardLowStock">-</div><div class="label">Low Stock</div></div>
+      <a class="card card-link" href="/spare-parts.html?stock=in_stock#inventory" aria-label="View items with stock"><div class="num" id="cardWithStock">-</div><div class="label">Items With Stock</div></a>
+      <a class="card card-link low" href="/spare-parts.html?stock=low#inventory" aria-label="View low-stock items"><div class="num" id="cardLowStock">-</div><div class="label">Low Stock</div></a>
       <div class="card"><div class="num" id="cardStockInToday">-</div><div class="label">Stock In Today</div></div>
       <div class="card"><div class="num" id="cardStockOutToday">-</div><div class="label">Stock Out Today</div></div>
     </div>
 
     <div class="section-title">Low Stock</div>
     <div id="lowStockList"></div>
+
+    <section id="inventory" class="hidden" aria-live="polite">
+      <div class="inventory-head"><div class="section-title" id="inventoryTitle"></div><a class="clear-filter" href="/spare-parts.html">Clear filter</a></div>
+      <div id="inventoryList"></div>
+    </section>
 
     <div class="section-title">Recent Movements</div>
     <div id="recentMovementsList"></div>
@@ -87,13 +101,29 @@ async function loadDashboard(){
 
   const lowStockEl = document.getElementById('lowStockList');
   lowStockEl.innerHTML = data.low_stock.length
-    ? data.low_stock.map(p => `<div class="list-item">${escapeHtml(p.name)}<div class="meta">Stock: ${escapeHtml(p.current_stock)} / Min: ${escapeHtml(p.minimum_stock)}</div></div>`).join('')
+    ? data.low_stock.map(p => `<div class="list-item"><strong>${escapeHtml(p.display_name)}</strong><div class="meta">Stock: ${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)} / Min: ${escapeHtml(p.minimum_stock)} ${escapeHtml(p.unit)}</div></div>`).join('')
     : '<div class="meta" style="color:var(--ink-soft);padding:6px 0;">None</div>';
 
   const recentEl = document.getElementById('recentMovementsList');
   recentEl.innerHTML = data.recent_movements.length
-    ? data.recent_movements.map(m => `<div class="list-item">${escapeHtml(m.movement_type)} — ${escapeHtml(m.quantity)}<div class="meta">${escapeHtml(m.business_date)} · ${escapeHtml(m.reference)}</div></div>`).join('')
+    ? data.recent_movements.map(m => `<div class="list-item"><strong>${escapeHtml(m.spare_part_display_name)}</strong><br>${escapeHtml(m.movement_type)} — ${escapeHtml(m.quantity)} ${escapeHtml(m.unit_snapshot||'')}<div class="meta">${escapeHtml(m.business_date)} · ${escapeHtml(m.reference)}</div></div>`).join('')
     : '<div class="meta" style="color:var(--ink-soft);padding:6px 0;">None yet</div>';
+}
+
+async function loadFilteredInventory(){
+  const stock = new URLSearchParams(window.location.search).get('stock');
+  if(stock !== 'low' && stock !== 'in_stock') return;
+  const section = document.getElementById('inventory');
+  const title = stock === 'low' ? 'Inventory — Low Stock' : 'Inventory — Items With Stock';
+  document.getElementById('inventoryTitle').textContent = title;
+  section.classList.remove('hidden');
+  const res = await fetch('/api/spare-parts?stock=' + encodeURIComponent(stock));
+  const parts = await res.json();
+  document.getElementById('inventoryList').innerHTML = parts.length ? parts.map(p => `
+    <div class="list-item inventory-row">
+      <div><strong>${escapeHtml(p.display_name)}</strong><div class="meta">${escapeHtml(p.code||'No code')}</div></div>
+      <div class="stock">${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}<div class="meta">Minimum: ${escapeHtml(p.minimum_stock == null ? '—' : p.minimum_stock)} ${escapeHtml(p.unit)}</div></div>
+    </div>`).join('') : '<div class="meta" style="color:var(--ink-soft);padding:6px 0;">No matching spare parts.</div>';
 }
 
 (async function init(){
@@ -103,6 +133,7 @@ async function loadDashboard(){
     return;
   }
   await loadDashboard();
+  await loadFilteredInventory();
 })();
 </script>
 </body>

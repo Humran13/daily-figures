@@ -130,7 +130,7 @@ async function loadHistory(){
       <div class="date-group-body">
         ${g.items.map(m => `
           <div class="movement-row ${m.status === 'void' ? 'void' : ''}">
-            ${escapeHtml(m.movement_type)} — ${escapeHtml(m.quantity)} (${escapeHtml(m.reference)})
+            <strong>${escapeHtml(m.spare_part_display_name)}</strong><br>${escapeHtml(m.movement_type)} — ${escapeHtml(m.quantity)} (${escapeHtml(m.reference)})
             <div class="meta">${m.department_name ? 'Dept: '+escapeHtml(m.department_name)+' · ' : ''}${m.machine_name ? 'Machine: '+escapeHtml(m.machine_name)+' · ' : ''}Requested: ${escapeHtml(m.requested_by||'—')} · Approved: ${escapeHtml(m.approved_by||'—')} · ${escapeHtml(m.remarks||'')}</div>
           </div>`).join('')}
       </div>

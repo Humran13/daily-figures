@@ -12,6 +12,17 @@ def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def spare_part_display_name(name, specifications=None):
+    """Presentation identity for an existing spare part.
+
+    Keep the stored fields separate while ensuring blank/whitespace-only
+    specifications never produce empty brackets.
+    """
+    name = "" if name is None else str(name)
+    specifications = "" if specifications is None else str(specifications).strip()
+    return f"{name} [{specifications}]" if specifications else name
+
+
 def profit_and_margin(buying, selling):
     """
     The single profit/margin convention for the whole app: Profit = Selling
@@ -99,9 +110,14 @@ class SparePart(db.Model):
     created_at = db.Column(db.DateTime(), nullable=False, default=_utcnow)
     updated_at = db.Column(db.DateTime(), nullable=False, default=_utcnow, onupdate=_utcnow)
 
+    @property
+    def display_name(self):
+        return spare_part_display_name(self.name, self.specifications)
+
     def to_dict(self, current_stock=None, include_pricing=False):
         d = {
             "id": self.id, "code": self.code, "name": self.name, "model": self.model,
+            "display_name": self.display_name,
             "size": self.size, "specifications": self.specifications, "category_id": self.category_id,
             "unit": self.unit,
             "minimum_stock": str(self.minimum_stock) if self.minimum_stock is not None else None,

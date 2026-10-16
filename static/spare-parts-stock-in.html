@@ -71,6 +71,10 @@
 <script src="/filter-autocomplete.js" defer></script>
 <script src="/spare-parts-search.js" defer></script>
 <script>
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 let spareParts = [];
 
 function todayStr(){
@@ -85,7 +89,7 @@ function renderSpareContext(){
   const p = spareParts.find(p => String(p.id) === String(id));
   if(!p){ ctx.classList.add('hidden'); return; }
   const machines = (p.machines||[]).map(m=>m.name).join(', ') || '—';
-  ctx.innerHTML = `${p.specifications ? 'Specs: '+p.specifications+' · ' : ''}Machine: ${machines}<br>Current stock: ${p.current_stock} ${p.unit}`;
+  ctx.innerHTML = `<strong>${escapeHtml(SparePartSearch.label(p))}</strong><br>Machine: ${escapeHtml(machines)}<br>Current stock: ${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}`;
   ctx.classList.remove('hidden');
 }
 

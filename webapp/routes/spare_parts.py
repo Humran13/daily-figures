@@ -75,7 +75,15 @@ def list_spare_parts():
     parts = svc.search_spare_parts(
         request.args.get("q"), include_inactive=include_inactive, category_id=category,
     )
-    return jsonify([_to_dict(p) for p in parts])
+    stock_filter = request.args.get("stock")
+    if stock_filter not in (None, "", "low", "in_stock"):
+        return jsonify({"error": "invalid stock filter"}), 400
+    rows = [_to_dict(p) for p in parts]
+    if stock_filter == "low":
+        rows = [row for row in rows if row["low_stock"]]
+    elif stock_filter == "in_stock":
+        rows = [row for row in rows if Decimal(row["current_stock"]) > 0]
+    return jsonify(rows)
 
 
 @spare_parts_bp.route("/<int:spare_part_id>", methods=["GET"])
@@ -170,6 +178,7 @@ def deletion_preview(spare_part_id):
     if spare_part is None:
         return jsonify({"error": "not found"}), 404
     return jsonify({"id": spare_part.id, "name": spare_part.name,
+                    "display_name": spare_part.display_name,
                     "related": svc.spare_part_deletion_counts(spare_part_id)})
 
 

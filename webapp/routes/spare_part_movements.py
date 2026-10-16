@@ -126,11 +126,13 @@ def _enrich_with_names(rows):
     from webapp.models.operational_department import SparePartDepartment
     department_names = {d.id: d.name for d in SparePartDepartment.query.all()}
     machine_names = {m.id: m.name for m in Machine.query.all()}
+    spare_part_names = {p.id: p.display_name for p in SparePart.query.all()}
     dicts = []
     for m in rows:
         d = m.to_dict()
         d["department_name"] = department_names.get(m.department_id)
         d["machine_name"] = machine_names.get(m.machine_id)
+        d["spare_part_display_name"] = spare_part_names.get(m.spare_part_id, "")
         dicts.append(d)
     return dicts
 
@@ -167,7 +169,7 @@ def export(fmt):
         ("requested_by", "Requested By"), ("approved_by", "Approved By"),
         ("entered_by", "Entered By"), ("remarks", "Remarks"), ("status", "Status"),
     ]
-    spare_names = {p.id: p.name for p in SparePart.query.all()}
+    spare_names = {p.id: p.display_name for p in SparePart.query.all()}
     from webapp.models.machine import Machine
     from webapp.models.operational_department import SparePartDepartment
     from webapp.models.user import User

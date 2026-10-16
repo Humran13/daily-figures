@@ -34,6 +34,7 @@ def _row(spare_part):
     return {
         "id": spare_part.id,
         "name": spare_part.name,
+        "display_name": spare_part.display_name,
         "specifications": spare_part.specifications,
         "unit": spare_part.unit,
         "active": spare_part.active,

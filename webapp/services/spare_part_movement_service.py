@@ -259,13 +259,24 @@ def dashboard_summary():
         .count()
     )
     low_stock_list = [
-        {"id": p.id, "name": p.name, "current_stock": str(stocks[p.id]), "minimum_stock": str(p.minimum_stock)}
+        {
+            "id": p.id, "name": p.name, "specifications": p.specifications,
+            "display_name": p.display_name, "unit": p.unit,
+            "current_stock": str(stocks[p.id]), "minimum_stock": str(p.minimum_stock),
+        }
         for p in parts if is_low_stock(p, stocks[p.id])
     ]
     recent = (
         SparePartMovement.query.filter_by(status=STATUS_ACTIVE)
         .order_by(SparePartMovement.created_at.desc()).limit(10).all()
     )
+
+    part_names = {p.id: p.display_name for p in SparePart.query.all()}
+    recent_movements = []
+    for movement in recent:
+        row = movement.to_dict()
+        row["spare_part_display_name"] = part_names.get(movement.spare_part_id, "")
+        recent_movements.append(row)
 
     return {
         "total_active_spare_parts": len(parts),
@@ -274,5 +285,5 @@ def dashboard_summary():
         "low_stock": low_stock_list,
         "stock_in_today": stock_in_today,
         "stock_out_today": stock_out_today,
-        "recent_movements": [m.to_dict() for m in recent],
+        "recent_movements": recent_movements,
     }

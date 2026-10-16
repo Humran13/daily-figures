@@ -330,7 +330,7 @@ document.addEventListener('click', async (event) => {
 
 // ---------- entity definitions (base URL, editable fields, display name) ----------
 const ENTITY = {
-  spare:      {base:'/api/spare-parts', label:'Spare part', nameOf: r => r.name},
+  spare:      {base:'/api/spare-parts', label:'Spare part', nameOf: r => SparePartSearch.label(r)},
   category:   {base:'/api/spare-parts/categories', label:'Category', nameOf: r => r.name},
   machine:    {base:'/api/spare-parts/machines', label:'Machine', nameOf: r => r.name},
   department: {base:'/api/spare-parts/departments', label:'Department', nameOf: r => r.name},
@@ -385,7 +385,8 @@ function openEditModal(kind, id){
   const r = records[kind].find(x => x.id === id);
   if(!r) return;
   editing = {kind, id};
-  document.getElementById('editModalTitle').textContent = 'Edit ' + ENTITY[kind].label.toLowerCase();
+  document.getElementById('editModalTitle').textContent = 'Edit ' + ENTITY[kind].label.toLowerCase() +
+    (kind === 'spare' ? ' — ' + SparePartSearch.label(r) : '');
   document.getElementById('editModalFields').innerHTML = editFields(kind, r);
   if(kind === 'spare' && isSuper){
     const china = document.querySelector('#editModalFields [data-key="china_buying_price"]');
@@ -547,7 +548,7 @@ async function loadSpareParts(){
   records.spare = data || [];
   document.getElementById('sparePartsTable').innerHTML = records.spare.map(p => `
     <tr>
-      <td class="name">${escapeHtml(p.name)}<div class="sub">${escapeHtml(p.specifications||'')}</div></td>
+      <td class="name">${escapeHtml(SparePartSearch.label(p))}</td>
       <td class="num">${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}</td>
       <td class="price">${priceCell(p)}</td>
       <td>${pill(p.active)}</td>
@@ -589,8 +590,7 @@ async function createSpare(confirmDuplicate){
     syncNewSpareSource();
     refreshAll();
   } else if(status === 409 && data.error === 'possible_duplicate'){
-    warning.innerHTML = `A similar spare part already exists: <strong>${escapeHtml(data.existing.name)}</strong>`+
-      `${data.existing.specifications ? ' ('+escapeHtml(data.existing.specifications)+')' : ''}.`+
+    warning.innerHTML = `A similar spare part already exists: <strong>${escapeHtml(SparePartSearch.label(data.existing))}</strong>.`+
       `<button class="btn btn-primary" id="confirmDuplicateBtn">Create anyway</button>`;
     warning.classList.remove('hidden');
     document.getElementById('confirmDuplicateBtn').addEventListener('click', () => createSpare(true));
