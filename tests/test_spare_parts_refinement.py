@@ -240,14 +240,18 @@ def test_operational_department_does_not_interfere_with_store_section(app, clien
 
 def test_buying_price_stored_exactly(client, make_user):
     _login_spare_parts(client, make_user, "ref_mgr19", "super_admin")
-    part = _create_spare_part(client, name="Priced A", buying_price="12345.67")
-    assert part["buying_price"] == "12345.67"
+    # UGX has no minor unit in this application: price writes accept only
+    # whole shillings (fractional rejection lives in
+    # test_spare_parts_admin_management.py). Large values still round-trip
+    # exactly.
+    part = _create_spare_part(client, name="Priced A", buying_price="1234567")
+    assert Decimal(part["buying_price"]) == Decimal("1234567")
 
 
 def test_selling_price_stored_exactly(client, make_user):
     _login_spare_parts(client, make_user, "ref_mgr20", "super_admin")
-    part = _create_spare_part(client, name="Priced B", selling_price="99999.99")
-    assert part["selling_price"] == "99999.99"
+    part = _create_spare_part(client, name="Priced B", selling_price="9999999")
+    assert Decimal(part["selling_price"]) == Decimal("9999999")
 
 
 def test_profit_calculation_correct(client, make_user):

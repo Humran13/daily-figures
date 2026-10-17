@@ -176,12 +176,13 @@
 
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
+<script src="/spare-parts-ui.js"></script>
 <script>
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-function fmtQty(v){ return v==null ? '—' : String(Number(v)); }
-function fmtMoney(v){ return v==null ? '—' : Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtQty(v){ return SparePartsUI.formatQuantity(v); }
+function fmtMoney(v){ return SparePartsUI.formatUGX(v, false); }
 function fmtSource(v){ return v==null ? '—' : (v === 'china' ? 'China' : (v === 'local_uganda' ? 'Local' : v)); }
 function fmtIncoming(v){
   // "Not tracked" (or any other non-numeric status string) is shown
@@ -311,11 +312,16 @@ function renderRows(rows){
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       const isCritical = btn.getAttribute('data-critical') === 'true';
-      await fetch(`/api/spare-parts/${id}`, {
-        method: 'PATCH', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({critical: !isCritical}),
-      });
-      await loadReport();
+      await SparePartsUI.withBusy(btn, async () => {
+        const res = await fetch(`/api/spare-parts/${id}`, {
+          method: 'PATCH', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({critical: !isCritical}),
+        });
+        const data = await res.json();
+        if(!res.ok){ SparePartsUI.notify(data.error || 'Could not update critical status.', 'error'); return; }
+        SparePartsUI.notify('Critical status updated successfully.', 'success');
+        await loadReport();
+      }, 'Saving…');
     });
   });
 }

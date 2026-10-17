@@ -110,11 +110,11 @@
         <select id="spUnit"><option>pcs</option><option>rolls</option><option>metres</option><option>sets</option><option>litres</option><option>other</option></select>
         <label>Minimum Stock (optional)</label><input type="number" step="any" inputmode="decimal" id="spMinStock">
         <div class="row2 super-only">
-          <div><label>China Buying Price (UGX)</label><input type="number" step="0.01" min="0" inputmode="decimal" id="spChinaBuyingPrice"></div>
-          <div><label>Local Buying Price (UGX)</label><input type="number" step="0.01" min="0" inputmode="decimal" id="spLocalBuyingPrice"></div>
+          <div><label>China Buying Price (UGX)</label><input type="number" step="1" min="0" inputmode="numeric" id="spChinaBuyingPrice"></div>
+          <div><label>Local Buying Price (UGX)</label><input type="number" step="1" min="0" inputmode="numeric" id="spLocalBuyingPrice"></div>
         </div>
         <div class="row2 super-only">
-          <div><label>Selling Price (UGX, optional)</label><input type="number" step="0.01" min="0" inputmode="decimal" id="spSellingPrice"></div>
+          <div><label>Selling Price (UGX, optional)</label><input type="number" step="1" min="0" inputmode="numeric" id="spSellingPrice"></div>
           <div><label>Preferred Cost Source (optional)</label>
             <select id="spPreferredCostSource"><option value="">Not set</option><option value="china" disabled>China</option><option value="local_uganda" disabled>Local</option></select>
           </div>
@@ -215,6 +215,21 @@
 
     <div class="panel" id="panel-adjustments">
       <div class="card">
+        <h3>Physical Stock Count</h3>
+        <div class="field">
+          <label>Spare Part</label>
+          <input id="countSpareInput" placeholder="Search by name or specification..." autocomplete="off">
+          <div class="autocomplete-list hidden" id="countSpareResults"></div>
+        </div>
+        <label>Count Date</label><input type="date" id="countDate">
+        <label>Physical Count</label><input type="number" step="any" min="0" inputmode="decimal" id="countQty">
+        <div class="context" id="countPreview">Select a spare part and enter the physical count.</div>
+        <label>Reason (required)</label><input id="countReason" placeholder="e.g. Weekly stock count reconciliation">
+        <label>Remarks (optional)</label><textarea id="countRemarks" rows="2"></textarea>
+        <button class="btn btn-primary" id="submitCountBtn">Record Stock Count</button>
+        <div class="msg" id="countMsg"></div>
+      </div>
+      <div class="card">
         <h3>Stock Adjustment / Opening Balance</h3>
         <div class="field">
           <label>Spare Part</label>
@@ -266,6 +281,7 @@
 
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
+<script src="/spare-parts-ui.js"></script>
 <script src="/filter-autocomplete.js" defer></script>
 <script src="/spare-parts-search.js" defer></script>
 <script>
@@ -275,20 +291,31 @@ const records = {spare: [], category: [], machine: [], department: [], supplier:
 let categories = [];
 let departments = [];
 let adjSpareAutocomplete;
+let countSpareAutocomplete;
+let businessToday = null;
 let searchTimer = null;
 let pendingDelete = null;
 
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }
 async function api(url, opts){
-  const res = await fetch(url, {headers:{'Content-Type':'application/json'}, ...opts});
-  const data = await res.json().catch(()=>({}));
-  return {status: res.status, data};
+  const button = document.activeElement && document.activeElement.tagName === 'BUTTON' ? document.activeElement : null;
+  if(button && button.dataset.apiBusy === '1') return {status: 409, data:{error:'This action is already processing.'}};
+  if(button){ button.dataset.apiBusy = '1'; button.disabled = true; button.setAttribute('aria-busy','true'); }
+  try {
+    const res = await fetch(url, {headers:{'Content-Type':'application/json'}, ...opts});
+    const data = await res.json().catch(()=>({}));
+    return {status: res.status, data};
+  } finally {
+    if(button){ delete button.dataset.apiBusy; button.disabled = false; button.removeAttribute('aria-busy'); }
+  }
 }
 function setMsg(id, text, ok){
   const el = document.getElementById(id);
   el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err');
+  SparePartsUI.notify(text, ok ? 'success' : 'error');
 }
 function pill(active){
   return `<span class="pill ${active?'pill-active':'pill-inactive'}">${active?'Active':'Inactive'}</span>`;
@@ -322,7 +349,8 @@ document.addEventListener('click', async (event) => {
   if(btn.dataset.action === 'edit') return openEditModal(kind, id);
   if(btn.dataset.action === 'toggle'){
     const {status, data} = await api(`${ENTITY[kind].base}/${id}`, {method:'PATCH', body: JSON.stringify({active: btn.dataset.next === 'true'})});
-    if(status !== 200) alert(data.error || 'Could not change status.');
+    if(status !== 200){ SparePartsUI.notify(data.error || 'Could not change status.', 'error'); return; }
+    SparePartsUI.notify(`${ENTITY[kind].label} ${btn.dataset.next === 'true' ? 'activated' : 'deactivated'} successfully.`, 'success');
     return refreshAll();
   }
   if(btn.dataset.action === 'delete') return openDeleteModal(kind, id);
@@ -367,9 +395,9 @@ function editFields(kind, r){
       `<label>Category</label><select data-key="category_id">${categoryOptions(r.category_id)}</select>` +
       `<label>Unit</label><select data-key="unit">${unitOpts}</select>` +
       `<label>Minimum Stock</label><input data-key="minimum_stock" type="number" step="any" inputmode="decimal" value="${escapeHtml(r.minimum_stock ?? '')}">` +
-      (isSuper ? `<div class="row2"><div><label>China Buying Price (UGX)</label><input data-key="china_buying_price" type="number" step="0.01" min="0" inputmode="decimal" value="${escapeHtml(r.china_buying_price ?? '')}"></div>` +
-                 `<div><label>Local Buying Price (UGX)</label><input data-key="local_buying_price" type="number" step="0.01" min="0" inputmode="decimal" value="${escapeHtml(r.local_buying_price ?? '')}"></div></div>` +
-                 `<div class="row2"><div><label>Selling Price (UGX)</label><input data-key="selling_price" type="number" step="0.01" min="0" inputmode="decimal" value="${escapeHtml(r.selling_price ?? '')}"></div>` +
+      (isSuper ? `<div class="row2"><div><label>China Buying Price (UGX)</label><input data-key="china_buying_price" type="number" step="1" min="0" inputmode="numeric" value="${escapeHtml(r.china_buying_price ?? '')}"></div>` +
+                 `<div><label>Local Buying Price (UGX)</label><input data-key="local_buying_price" type="number" step="1" min="0" inputmode="numeric" value="${escapeHtml(r.local_buying_price ?? '')}"></div></div>` +
+                 `<div class="row2"><div><label>Selling Price (UGX)</label><input data-key="selling_price" type="number" step="1" min="0" inputmode="numeric" value="${escapeHtml(r.selling_price ?? '')}"></div>` +
                  `<div><label>Preferred Cost Source</label><select data-key="preferred_cost_source">${costSourceOptions(r.preferred_cost_source, r.preferred_cost_source == null && r.buying_price != null)}</select></div></div>` : '');
   }
   if(kind === 'category' || kind === 'department') return text('name','Name', r.name);
@@ -422,7 +450,9 @@ document.getElementById('editSaveBtn').addEventListener('click', async () => {
   if(!payload.name && 'name' in payload){ setMsg('editModalMsg', 'Name is required.', false); return; }
   const {status, data} = await api(`${ENTITY[editing.kind].base}/${editing.id}`, {method:'PATCH', body: JSON.stringify(payload)});
   if(status === 200){
+    const label = ENTITY[editing.kind].label;
     closeEditModal();
+    SparePartsUI.notify(`${label} updated successfully.`, 'success');
     refreshAll();
   } else {
     setMsg('editModalMsg', data.error || 'Could not save changes.', false);
@@ -468,7 +498,9 @@ document.getElementById('deleteConfirmBtn').addEventListener('click', async () =
   const {kind, id} = pendingDelete;
   const {status, data} = await api(`${ENTITY[kind].base}/${id}`, {method:'DELETE'});
   if(status === 200){
+    const label = ENTITY[kind].label;
     closeDeleteModal();
+    SparePartsUI.notify(`${label} deleted successfully.`, 'success');
     refreshAll();
   } else {
     setMsg('deleteModalMsg', data.error || 'Delete failed.', false);
@@ -527,13 +559,13 @@ document.getElementById('createDepartmentBtn').addEventListener('click', async (
 function priceCell(p){
   if(p.buying_price === undefined) return '<span class="muted">Super Admin only</span>';
   const parts = [];
-  if(p.china_buying_price != null) parts.push('China: '+escapeHtml(p.china_buying_price));
-  if(p.local_buying_price != null) parts.push('Local: '+escapeHtml(p.local_buying_price));
-  if(p.current_cost_price != null) parts.push('Current: '+escapeHtml(p.current_cost_price));
+  if(p.china_buying_price != null) parts.push('China: '+escapeHtml(SparePartsUI.formatUGX(p.china_buying_price, false)));
+  if(p.local_buying_price != null) parts.push('Local: '+escapeHtml(SparePartsUI.formatUGX(p.local_buying_price, false)));
+  if(p.current_cost_price != null) parts.push('Current: '+escapeHtml(SparePartsUI.formatUGX(p.current_cost_price, false)));
   if(p.preferred_cost_source != null) parts.push('Source: '+(p.preferred_cost_source === 'china' ? 'China' : 'Local'));
   else if(p.buying_price != null) parts.push('Source: Legacy');
-  if(p.selling_price != null) parts.push('Sell: '+escapeHtml(p.selling_price));
-  if(p.profit != null) parts.push('Profit: '+escapeHtml(p.profit));
+  if(p.selling_price != null) parts.push('Sell: '+escapeHtml(SparePartsUI.formatUGX(p.selling_price, false)));
+  if(p.profit != null) parts.push('Profit: '+escapeHtml(SparePartsUI.formatUGX(p.profit, false)));
   if(p.margin_percent != null) parts.push('Margin: '+Number(p.margin_percent).toFixed(1)+'%');
   return parts.length ? parts.join('<br>') : '<span class="muted">—</span>';
 }
@@ -549,7 +581,7 @@ async function loadSpareParts(){
   document.getElementById('sparePartsTable').innerHTML = records.spare.map(p => `
     <tr>
       <td class="name">${escapeHtml(SparePartSearch.label(p))}</td>
-      <td class="num">${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}</td>
+      <td class="num">${escapeHtml(SparePartsUI.formatQuantity(p.current_stock))} ${escapeHtml(p.unit)}</td>
       <td class="price">${priceCell(p)}</td>
       <td>${pill(p.active)}</td>
       ${actionsCell('spare', p)}
@@ -585,7 +617,7 @@ async function createSpare(confirmDuplicate){
   const warning = document.getElementById('duplicateWarning');
   if(status === 201){
     warning.classList.add('hidden');
-    setMsg('spareMsg', 'Spare part created.', true);
+    setMsg('spareMsg', `${data.display_name || data.name} created successfully.`, true);
     ['spName','spSpecifications','spMinStock','spChinaBuyingPrice','spLocalBuyingPrice','spSellingPrice','spPreferredCostSource'].forEach(id => document.getElementById(id).value='');
     syncNewSpareSource();
     refreshAll();
@@ -685,6 +717,39 @@ document.getElementById('submitAdjBtn').addEventListener('click', async () => {
   } else { setMsg('adjMsg', data.error || 'Failed.', false); }
 });
 
+function renderCountPreview(){
+  const id = countSpareAutocomplete && countSpareAutocomplete.selectedId();
+  const part = records.spare.find(p => String(p.id) === String(id));
+  const countedRaw = document.getElementById('countQty').value;
+  const preview = document.getElementById('countPreview');
+  if(!part || countedRaw === ''){ preview.textContent = 'Select a spare part and enter the physical count.'; return; }
+  const system = Number(part.current_stock), counted = Number(countedRaw), difference = counted - system;
+  preview.innerHTML = `System quantity: <strong>${escapeHtml(SparePartsUI.formatQuantity(system))} ${escapeHtml(part.unit)}</strong><br>`+
+    `Physical count: <strong>${escapeHtml(SparePartsUI.formatQuantity(counted))} ${escapeHtml(part.unit)}</strong><br>`+
+    `Adjustment: <strong>${difference > 0 ? '+' : ''}${escapeHtml(SparePartsUI.formatQuantity(difference))} ${escapeHtml(part.unit)}</strong>`;
+}
+document.getElementById('countQty').addEventListener('input', renderCountPreview);
+const submitCountBtn = document.getElementById('submitCountBtn');
+submitCountBtn.addEventListener('click', () => SparePartsUI.withBusy(submitCountBtn, async () => {
+  const spareId = countSpareAutocomplete.selectedId();
+  if(!spareId){ setMsg('countMsg', 'Select a spare part.', false); return; }
+  const reason = document.getElementById('countReason').value.trim();
+  if(!reason){ setMsg('countMsg', 'A reason is required for a stock count correction.', false); return; }
+  const {status, data} = await api('/api/spare-parts/movements/stock-count', {
+    method:'POST', body:JSON.stringify({
+      spare_part_id:Number(spareId), counted_quantity:document.getElementById('countQty').value,
+      date:document.getElementById('countDate').value, reason,
+      remarks:document.getElementById('countRemarks').value || null,
+    }),
+  });
+  if(status === 201){
+    setMsg('countMsg', 'Stock count correction recorded successfully.', true);
+    ['countQty','countReason','countRemarks'].forEach(id => document.getElementById(id).value='');
+    countSpareAutocomplete.clear();
+    await refreshAll(); renderCountPreview();
+  } else setMsg('countMsg', data.error || 'Failed to record stock count.', false);
+}, 'Recording…'));
+
 async function refreshAll(){
   await loadDepartments();
   await Promise.all([loadCategories(), loadSpareParts(), loadMachines(), loadSuppliers()]);
@@ -695,12 +760,18 @@ async function refreshAll(){
   if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
   if(!['manager','super_admin'].includes(s.user.role)){ window.location.href = '/spare-parts.html'; return; }
   isSuper = s.user.role === 'super_admin';
+  businessToday = s.business_today || null;
   if(!isSuper) document.querySelectorAll('.super-only').forEach(el => el.classList.add('hidden'));
   await refreshAll();
   adjSpareAutocomplete = FilterAutocomplete.create({
     inputId:'adjSpareInput', resultsId:'adjSpareResults', onChange: ()=>{},
     source: SparePartSearch.source({includeInactive: true}), label: SparePartSearch.label, meta: SparePartSearch.meta,
   });
+  countSpareAutocomplete = FilterAutocomplete.create({
+    inputId:'countSpareInput', resultsId:'countSpareResults', onChange:renderCountPreview,
+    source:SparePartSearch.source(), label:SparePartSearch.label, meta:SparePartSearch.meta,
+  });
+  document.getElementById('countDate').value = todayStr();
 })();
 </script>
 </body>

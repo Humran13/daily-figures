@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from webapp.extensions import db
 
 UNITS = ["pcs", "rolls", "metres", "sets", "litres", "other"]
+# Central business rule for countable units. Continuous measures deliberately
+# remain decimal-capable; adding a new countable unit requires one change here.
+DISCRETE_UNITS = frozenset({"pcs", "piece", "pieces", "each", "unit", "units", "set", "sets"})
 COST_SOURCE_CHINA = "china"
 COST_SOURCE_LOCAL = "local_uganda"
 COST_SOURCES = (COST_SOURCE_CHINA, COST_SOURCE_LOCAL)
@@ -21,6 +24,10 @@ def spare_part_display_name(name, specifications=None):
     name = "" if name is None else str(name)
     specifications = "" if specifications is None else str(specifications).strip()
     return f"{name} [{specifications}]" if specifications else name
+
+
+def is_discrete_unit(unit):
+    return str(unit or "").strip().casefold() in DISCRETE_UNITS
 
 
 def profit_and_margin(buying, selling):

@@ -21,3 +21,8 @@ imgz.zip
 imgz/
 
 *.code-workspace
+
+# Local source workbook for the one-off spare-parts seed. It contains
+# operational data and is never committed (the seed migration embeds the
+# cleaned rows).
+MV MACHINE SPARES.xlsx

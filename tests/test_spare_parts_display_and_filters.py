@@ -59,21 +59,26 @@ def test_dashboard_counts_and_stock_filters_use_same_active_inventory(client, ma
 
     dashboard = client.get("/api/spare-parts/dashboard").get_json()
     low_rows = client.get("/api/spare-parts", query_string={"stock": "low"}).get_json()
+    healthy_rows = client.get("/api/spare-parts", query_string={"stock": "healthy"}).get_json()
+    no_stock_rows = client.get("/api/spare-parts", query_string={"stock": "no_stock"}).get_json()
     stocked_rows = client.get("/api/spare-parts", query_string={"stock": "in_stock"}).get_json()
 
-    assert dashboard["low_stock_count"] == len(low_rows) == 2
-    assert {row["id"] for row in dashboard["low_stock"]} == {
-        chain_zero["id"], bearing["id"],
-    }
-    assert {row["id"] for row in low_rows} == {chain_zero["id"], bearing["id"]}
-    assert {row["display_name"] for row in low_rows} == {
-        "Industrial Roller Chain [08B-1]", "Bearing [6204]",
-    }
+    # Low, healthy, and no-stock are mutually exclusive inventory states: a
+    # part at zero is out of stock even when it has a minimum threshold.
+    assert dashboard["low_stock_count"] == len(low_rows) == 1
+    assert dashboard["healthy_stock_count"] == len(healthy_rows) == 1
+    assert dashboard["no_stock_count"] == len(no_stock_rows) == 2
+    assert {row["id"] for row in dashboard["low_stock"]} == {bearing["id"]}
+    assert {row["id"] for row in low_rows} == {bearing["id"]}
+    assert {row["id"] for row in healthy_rows} == {chain_stocked["id"]}
+    assert {row["id"] for row in no_stock_rows} == {chain_zero["id"], no_threshold["id"]}
+    assert {row["display_name"] for row in low_rows} == {"Bearing [6204]"}
 
     assert dashboard["current_stock_items"] == len(stocked_rows) == 2
     assert {row["id"] for row in stocked_rows} == {chain_stocked["id"], bearing["id"]}
-    assert no_threshold["id"] not in {row["id"] for row in low_rows}
-    assert inactive["id"] not in {row["id"] for row in low_rows + stocked_rows}
+    assert inactive["id"] not in {
+        row["id"] for row in low_rows + healthy_rows + no_stock_rows + stocked_rows
+    }
 
 
 def test_filtered_inventory_remains_readable_without_pricing_permission(client, make_user):
@@ -90,12 +95,20 @@ def test_filtered_inventory_remains_readable_without_pricing_permission(client, 
 def test_dashboard_cards_are_semantic_links_to_visible_filters(client, make_user):
     _login_spare_parts(client, make_user, "dashboard_links", "viewer")
     html = client.get("/spare-parts.html").get_data(as_text=True)
+    assert 'href="/spare-parts.html?stock=healthy#inventory"' in html
     assert 'href="/spare-parts.html?stock=low#inventory"' in html
-    assert 'href="/spare-parts.html?stock=in_stock#inventory"' in html
+    assert 'href="/spare-parts.html?stock=no_stock#inventory"' in html
+    assert 'aria-label="View healthy-stock items"' in html
     assert 'aria-label="View low-stock items"' in html
-    assert 'aria-label="View items with stock"' in html
-    assert "Inventory — Low Stock" in html
-    assert "Inventory — Items With Stock" in html
+    assert 'aria-label="View out-of-stock items"' in html
+    assert "'Inventory — ' + STOCK_FILTER_LABELS[stock]" in html
+    assert "healthy:'Healthy Stock'" in html
+    assert "low:'Low Stock'" in html
+    assert "no_stock:'No Stock'" in html
+    assert "new URLSearchParams(window.location.search).get('stock')" in html
+    assert "setInventoryUrl(initialStock, 'replace')" in html
+    assert "if(requestId !== inventoryRequestId) return;" in html
+    assert "inventoryRequestId++;" in html
 
 
 def test_history_and_admin_pricing_use_display_identity(client, make_user):
@@ -112,3 +125,33 @@ def test_history_and_admin_pricing_use_display_identity(client, make_user):
     pricing = client.get("/api/admin/spare-parts/pricing").get_json()["rows"]
     row = next(row for row in pricing if row["id"] == part["id"])
     assert row["display_name"] == "Oil Seal [35x52x7]"
+
+
+def test_stock_movement_date_defaults_use_server_business_today(client, make_user):
+    """Movement dates must anchor on the Africa/Kampala business day, not the
+    browser clock (a device in another timezone could otherwise post to the
+    wrong day)."""
+    _login_spare_parts(client, make_user, "movement_date_mgr", "manager")
+    helper = "function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }"
+    for page in (
+        "/spare-parts-master.html",
+        "/spare-parts-stock-in.html",
+        "/spare-parts-stock-out.html",
+    ):
+        html = client.get(page).get_data(as_text=True)
+        assert helper in html, page
+        assert "businessToday = s.business_today || null;" in html, page
+
+
+def test_stock_count_ui_posts_an_auditable_physical_count(client, make_user):
+    """The Master page must expose the count workflow, not just the API."""
+    _login_spare_parts(client, make_user, "count_ui_mgr", "manager")
+    html = client.get("/spare-parts-master.html").get_data(as_text=True)
+    assert 'id="countSpareInput"' in html
+    assert 'id="countQty"' in html
+    assert 'id="countReason"' in html
+    assert 'id="submitCountBtn"' in html
+    assert "/api/spare-parts/movements/stock-count" in html
+    assert "counted_quantity" in html
+    assert "A reason is required for a stock count correction." in html
+    assert "SparePartsUI.withBusy(submitCountBtn" in html

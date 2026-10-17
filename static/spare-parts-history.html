@@ -81,6 +81,7 @@
 
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
+<script src="/spare-parts-ui.js"></script>
 <script src="/filter-autocomplete.js" defer></script>
 <script src="/spare-parts-search.js" defer></script>
 <script>
@@ -130,8 +131,9 @@ async function loadHistory(){
       <div class="date-group-body">
         ${g.items.map(m => `
           <div class="movement-row ${m.status === 'void' ? 'void' : ''}">
-            <strong>${escapeHtml(m.spare_part_display_name)}</strong><br>${escapeHtml(m.movement_type)} — ${escapeHtml(m.quantity)} (${escapeHtml(m.reference)})
-            <div class="meta">${m.department_name ? 'Dept: '+escapeHtml(m.department_name)+' · ' : ''}${m.machine_name ? 'Machine: '+escapeHtml(m.machine_name)+' · ' : ''}Requested: ${escapeHtml(m.requested_by||'—')} · Approved: ${escapeHtml(m.approved_by||'—')} · ${escapeHtml(m.remarks||'')}</div>
+            <strong>${escapeHtml(m.spare_part_display_name)}</strong><br>${escapeHtml(m.movement_type)} — ${escapeHtml(SparePartsUI.formatQuantity(m.quantity))} ${escapeHtml(m.unit_snapshot||'')} (${escapeHtml(m.reference)})
+            ${m.counted_quantity != null ? `<div class="meta">System: ${escapeHtml(SparePartsUI.formatQuantity(m.system_quantity_before))} · Counted: ${escapeHtml(SparePartsUI.formatQuantity(m.counted_quantity))} · Difference: ${Number(m.stock_count_difference)>0?'+':''}${escapeHtml(SparePartsUI.formatQuantity(m.stock_count_difference))} · Reason: ${escapeHtml(m.reason||'—')}</div>` : ''}
+            <div class="meta">Event date: ${escapeHtml(m.business_date)} · Recorded: ${escapeHtml((m.created_at||'').replace('T',' ').slice(0,16))} · ${m.department_name ? 'Dept: '+escapeHtml(m.department_name)+' · ' : ''}${m.machine_name ? 'Machine: '+escapeHtml(m.machine_name)+' · ' : ''}Requested: ${escapeHtml(m.requested_by||'—')} · Approved: ${escapeHtml(m.approved_by||'—')} · ${escapeHtml(m.remarks||'')}</div>
           </div>`).join('')}
       </div>
     </div>`).join('') : '<div style="color:var(--ink-soft);font-size:13px;">No movements found.</div>';
