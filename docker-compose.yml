@@ -13,7 +13,12 @@ services:
     environment:
       - DB_PATH=/app/data/production.db
     volumes:
-      # This fallback is deliberately for local development. Production adds
-      # docker-compose.production.yml, where an explicit absolute path is
-      # mandatory and replaces this mount by container target.
-      - ${DAILY_FIGURES_DATA_DIR:-./data}:/app/data
+      # No local-development fallback here on purpose: a bare
+      # `docker compose up -d --build` in a production checkout must fail
+      # before any container is created rather than silently binding
+      # ./data (see the incident in docs/MIGRATION-FROM-OPT.md). For local
+      # development, export DAILY_FIGURES_DATA_DIR explicitly (see
+      # docker-compose.dev.yml) -- Compose interpolates each -f file
+      # independently before merging, so an override file alone cannot make
+      # this optional.
+      - ${DAILY_FIGURES_DATA_DIR:?DAILY_FIGURES_DATA_DIR must be explicitly set; see docker-compose.dev.yml for local development}:/app/data

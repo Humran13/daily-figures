@@ -32,6 +32,15 @@ the live database, stops writes, takes a final snapshot, retains old database an
 sidecars under timestamped names, activates, fixes ownership, migrates, and
 checks mount/health. `--yes` is the explicit noninteractive confirmation.
 
+`restore` is for replacing the database at its *current* configured
+location. If `install.conf` itself points at the wrong (legacy/unsafe)
+storage location, fix that first with
+`daily-figures repair-installation`, then bring a specific legacy database
+into the repaired location explicitly with
+`daily-figures migrate-storage --source FILE` -- see
+[MIGRATION-FROM-OPT.md](MIGRATION-FROM-OPT.md). Neither command ever guesses
+between multiple candidate databases.
+
 ## CloudPanel/Google Drive verification
 
 1. Run the local database snapshot before the CloudPanel job.

@@ -27,3 +27,9 @@ creates a safety snapshot, applies pending migrations, and mounts that exact
 private `app-data/daily-figures` directory at `/app/data`. If no records appear, stop immediately
 and inspect the mount; do not enter new data until the intended database is
 confirmed.
+
+If the restored `install.conf` itself turns out to be stale/unsafe (for
+example it still names a different or legacy storage layout), do not try to
+fix it by hand: run `sudo daily-figures doctor --recovery` for a read-only
+report, then `sudo daily-figures repair-installation` to repair it safely.
+See [MIGRATION-FROM-OPT.md](MIGRATION-FROM-OPT.md).

@@ -1,0 +1,14 @@
+services:
+  daily-figures:
+    # Explicit local-development overlay. docker-compose.yml always requires
+    # DAILY_FIGURES_DATA_DIR to be set -- by design, so a bare `docker compose
+    # up` in a production checkout fails before creating a container instead
+    # of silently falling back to a local directory. Docker Compose
+    # interpolates each -f file independently before merging overlays, so
+    # this file cannot make that requirement optional; it only pins the
+    # literal local path once the variable is supplied. Run:
+    #   DAILY_FIGURES_DATA_DIR=./data docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+    # Never use this file, or set DAILY_FIGURES_DATA_DIR to a relative path,
+    # in production.
+    volumes:
+      - ./data:/app/data
