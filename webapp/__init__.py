@@ -78,6 +78,7 @@ def create_app():
     from webapp.routes.spare_part_categories import spare_part_categories_bp
     from webapp.routes.spare_part_departments import spare_part_departments_bp
     from webapp.routes.admin_spare_pricing import admin_spare_pricing_bp
+    from webapp.routes.spare_part_planning import spare_part_planning_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_products_bp)
@@ -112,6 +113,7 @@ def create_app():
     app.register_blueprint(spare_part_categories_bp)
     app.register_blueprint(spare_part_departments_bp)
     app.register_blueprint(admin_spare_pricing_bp)
+    app.register_blueprint(spare_part_planning_bp)
 
     # Store Department / Section Access: these blueprints are each either
     # Finished-Goods or Spare-Parts operational data. A single app-level
@@ -138,7 +140,7 @@ def create_app():
         _SECTION_BY_BLUEPRINT[fg_bp.name] = SECTION_FINISHED_GOODS
     for sp_bp in (
         spare_parts_bp, spare_part_machines_bp, spare_part_suppliers_bp, spare_part_movements_bp,
-        spare_part_categories_bp, spare_part_departments_bp,
+        spare_part_categories_bp, spare_part_departments_bp, spare_part_planning_bp,
     ):
         _SECTION_BY_BLUEPRINT[sp_bp.name] = SECTION_SPARE_PARTS
 

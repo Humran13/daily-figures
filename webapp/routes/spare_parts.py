@@ -26,10 +26,25 @@ PRICE_FIELDS = (
     "selling_price", "preferred_cost_source",
 )
 
+# Critical/critical_note drive procurement priority directly (see
+# spare_part_planning_service.procurement_priority()) and are therefore
+# restricted the same way pricing is: Super Administrator only, even
+# though Manager may otherwise edit this same spare part's master data
+# (name, category, minimum_stock, machine_ids, ...). Viewing Critical
+# status is unrestricted — it is not a pricing field — only CHANGING it
+# is gated here.
+CRITICAL_ROLES = (ROLE_SUPER_ADMIN,)
+CRITICAL_FIELDS = ("critical", "critical_note")
+
 
 def _may_see_pricing():
     user = current_user()
     return user is not None and user.role in PRICING_ROLES
+
+
+def _may_set_critical():
+    user = current_user()
+    return user is not None and user.role in CRITICAL_ROLES
 
 
 def _to_dict(spare_part):
@@ -58,6 +73,18 @@ def _pricing_forbidden_response(payload):
     """Returns a 403 response when a non-Super-Admin tries to send any price field."""
     if any(field in payload for field in PRICE_FIELDS) and not _may_see_pricing():
         return jsonify({"error": "Only a Super Administrator can set spare-part pricing."}), 403
+    return None
+
+
+def _critical_forbidden_response(payload):
+    """Returns a 403 response when anyone other than a Super Administrator
+    tries to send critical/critical_note — whether alone or mixed in with
+    other fields a Manager would otherwise be allowed to edit. Mirrors
+    _pricing_forbidden_response() exactly: the whole request is rejected,
+    never partially applied, so a Manager's other field changes in the
+    same request are also rejected rather than silently split."""
+    if any(field in payload for field in CRITICAL_FIELDS) and not _may_set_critical():
+        return jsonify({"error": "Only a Super Administrator can change Critical status."}), 403
     return None
 
 
@@ -101,11 +128,12 @@ def get_spare_part(spare_part_id):
 @roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
 def create_spare_part():
     d = request.get_json(force=True) or {}
-    forbidden = _pricing_forbidden_response(d)
+    forbidden = _pricing_forbidden_response(d) or _critical_forbidden_response(d)
     if forbidden:
         return forbidden
     try:
         minimum_stock = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
+        safety_stock_override = _parse_decimal(d.get("safety_stock_override"), "safety_stock_override")
         buying_price = _parse_decimal(d.get("buying_price"), "buying_price")
         china_buying_price = _parse_decimal(d.get("china_buying_price"), "china_buying_price")
         local_buying_price = _parse_decimal(d.get("local_buying_price"), "local_buying_price")
@@ -122,12 +150,14 @@ def create_spare_part():
             name=d.get("name"), model=d.get("model"), size=d.get("size"),
             specifications=d.get("specifications"), category_id=d.get("category_id"),
             unit=d.get("unit") or "pcs", minimum_stock=minimum_stock,
+            safety_stock_override=safety_stock_override,
             buying_price=buying_price, china_buying_price=china_buying_price,
             local_buying_price=local_buying_price,
             preferred_cost_source=d.get("preferred_cost_source") or None,
             selling_price=selling_price,
             location=d.get("location"), notes=d.get("notes"),
             machine_ids=d.get("machine_ids"),
+            critical=d.get("critical", False), critical_note=d.get("critical_note"),
         )
     except svc.SparePartError as e:
         db.session.rollback()
@@ -145,7 +175,7 @@ def update_spare_part(spare_part_id):
     if spare_part is None:
         return jsonify({"error": "not found"}), 404
     d = request.get_json(force=True) or {}
-    forbidden = _pricing_forbidden_response(d)
+    forbidden = _pricing_forbidden_response(d) or _critical_forbidden_response(d)
     if forbidden:
         return forbidden
     before = spare_part.to_dict(include_pricing=True)
@@ -153,6 +183,8 @@ def update_spare_part(spare_part_id):
     try:
         if "minimum_stock" in d:
             d["minimum_stock"] = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
+        if "safety_stock_override" in d:
+            d["safety_stock_override"] = _parse_decimal(d.get("safety_stock_override"), "safety_stock_override")
         if "buying_price" in d:
             d["buying_price"] = _parse_decimal(d.get("buying_price"), "buying_price")
         for field in ("china_buying_price", "local_buying_price", "selling_price"):

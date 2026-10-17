@@ -74,26 +74,36 @@ def seed_spare_parts_master(conn, records=None):
             except InvalidOperation:
                 selling_price = None
 
-        result = conn.execute(
-            spare_parts.insert().values(
-                code=None,
-                name=rec.get("name"),
-                model=None,
-                size=None,
-                specifications=rec.get("specifications"),
-                category_id=None,
-                unit="pcs",
-                minimum_stock=None,
-                location=None,
-                notes=None,
-                buying_price=None,
-                selling_price=selling_price,
-                active=True,
-                current_stock_cache=0,
-                created_at=now,
-                updated_at=now,
-            )
+        values = dict(
+            code=None,
+            name=rec.get("name"),
+            model=None,
+            size=None,
+            specifications=rec.get("specifications"),
+            category_id=None,
+            unit="pcs",
+            minimum_stock=None,
+            location=None,
+            notes=None,
+            buying_price=None,
+            selling_price=selling_price,
+            active=True,
+            current_stock_cache=0,
+            created_at=now,
+            updated_at=now,
         )
+        # `critical` was added by a later migration than this seed's own
+        # (c3d5e7f9a1b2 vs. this function's a7c9d1e3f5b8). When Alembic
+        # replays history from scratch, the table reflected here at THIS
+        # point in the chain does not have the column yet — only include
+        # it when the live connection's schema already does (e.g. this
+        # project's tests, which build the full current schema via
+        # db.create_all() and call this exact function directly).
+        if "critical" in spare_parts.c:
+            values["critical"] = False
+        if "critical_note" in spare_parts.c:
+            values["critical_note"] = None
+        result = conn.execute(spare_parts.insert().values(**values))
         new_id = result.inserted_primary_key[0]
         conn.execute(
             spare_parts.update().where(spare_parts.c.id == new_id).values(code=f"SP-{new_id:05d}")

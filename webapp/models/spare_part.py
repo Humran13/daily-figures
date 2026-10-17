@@ -96,6 +96,14 @@ class SparePart(db.Model):
     category_id = db.Column(db.Integer, db.ForeignKey("spare_part_categories.id"), nullable=True)
     unit = db.Column(db.String(20), nullable=False, default="pcs")
     minimum_stock = db.Column(db.Numeric(12, 3), nullable=True)
+    # Procurement-planning buffer, DELIBERATELY separate from
+    # minimum_stock: minimum_stock drives the existing low-stock alert
+    # (is_low_stock()/stock_status_for()) and must keep meaning exactly
+    # that. safety_stock_override is an optional per-part override for
+    # spare_part_planning_service.safety_stock_for()'s recommended-purchase
+    # math only; NULL means "use the application default rule" there.
+    # Never read by any low-stock/minimum-stock calculation.
+    safety_stock_override = db.Column(db.Numeric(12, 3), nullable=True)
     location = db.Column(db.String(120), nullable=True)
     notes = db.Column(db.Text, nullable=True)
     # Commercial fields — restricted to Super Admin at the route
@@ -105,6 +113,11 @@ class SparePart(db.Model):
     local_buying_price = db.Column(db.Numeric(12, 2), nullable=True)
     preferred_cost_source = db.Column(db.String(20), nullable=True)
     selling_price = db.Column(db.Numeric(12, 2), nullable=True)
+    # Procurement-planning signal only (see spare_part_planning_service.py)
+    # — never derived from or feeding back into consumption history. Not a
+    # pricing field, so it is not gated behind _may_see_pricing().
+    critical = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    critical_note = db.Column(db.Text, nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True, index=True)
     current_stock_cache = db.Column(db.Numeric(12, 3), nullable=False, default=0)
     created_at = db.Column(db.DateTime(), nullable=False, default=_utcnow)
@@ -121,7 +134,9 @@ class SparePart(db.Model):
             "size": self.size, "specifications": self.specifications, "category_id": self.category_id,
             "unit": self.unit,
             "minimum_stock": str(self.minimum_stock) if self.minimum_stock is not None else None,
+            "safety_stock_override": str(self.safety_stock_override) if self.safety_stock_override is not None else None,
             "location": self.location, "notes": self.notes, "active": self.active,
+            "critical": self.critical, "critical_note": self.critical_note,
             "current_stock": str(current_stock) if current_stock is not None else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
