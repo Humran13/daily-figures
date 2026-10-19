@@ -5,18 +5,40 @@ color fix on the Spare Parts dashboard.
 
 Planning and Master Data were previously reachable (Planning: every
 role; Master Data: Manager+Super Admin). Both are now Super-Admin-only
-at the nav and page level. The underlying APIs are deliberately left as
-they were (see webapp/routes/pages.py's docstrings on those two routes):
-Planning's read API still serves every role (financial fields already
-withheld from non-Super-Admin via _may_see_pricing()), and Master Data's
-write APIs (spare part/category/machine/department/supplier CRUD, stock
-adjustment/count/opening-balance) keep their existing Manager+Super Admin
-checks, since those are genuine operational actions other tests already
-exercise independently of this page.
+at the nav AND page level. Planning's backend (GET /api/spare-parts/planning
+and its exports) is ALSO Super-Admin-only end to end — see
+webapp/routes/spare_part_planning.py's module docstring for why
+(the report mixes operational and procurement/value-derived data that is
+unsafe to sanitize field-by-field). Master Data's write APIs (spare
+part/category/machine/department/supplier CRUD, stock adjustment/count/
+opening-balance) keep their existing Manager+Super Admin checks, since
+those are genuine operational actions other tests already exercise
+independently of this page, and financial fields on those endpoints were
+already Super-Admin-only via _may_see_pricing()/include_pricing.
 """
 from pathlib import Path
 
-from tests.test_spare_parts import _login_spare_parts
+from tests.test_spare_parts import _create_spare_part, _login_spare_parts
+
+# Any JSON key anywhere in a non-Super-Admin Spare Parts response that
+# would leak or let a client reconstruct money/pricing/procurement-value
+# information.
+FORBIDDEN_FINANCIAL_KEYS = {
+    "buying_price", "china_buying_price", "local_buying_price", "selling_price",
+    "current_cost_price", "preferred_cost_source", "profit", "margin_percent",
+    "china_projected_cost", "local_projected_cost", "selected_source_projected_cost",
+    "estimated_savings", "procurement_value_12m",
+}
+
+
+def _assert_no_financial_keys(value, path=""):
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            assert key not in FORBIDDEN_FINANCIAL_KEYS, f"leaked financial key '{key}' at {path}"
+            _assert_no_financial_keys(sub, f"{path}.{key}")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _assert_no_financial_keys(item, f"{path}[{i}]")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SPARE_PARTS_SHELL_JS = (STATIC_DIR / "spare-parts-shell.js").read_text(encoding="utf-8")
@@ -111,3 +133,80 @@ def test_healthy_stock_quantity_uses_green_color_not_whole_row():
     # The healthy rule must not recolor the whole row (name/code/minimum) —
     # only .stock is targeted, never a bare ".inventory-row.healthy{...}".
     assert ".inventory-row.healthy{" not in SPARE_PARTS_HTML
+
+
+# ---------- Planning backend: Super-Admin-only end to end ----------
+
+def test_non_super_admin_denied_planning_api(client, make_user):
+    for role, username in (("manager", "navplan_mgr"), ("accountant", "navplan_acct"),
+                            ("operator", "navplan_op"), ("viewer", "navplan_view")):
+        other = client.application.test_client()
+        _login_spare_parts(other, make_user, username, role)
+        res = other.get("/api/spare-parts/planning")
+        assert res.status_code == 403, role
+        res = other.get("/api/spare-parts/planning/export.csv")
+        assert res.status_code == 403, role
+
+
+def test_super_admin_allowed_planning_api_and_export(client, make_user):
+    _login_spare_parts(client, make_user, "navplan_sa", "super_admin")
+    assert client.get("/api/spare-parts/planning").status_code == 200
+    assert client.get("/api/spare-parts/planning/export.csv").status_code == 200
+
+
+# ---------- financial-leakage audit: ordinary Spare Parts responses ----------
+
+def test_non_super_admin_spare_parts_responses_contain_no_financial_keys(client, make_user):
+    _login_spare_parts(client, make_user, "leaksa_setup", "super_admin")
+    part = _create_spare_part(client, name="Leak Audit Part")
+    client.patch(f"/api/spare-parts/{part['id']}", json={
+        "china_buying_price": "10.00", "local_buying_price": "12.00", "selling_price": "20.00",
+    })
+
+    for role, username in (("manager", "leak_mgr"), ("accountant", "leak_acct"),
+                            ("operator", "leak_op"), ("viewer", "leak_view")):
+        other = client.application.test_client()
+        _login_spare_parts(other, make_user, username, role)
+        list_res = other.get("/api/spare-parts")
+        assert list_res.status_code == 200, role
+        _assert_no_financial_keys(list_res.get_json(), f"{role}:/api/spare-parts")
+
+        detail_res = other.get(f"/api/spare-parts/{part['id']}")
+        assert detail_res.status_code == 200, role
+        _assert_no_financial_keys(detail_res.get_json(), f"{role}:/api/spare-parts/{{id}}")
+
+        dashboard_res = other.get("/api/spare-parts/dashboard")
+        assert dashboard_res.status_code == 200, role
+        _assert_no_financial_keys(dashboard_res.get_json(), f"{role}:/api/spare-parts/dashboard")
+
+        history_res = other.get("/api/spare-parts/movements")
+        assert history_res.status_code == 200, role
+        _assert_no_financial_keys(history_res.get_json(), f"{role}:/api/spare-parts/movements")
+
+
+def test_admin_pricing_api_remains_super_admin_only(client, make_user):
+    for role, username in (("manager", "adminpx_mgr"), ("accountant", "adminpx_acct"),
+                            ("operator", "adminpx_op"), ("viewer", "adminpx_view")):
+        other = client.application.test_client()
+        _login_spare_parts(other, make_user, username, role)
+        assert other.get("/api/admin/spare-parts/pricing").status_code == 403, role
+
+
+# ---------- Manager's legitimate non-financial operational actions survive ----------
+
+def test_manager_can_still_create_edit_and_correct_stock_outside_master_data_page(client, make_user):
+    _login_spare_parts(client, make_user, "opsmgr1", "manager")
+    part = _create_spare_part(client, name="Operational Survival Part")
+    assert client.patch(f"/api/spare-parts/{part['id']}", json={"model": "Rev B"}).status_code == 200
+
+    from tests.test_spare_parts import _get_or_create_department
+    dept_id = _get_or_create_department(client.application, "Leak Audit Dept")
+    adj = client.post("/api/spare-parts/movements/adjustment", json={
+        "spare_part_id": part["id"], "quantity": "5", "direction": "in", "reason": "initial stock",
+    })
+    assert adj.status_code == 201
+    count = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "5", "reason": "physical count",
+    })
+    assert count.status_code == 201
+    assert client.post("/api/spare-parts/categories", json={"name": "Opsurvival Category"}).status_code == 201

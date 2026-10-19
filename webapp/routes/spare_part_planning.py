@@ -1,12 +1,14 @@
 """
 Consumption & Procurement Planning — read-only analytics on top of the
-Spare Parts master/ledger data. Every Spare-Parts role may view the
-operational columns (consumption, trend, coverage, priority, ABC class),
-exactly like the existing Dashboard/History screens; money (unit prices,
-China/Local projected cost, savings, cost-based summary cards) stays
-Super-Administrator-only, mirroring webapp/routes/spare_parts.py's
-_may_see_pricing() gate exactly — Manager does NOT get pricing here either,
-consistent with how it is already withheld everywhere else in Spare Parts.
+Spare Parts master/ledger data. The report mixes operational columns
+(consumption, trend, coverage) with procurement/sourcing/value-derived
+data (preferred/selected source, ABC class, projected-cost and savings
+summary keys) that is unsafe to sanitize field-by-field, so the whole
+endpoint — report and exports alike — is Super-Administrator ONLY, same
+as the page itself (see webapp/routes/pages.py's spare_parts_planning_page()
+and nav gating in static/spare-parts-shell.js). _may_see_pricing() is kept
+only as an extra belt-and-braces gate on the money fields within the
+response the Super Administrator receives.
 
 Marking a part Critical reuses the EXISTING PATCH /api/spare-parts/<id>
 endpoint (webapp/services/spare_part_service.py's update_spare_part()
@@ -19,7 +21,7 @@ other fields. Already audited by that route's existing before/after diff.
 """
 from flask import Blueprint, Response, jsonify, request
 
-from webapp.auth import current_user, login_required
+from webapp.auth import current_user, roles_required
 from webapp.models.user import ROLE_SUPER_ADMIN
 from webapp.services import branding_service
 from webapp.services import spare_part_planning_service as planning_svc
@@ -70,7 +72,7 @@ def _report_kwargs():
 
 
 @spare_part_planning_bp.route("", methods=["GET"])
-@login_required
+@roles_required(ROLE_SUPER_ADMIN)
 def planning_report():
     try:
         report = planning_svc.build_planning_report(**_report_kwargs())
@@ -98,7 +100,7 @@ _EXPORT_PRICING_COLUMNS = [
 
 
 @spare_part_planning_bp.route("/export.<fmt>", methods=["GET"])
-@login_required
+@roles_required(ROLE_SUPER_ADMIN)
 def export_planning_report(fmt):
     if fmt not in MIME_TYPES:
         return jsonify({"error": "unsupported format"}), 400

@@ -127,7 +127,7 @@ def test_safety_stock_is_independent_of_minimum_stock(app, client, make_user):
     """A part with a large minimum_stock but no safety_stock_override must
     still get the application-default safety stock (1 month of its own
     average consumption) -- never minimum_stock's value."""
-    _login_spare_parts(client, make_user, "safetysep1", "manager")
+    _login_spare_parts(client, make_user, "safetysep1", "super_admin")
     part = _create_spare_part(client, name="Separation Check Part", minimum_stock="500")
     data = _report(client, q="Separation Check Part")
     row = next(r for r in data["rows"] if r["id"] == part["id"])
@@ -175,7 +175,7 @@ def test_incoming_stock_display_shows_not_tracked_while_untracked():
 
 
 def test_incoming_stock_shown_as_not_tracked_in_report_row(app, client, make_user):
-    _login_spare_parts(client, make_user, "incoming1", "manager")
+    _login_spare_parts(client, make_user, "incoming1", "super_admin")
     part = _create_spare_part(client, name="Incoming Display Part")
     data = _report(client, q="Incoming Display Part")
     row = next(r for r in data["rows"] if r["id"] == part["id"])
@@ -183,7 +183,7 @@ def test_incoming_stock_shown_as_not_tracked_in_report_row(app, client, make_use
 
 
 def test_methodology_reports_incoming_stock_not_tracked(app, client, make_user):
-    _login_spare_parts(client, make_user, "incoming2", "manager")
+    _login_spare_parts(client, make_user, "incoming2", "super_admin")
     data = _report(client)
     assert data["methodology"]["incoming_stock_tracked"] is False
 
@@ -545,14 +545,14 @@ def test_consumption_excludes_adjustments_opening_balance_and_voids(app, client,
 
 
 def test_search_by_name_in_planning_report(app, client, make_user):
-    _login_spare_parts(client, make_user, "planmgr2", "manager")
+    _login_spare_parts(client, make_user, "planmgr2", "super_admin")
     _create_spare_part(client, name="Unique Roller Chain XYZ", model="RC40")
     data = _report(client, q="Roller Chain XYZ")
     assert any("Roller Chain XYZ" in r["display_name"] for r in data["rows"])
 
 
 def test_search_by_specification_in_planning_report(app, client, make_user):
-    _login_spare_parts(client, make_user, "planmgr3", "manager")
+    _login_spare_parts(client, make_user, "planmgr3", "super_admin")
     _create_spare_part(client, name="Bearing Special", specifications="UNIQUESPEC-22213")
     data = _report(client, q="UNIQUESPEC-22213")
     assert any(r["specifications"] == "UNIQUESPEC-22213" for r in data["rows"])
@@ -570,7 +570,7 @@ def test_filter_by_critical_only(app, client, make_user):
 
 
 def test_filter_by_category(app, client, make_user):
-    _login_spare_parts(client, make_user, "planmgr5", "manager")
+    _login_spare_parts(client, make_user, "planmgr5", "super_admin")
     cat = client.post("/api/spare-parts/categories", json={"name": "Filters Only Cat"}).get_json()
     part = _create_spare_part(client, name="Oil Filter", category_id=cat["id"])
     other = _create_spare_part(client, name="Unrelated Part")
@@ -698,15 +698,15 @@ def test_critical_status_visible_to_every_spare_parts_role_regardless_of_who_set
         assert res.get_json()["critical"] is True
 
 
-def test_pricing_hidden_from_manager_in_planning_report(app, client, make_user):
+def test_manager_denied_planning_report(app, client, make_user):
+    # Planning is now Super-Administrator-only end to end (page, API, and
+    # exports) -- the report contains procurement/sourcing/value-derived
+    # data (ABC class, preferred source, projected cost, savings) that is
+    # unsafe to sanitize field-by-field, so the whole endpoint is gated
+    # instead of just its pricing fields.
     _login_spare_parts(client, make_user, "planmgr7", "manager")
-    _create_spare_part(client, name="Priced Part A")
-    data = _report(client)
-    assert data["rows"]
-    for row in data["rows"]:
-        assert "china_buying_price" not in row
-        assert "selected_source_projected_cost" not in row
-    assert data["summary"]["procurement_value_12m"] is None
+    res = client.get("/api/spare-parts/planning")
+    assert res.status_code == 403
 
 
 def test_pricing_visible_to_super_admin_in_planning_report(app, client, make_user):
@@ -719,15 +719,42 @@ def test_pricing_visible_to_super_admin_in_planning_report(app, client, make_use
     assert row["local_buying_price"] == "12.00"
 
 
-def test_viewer_can_view_planning_but_cannot_write(app, client, make_user):
+def test_viewer_denied_planning_report(app, client, make_user):
     _login_spare_parts(client, make_user, "planview1", "viewer")
+    res = client.get("/api/spare-parts/planning")
+    assert res.status_code == 403
+
+
+def test_accountant_denied_planning_report(app, client, make_user):
+    _login_spare_parts(client, make_user, "planacct1", "accountant")
+    res = client.get("/api/spare-parts/planning")
+    assert res.status_code == 403
+
+
+def test_operator_denied_planning_report(app, client, make_user):
+    _login_spare_parts(client, make_user, "planop_deny", "operator")
+    res = client.get("/api/spare-parts/planning")
+    assert res.status_code == 403
+
+
+def test_super_admin_allowed_planning_report(app, client, make_user):
+    _login_spare_parts(client, make_user, "plansa_allow", "super_admin")
     res = client.get("/api/spare-parts/planning")
     assert res.status_code == 200
 
 
-def test_accountant_can_view_planning(app, client, make_user):
-    _login_spare_parts(client, make_user, "planacct1", "accountant")
-    res = client.get("/api/spare-parts/planning")
+def test_non_super_admin_denied_planning_export(app, client, make_user):
+    for role, username in (("manager", "planexp_mgr"), ("accountant", "planexp_acct"),
+                            ("operator", "planexp_op"), ("viewer", "planexp_view")):
+        other = app.test_client()
+        _login_spare_parts(other, make_user, username, role)
+        res = other.get("/api/spare-parts/planning/export.csv")
+        assert res.status_code == 403, role
+
+
+def test_super_admin_allowed_planning_export(app, client, make_user):
+    _login_spare_parts(client, make_user, "planexp_sa", "super_admin")
+    res = client.get("/api/spare-parts/planning/export.csv")
     assert res.status_code == 200
 
 
@@ -744,7 +771,7 @@ def test_planning_requires_login(client):
 
 
 def test_export_csv_xlsx_pdf(app, client, make_user):
-    _login_spare_parts(client, make_user, "planexport1", "manager")
+    _login_spare_parts(client, make_user, "planexport1", "super_admin")
     _create_spare_part(client, name="Export Test Part")
     for fmt in ("csv", "xlsx", "pdf"):
         res = client.get(f"/api/spare-parts/planning/export.{fmt}")
@@ -753,13 +780,13 @@ def test_export_csv_xlsx_pdf(app, client, make_user):
 
 
 def test_export_bad_format_rejected(app, client, make_user):
-    _login_spare_parts(client, make_user, "planexport2", "manager")
+    _login_spare_parts(client, make_user, "planexport2", "super_admin")
     res = client.get("/api/spare-parts/planning/export.exe")
     assert res.status_code == 400
 
 
 def test_recommended_purchase_quantity_present_in_report_row(app, client, make_user):
-    user = _login_spare_parts(client, make_user, "planmgr8", "manager")
+    user = _login_spare_parts(client, make_user, "planmgr8", "super_admin")
     part = _create_spare_part(client, name="Chain Link", minimum_stock="5")
     dept = _get_or_create_department(app)
     with app.app_context():
@@ -778,7 +805,7 @@ def test_recommended_purchase_quantity_present_in_report_row(app, client, make_u
 
 
 def test_zero_consumption_part_shows_no_recent_consumption_coverage(app, client, make_user):
-    _login_spare_parts(client, make_user, "planmgr9", "manager")
+    _login_spare_parts(client, make_user, "planmgr9", "super_admin")
     part = _create_spare_part(client, name="Never Used Part")
     data = _report(client, q="Never Used Part")
     row = next(r for r in data["rows"] if r["id"] == part["id"])
@@ -787,7 +814,7 @@ def test_zero_consumption_part_shows_no_recent_consumption_coverage(app, client,
 
 
 def test_dead_stock_view_filters_correctly(app, client, make_user):
-    _login_spare_parts(client, make_user, "planmgr10", "manager")
+    _login_spare_parts(client, make_user, "planmgr10", "super_admin")
     part = _create_spare_part(client, name="Long Dead Part")
     with app.app_context():
         from webapp.models.spare_part import SparePart
@@ -834,7 +861,7 @@ def _move(app, username, part_id, *, in_qty=None, in_date=None, out_qty=None, ou
 
 
 def test_view_most_consumed_sorts_by_365_day_usage_descending(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewmc", "manager")
+    _login_spare_parts(client, make_user, "viewmc", "super_admin")
     dept = _get_or_create_department(app)
     big = _create_spare_part(client, name="Most Consumed Big")
     small = _create_spare_part(client, name="Most Consumed Small")
@@ -846,7 +873,7 @@ def test_view_most_consumed_sorts_by_365_day_usage_descending(app, client, make_
 
 
 def test_view_fastest_moving_sorts_by_recent_monthly_consumption_descending(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewfm", "manager")
+    _login_spare_parts(client, make_user, "viewfm", "super_admin")
     dept = _get_or_create_department(app)
     fast = _create_spare_part(client, name="Fastest Moving Part")
     slow = _create_spare_part(client, name="Slower Moving Part")
@@ -859,7 +886,7 @@ def test_view_fastest_moving_sorts_by_recent_monthly_consumption_descending(app,
 
 
 def test_view_increasing_consumption_only_includes_increasing_parts(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewic", "manager")
+    _login_spare_parts(client, make_user, "viewic", "super_admin")
     dept = _get_or_create_department(app)
     increasing = _create_spare_part(client, name="Increasing Trend Part")
     stable = _create_spare_part(client, name="Stable Trend Part")
@@ -878,7 +905,7 @@ def test_view_increasing_consumption_only_includes_increasing_parts(app, client,
 
 
 def test_view_stockout_risk_includes_only_at_risk_parts(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewsr", "manager")
+    _login_spare_parts(client, make_user, "viewsr", "super_admin")
     out_of_stock = _create_spare_part(client, name="Stockout Risk Part")  # never stocked in
     well_stocked = _create_spare_part(client, name="Well Stocked Part")
     _move(app, "viewsr", well_stocked["id"], in_qty=100, in_date=_days_ago(10))
@@ -893,7 +920,7 @@ def test_view_stockout_risk_includes_only_at_risk_parts(app, client, make_user):
 
 
 def test_view_below_minimum_stock_filters_correctly(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewbm", "manager")
+    _login_spare_parts(client, make_user, "viewbm", "super_admin")
     below = _create_spare_part(client, name="Below Minimum View Part", minimum_stock="50")
     healthy = _create_spare_part(client, name="Healthy Stock View Part", minimum_stock="5")
     _move(app, "viewbm", below["id"], in_qty=20, in_date=_days_ago(5))
@@ -954,7 +981,7 @@ def test_view_china_savings_opportunity_only_includes_rows_with_savings_sorted_d
 
 
 def test_view_slow_moving_filters_correctly(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewsm", "manager")
+    _login_spare_parts(client, make_user, "viewsm", "super_admin")
     slow = _create_spare_part(client, name="Slow Moving View Part")
     active = _create_spare_part(client, name="Active Moving View Part")
     dept = _get_or_create_department(app)
@@ -971,7 +998,7 @@ def test_view_slow_moving_filters_correctly(app, client, make_user):
 
 
 def test_view_dead_stock_filters_correctly(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewds", "manager")
+    _login_spare_parts(client, make_user, "viewds", "super_admin")
     dead = _create_spare_part(client, name="Dead Stock View Part")
     active = _create_spare_part(client, name="Active Stock View Part")
     dept = _get_or_create_department(app)
@@ -986,7 +1013,7 @@ def test_view_dead_stock_filters_correctly(app, client, make_user):
 
 
 def test_unknown_view_falls_back_to_default_priority_sort(app, client, make_user):
-    _login_spare_parts(client, make_user, "viewbad", "manager")
+    _login_spare_parts(client, make_user, "viewbad", "super_admin")
     _create_spare_part(client, name="Unknown View Fallback Part")
     data = _report(client, view="not_a_real_view")
     assert isinstance(data["rows"], list)
