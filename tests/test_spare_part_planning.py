@@ -1016,10 +1016,21 @@ def test_report_row_exposes_every_required_sourcing_column(app, client, make_use
     assert not missing, f"missing required planning columns: {missing}"
 
 
-def test_planning_page_served_for_authorized_spare_parts_session(app, client, make_user):
-    _login_spare_parts(client, make_user, "planpage1", "viewer")
+def test_planning_page_served_for_super_admin(app, client, make_user):
+    _login_spare_parts(client, make_user, "planpage_sa", "super_admin")
     res = client.get("/spare-parts-planning.html")
     assert res.status_code == 200
+
+
+def test_planning_page_denied_for_non_super_admin_spare_parts_session(app, client, make_user):
+    # Planning is now Super-Administrator ONLY at the page level (nav entry
+    # and direct URL alike) — every other Spare Parts role is redirected
+    # back to the Dashboard, even though the underlying read API
+    # (GET /api/spare-parts/planning) still serves them non-financial data.
+    _login_spare_parts(client, make_user, "planpage1", "viewer")
+    res = client.get("/spare-parts-planning.html")
+    assert res.status_code == 302
+    assert res.headers["Location"] == "/spare-parts.html"
 
 
 def test_planning_page_redirects_without_session(client):

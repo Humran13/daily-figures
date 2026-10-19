@@ -224,19 +224,24 @@ def spare_parts_history_page():
 
 @pages_bp.route("/spare-parts-master.html")
 def spare_parts_master_page():
-    return _guard_page(
-        "spare-parts-master.html", (ROLE_MANAGER, ROLE_SUPER_ADMIN), section_code=SECTION_SPARE_PARTS,
-    )
+    # Master Data (spare part/category/machine/department/supplier
+    # maintenance) is Super-Administrator ONLY — tightened from the prior
+    # Manager-or-Super-Administrator rule. The underlying write APIs this
+    # page calls keep their own existing per-endpoint role checks (Manager
+    # still creates/edits spare parts and records stock corrections via
+    # those APIs directly where some other legitimate flow needs it); this
+    # is specifically about denying the Master Data PAGE/nav entry itself
+    # to anyone but Super Admin, mirroring Planning/Admin below.
+    return _guard_page("spare-parts-master.html", (ROLE_SUPER_ADMIN,), section_code=SECTION_SPARE_PARTS)
 
 
 @pages_bp.route("/spare-parts-planning.html")
 def spare_parts_planning_page():
-    # Consumption & Procurement Planning — every role with Spare Parts
-    # section access may view it, same as the Dashboard/History screens.
-    # Financial figures (unit prices, projected cost, savings) are hidden
-    # client-side and never sent by the API to anyone but a Super
-    # Administrator (see webapp/routes/spare_part_planning.py's
-    # _may_see_pricing()); marking a part Critical still requires
-    # Manager/Super Administrator, enforced by the existing
-    # PATCH /api/spare-parts/<id> endpoint this page calls.
-    return _guard_page("spare-parts-planning.html", ROLES, section_code=SECTION_SPARE_PARTS)
+    # Consumption & Procurement Planning page is Super-Administrator ONLY
+    # — tightened from the prior "every Spare Parts role may view it" rule.
+    # The underlying GET /api/spare-parts/planning API is unchanged and
+    # still reachable by every role (financial figures — unit prices,
+    # projected cost, savings — stay hidden from anyone but a Super
+    # Administrator via that route's own _may_see_pricing() gate); this is
+    # specifically about denying the PAGE/nav entry itself.
+    return _guard_page("spare-parts-planning.html", (ROLE_SUPER_ADMIN,), section_code=SECTION_SPARE_PARTS)

@@ -51,6 +51,7 @@
   .inventory-row{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; }
   .inventory-row strong{ overflow-wrap:anywhere; }
   .inventory-row .stock{ text-align:right; white-space:nowrap; font-weight:700; }
+  .inventory-row.healthy .stock{ color:var(--teal); }
   .inventory-row.low .stock, .inventory-row.no_stock .stock{ color:var(--red); }
   .hidden{ display:none !important; }
 </style>

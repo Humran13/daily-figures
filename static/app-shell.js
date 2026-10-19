@@ -143,7 +143,7 @@
     if (role === 'super_admin' && enabled(flags, 'daily_figures')) {
       items.push({ key: 'reset_daily_values', label: 'Reset Daily Values', href: '/reset-daily-values.html' });
     }
-    if (role === 'manager' || role === 'super_admin') {
+    if (role === 'manager' || role === 'super_admin' || role === 'accountant') {
       items.push({ key: 'requests', label: 'Requests', href: '/requests.html', badge: 'pendingRequests' });
     }
     if (role === 'super_admin') items.push({ key: 'admin', label: 'Admin', href: '/admin.html' });
@@ -368,7 +368,7 @@
     // supports it (see setAppIconBadge() below) — same authoritative
     // backend number for both, never guessed from visible rows.
     var pendingCount = 0;
-    if (session.user.role === 'manager' || session.user.role === 'super_admin') {
+    if (session.user.role === 'manager' || session.user.role === 'super_admin' || session.user.role === 'accountant') {
       var pendingData = await apiGet('/api/correction-requests/pending-count');
       pendingCount = (pendingData && typeof pendingData.count === 'number') ? pendingData.count : 0;
     }
