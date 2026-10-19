@@ -420,12 +420,16 @@ def test_operator_can_stock_in_out_but_not_master_data(app, client, make_user):
     }).status_code == 201
 
 
-def test_accountant_read_only(app, client, make_user):
+def test_accountant_can_view_and_stock_move_but_not_manage_master_data(app, client, make_user):
+    # Accountant has real Stock In/Stock Out access (see
+    # tests/test_accountant_spare_parts_stock_movements.py for the full
+    # coverage of that), but still cannot create/edit master data or run
+    # adjustment/stock-count/opening-balance/void.
     _login_spare_parts(client, make_user, "acct1", "accountant")
     assert client.get("/api/spare-parts").status_code == 200
     assert client.post("/api/spare-parts", json={"name": "x"}).status_code == 403
-    assert client.post("/api/spare-parts/movements/stock-in", json={
-        "spare_part_id": 1, "quantity": "1",
+    assert client.post("/api/spare-parts/movements/adjustment", json={
+        "spare_part_id": 1, "quantity": "1", "direction": "in",
     }).status_code == 403
 
 

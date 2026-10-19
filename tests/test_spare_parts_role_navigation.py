@@ -64,7 +64,10 @@ def test_spare_parts_nav_restricts_planning_master_admin_to_super_admin():
 def test_spare_parts_nav_leaves_dashboard_stock_in_out_history_unrestricted():
     assert "{ key: 'dashboard', label: 'Dashboard', href: '/spare-parts.html', roles: null }" in SPARE_PARTS_SHELL_JS
     assert "{ key: 'history', label: 'History', href: '/spare-parts-history.html', roles: null }" in SPARE_PARTS_SHELL_JS
-    assert "roles: ['operator', 'manager', 'super_admin']" in SPARE_PARTS_SHELL_JS
+    # Stock In/Stock Out: Operator/Manager/Accountant/Super Admin (see
+    # test_accountant_spare_parts_stock_movements.py for the dedicated
+    # Accountant coverage of this).
+    assert "roles: ['operator', 'manager', 'accountant', 'super_admin']" in SPARE_PARTS_SHELL_JS
 
 
 # ---------- page-level authorization matrix ----------

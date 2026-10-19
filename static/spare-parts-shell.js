@@ -19,8 +19,8 @@
 
   var NAV_ITEMS = [
     { key: 'dashboard', label: 'Dashboard', href: '/spare-parts.html', roles: null },
-    { key: 'stock-in', label: 'Stock In', href: '/spare-parts-stock-in.html', roles: ['operator', 'manager', 'super_admin'] },
-    { key: 'stock-out', label: 'Stock Out', href: '/spare-parts-stock-out.html', roles: ['operator', 'manager', 'super_admin'] },
+    { key: 'stock-in', label: 'Stock In', href: '/spare-parts-stock-in.html', roles: ['operator', 'manager', 'accountant', 'super_admin'] },
+    { key: 'stock-out', label: 'Stock Out', href: '/spare-parts-stock-out.html', roles: ['operator', 'manager', 'accountant', 'super_admin'] },
     { key: 'history', label: 'History', href: '/spare-parts-history.html', roles: null },
     { key: 'planning', label: 'Planning', href: '/spare-parts-planning.html', roles: ['super_admin'] },
     { key: 'master', label: 'Master Data', href: '/spare-parts-master.html', roles: ['super_admin'] },
