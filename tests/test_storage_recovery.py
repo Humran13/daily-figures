@@ -529,6 +529,26 @@ def test_migrate_storage_preserve_flag_is_accepted_before_confirmation(tmp_path)
 # --- Section 15: doctor --recovery ----------------------------------------
 
 
+def test_health_command_propagates_curl_failure(tmp_path):
+    """A failed health request must fail `health` (and therefore `doctor`).
+
+    Regression guard for the incident where a failed curl was masked by the
+    newline printed immediately afterwards, so diagnostics still said PASS.
+    """
+    paths = _write_install_state(tmp_path)
+    bash_env = tmp_path / "curl-fail.sh"
+    bash_env.write_text("curl() { return 7; }\nexport -f curl\n", encoding="utf-8")
+    env = os.environ | {
+        "DF_TEST_MODE": "1",
+        "DF_STATE_FILE": _bash_path(paths["state"]),
+        "DF_RUNTIME_DIR": _bash_path(tmp_path / "runtime"),
+        "DF_LOCK_FILE": _bash_path(tmp_path / "run" / "daily-figures.lock"),
+        "BASH_ENV": _bash_path(bash_env),
+    }
+    result = _run(["health"], env)
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
 def test_doctor_recovery_reports_no_state_file(tmp_path):
     env = _minimal_env(tmp_path)
     result = _run(["doctor", "--recovery"], env)
