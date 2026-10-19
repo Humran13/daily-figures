@@ -204,7 +204,7 @@ def spare_parts_page():
 @pages_bp.route("/spare-parts-stock-in.html")
 def spare_parts_stock_in_page():
     return _guard_page(
-        "spare-parts-stock-in.html", (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN),
+        "spare-parts-stock-in.html", (ROLE_OPERATOR, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_SUPER_ADMIN),
         section_code=SECTION_SPARE_PARTS,
     )
 
@@ -212,7 +212,7 @@ def spare_parts_stock_in_page():
 @pages_bp.route("/spare-parts-stock-out.html")
 def spare_parts_stock_out_page():
     return _guard_page(
-        "spare-parts-stock-out.html", (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN),
+        "spare-parts-stock-out.html", (ROLE_OPERATOR, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_SUPER_ADMIN),
         section_code=SECTION_SPARE_PARTS,
     )
 

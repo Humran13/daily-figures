@@ -6,7 +6,7 @@ from webapp.auth import current_user, login_required, roles_required
 from webapp.extensions import db
 from webapp.models.spare_part import SparePart
 from webapp.models.spare_part_movement import MOVEMENT_TYPES, SparePartMovement
-from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN
+from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN
 from webapp.services import spare_part_movement_service as svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -30,7 +30,7 @@ def _get_spare_part(d):
 
 
 @spare_part_movements_bp.route("/stock-in", methods=["POST"])
-@roles_required(ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN)
+@roles_required(ROLE_OPERATOR, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_SUPER_ADMIN)
 def stock_in():
     d = request.get_json(force=True) or {}
     try:
@@ -48,7 +48,7 @@ def stock_in():
 
 
 @spare_part_movements_bp.route("/stock-out", methods=["POST"])
-@roles_required(ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN)
+@roles_required(ROLE_OPERATOR, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_SUPER_ADMIN)
 def stock_out():
     d = request.get_json(force=True) or {}
     if not d.get("department_id"):
