@@ -86,6 +86,31 @@ def adjustment():
     return jsonify(movement.to_dict()), 201
 
 
+@spare_part_movements_bp.route("/stock-count", methods=["POST"])
+@roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
+def stock_count():
+    d = request.get_json(force=True) or {}
+    try:
+        spare_part = _get_spare_part(d)
+        counted = Decimal(str(d.get("counted_quantity")))
+        movement = svc.record_stock_count(
+            spare_part, counted, current_user(), business_date=d.get("date"),
+            reason=d.get("reason"), remarks=d.get("remarks"),
+        )
+    except (InvalidOperation, TypeError):
+        db.session.rollback()
+        return jsonify({"error": "counted_quantity must be a number"}), 400
+    except svc.SparePartMovementError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+    record_audit(
+        current_user(), "stock_count", "spare_part_movement", entity_id=movement.id,
+        after=movement.to_dict(),
+    )
+    db.session.commit()
+    return jsonify(movement.to_dict()), 201
+
+
 @spare_part_movements_bp.route("/opening-balance", methods=["POST"])
 @roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
 def opening_balance():

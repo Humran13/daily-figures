@@ -243,6 +243,114 @@ def test_decimal_quantities_no_float_drift(app, client, make_user):
         assert movement_svc.current_stock(part["id"]) == Decimal("0.3")
 
 
+def test_discrete_units_require_whole_quantities(app, client, make_user):
+    _login_spare_parts(client, make_user, "mgr_whole", "manager")
+    part = _create_spare_part(client, unit="pcs")
+    res = client.post("/api/spare-parts/movements/stock-in", json={
+        "spare_part_id": part["id"], "quantity": "1.5",
+    })
+    assert res.status_code == 400
+    assert "whole number" in res.get_json()["error"]
+
+    continuous = _create_spare_part(client, unit="metres")
+    res = client.post("/api/spare-parts/movements/stock-in", json={
+        "spare_part_id": continuous["id"], "quantity": "1.5",
+    })
+    assert res.status_code == 201
+
+
+def test_stock_count_records_auditable_compensating_movement(app, client, make_user):
+    from decimal import Decimal
+
+    _login_spare_parts(client, make_user, "mgr_count", "manager")
+    part = _create_spare_part(client, unit="pcs")
+    client.post("/api/spare-parts/movements/stock-in", json={
+        "spare_part_id": part["id"], "quantity": "10",
+    })
+    res = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "7",
+        "reason": "weekly physical count",
+    })
+    assert res.status_code == 201, res.get_json()
+    movement = res.get_json()
+    assert movement["movement_type"] == "ADJUSTMENT_OUT"
+    assert Decimal(movement["quantity"]) == Decimal("3")
+    assert Decimal(movement["system_quantity_before"]) == Decimal("10")
+    assert Decimal(movement["counted_quantity"]) == Decimal("7")
+    assert Decimal(movement["stock_count_difference"]) == Decimal("-3")
+    assert movement["reason"] == "weekly physical count"
+    with app.app_context():
+        assert movement_svc.current_stock(part["id"]) == Decimal("7")
+
+    history = client.get("/api/spare-parts/movements").get_json()
+    recorded = next(row for row in history if row["id"] == movement["id"])
+    assert Decimal(recorded["counted_quantity"]) == Decimal("7")
+
+
+def test_stock_count_to_zero_and_unchanged_count_are_recorded(app, client, make_user):
+    from decimal import Decimal
+
+    _login_spare_parts(client, make_user, "mgr_count_zero", "manager")
+    part = _create_spare_part(client, unit="pcs")
+    client.post("/api/spare-parts/movements/stock-in", json={
+        "spare_part_id": part["id"], "quantity": "4",
+    })
+
+    first = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "0", "reason": "none found",
+    })
+    assert first.status_code == 201
+    assert Decimal(first.get_json()["quantity"]) == Decimal("4")
+
+    second = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "0", "reason": "rechecked",
+    })
+    assert second.status_code == 201
+    assert Decimal(second.get_json()["quantity"]) == Decimal("0")
+    assert Decimal(second.get_json()["stock_count_difference"]) == Decimal("0")
+    with app.app_context():
+        assert movement_svc.current_stock(part["id"]) == Decimal("0")
+
+
+def test_stock_count_rejects_missing_reason_and_invalid_quantities(app, client, make_user):
+    _login_spare_parts(client, make_user, "mgr_count_bad", "manager")
+    part = _create_spare_part(client, unit="pcs")
+
+    missing_reason = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "1", "reason": "   ",
+    })
+    assert missing_reason.status_code == 400
+    assert "reason is required" in missing_reason.get_json()["error"].lower()
+
+    negative = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "-1", "reason": "bad count",
+    })
+    assert negative.status_code == 400
+
+    fractional = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "1.5", "reason": "bad count",
+    })
+    assert fractional.status_code == 400
+    assert "whole number" in fractional.get_json()["error"]
+
+    not_a_number = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "many", "reason": "bad count",
+    })
+    assert not_a_number.status_code == 400
+    assert "must be a number" in not_a_number.get_json()["error"]
+
+
+def test_stock_count_rejects_inactive_spare_part(app, client, make_user):
+    _login_spare_parts(client, make_user, "mgr_count_inactive", "manager")
+    part = _create_spare_part(client, unit="pcs")
+    assert client.patch(f"/api/spare-parts/{part['id']}", json={"active": False}).status_code == 200
+    res = client.post("/api/spare-parts/movements/stock-count", json={
+        "spare_part_id": part["id"], "counted_quantity": "0", "reason": "inactive check",
+    })
+    assert res.status_code == 400
+    assert "inactive" in res.get_json()["error"]
+
+
 def test_units_display_correctly(app, client, make_user):
     _login_spare_parts(client, make_user, "mgr11", "manager")
     part = _create_spare_part(client, unit="litres")

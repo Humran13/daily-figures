@@ -63,6 +63,8 @@ def _parse_price(value, field):
         raise svc.SparePartError(f"{field} must be a finite number")
     if price < 0:
         raise svc.SparePartError(f"{field} cannot be negative")
+    if price != price.to_integral_value():
+        raise svc.SparePartError(f"{field} must be a whole UGX amount")
     return price
 
 

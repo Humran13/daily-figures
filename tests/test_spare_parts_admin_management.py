@@ -374,6 +374,45 @@ def test_negative_price_rejected(client, make_user):
     assert res.status_code == 400
 
 
+def test_fractional_ugx_prices_rejected_by_every_price_write_path(client, make_user):
+    _login(client, make_user, "price_fraction_super", "super_admin")
+    part = _spare(client, "Fraction Guard")
+
+    admin_res = client.patch(
+        f"/api/admin/spare-parts/pricing/{part['id']}", json={"buying_price": "1250.50"},
+    )
+    assert admin_res.status_code == 400
+    assert "whole UGX amount" in admin_res.get_json()["error"]
+
+    master_res = client.patch(
+        f"/api/spare-parts/{part['id']}", json={"selling_price": "1250.50"},
+    )
+    assert master_res.status_code == 400
+    assert "whole UGX amount" in master_res.get_json()["error"]
+
+    create_res = client.post("/api/spare-parts", json={
+        "name": "Fraction On Create", "unit": "pcs", "buying_price": "0.5",
+    })
+    assert create_res.status_code == 400
+    assert "whole UGX amount" in create_res.get_json()["error"]
+
+
+def test_whole_ugx_prices_are_stored_exactly(client, make_user):
+    _login(client, make_user, "price_whole_super", "super_admin")
+    part = _spare(client, "Whole Price", "P1", buying_price="150000", selling_price="200000")
+    res = client.patch(
+        f"/api/admin/spare-parts/pricing/{part['id']}",
+        json={"china_buying_price": "120000", "local_buying_price": "130000",
+              "preferred_cost_source": "local_uganda"},
+    )
+    assert res.status_code == 200
+    row = res.get_json()
+    assert Decimal(row["china_buying_price"]) == Decimal("120000")
+    assert Decimal(row["local_buying_price"]) == Decimal("130000")
+    assert Decimal(row["selling_price"]) == Decimal("200000")
+    assert row["preferred_cost_source"] == "local_uganda"
+
+
 def test_pricing_routes_reject_unauthenticated(client):
     assert client.get("/api/admin/spare-parts/pricing").status_code == 401
     assert client.get("/api/admin/spare-parts/pricing/1/history").status_code == 401

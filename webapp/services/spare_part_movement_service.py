@@ -13,7 +13,7 @@ from decimal import Decimal
 from sqlalchemy import update
 
 from webapp.extensions import db
-from webapp.models.spare_part import SparePart
+from webapp.models.spare_part import SparePart, is_discrete_unit
 from webapp.models.spare_part_movement import (
     DECREASING_TYPES, INCREASING_TYPES, MOVEMENT_ADJUSTMENT_IN, MOVEMENT_ADJUSTMENT_OUT,
     MOVEMENT_STOCK_IN, MOVEMENT_STOCK_OUT, MOVEMENT_TYPES, REASON_OPENING_BALANCE,
@@ -74,10 +74,34 @@ def bulk_current_stock(spare_part_ids):
 
 
 def is_low_stock(spare_part, stock=None):
-    if spare_part.minimum_stock is None:
-        return False
     stock = current_stock(spare_part.id) if stock is None else stock
-    return stock <= spare_part.minimum_stock
+    return stock_status_for(spare_part, stock) == "low"
+
+
+def stock_status_for(spare_part, stock=None):
+    """Return one mutually-exclusive inventory state.
+
+    A positive-stock part without a configured threshold is healthy. This is
+    the existing low-stock meaning (no threshold never raised an alert), made
+    explicit rather than inventing an arbitrary fallback threshold.
+    """
+    stock = current_stock(spare_part.id) if stock is None else stock
+    if stock <= 0:
+        return "no_stock"
+    if spare_part.minimum_stock is not None and stock <= spare_part.minimum_stock:
+        return "low"
+    return "healthy"
+
+
+def validate_quantity_for_unit(quantity, unit, field="quantity", *, allow_zero=False):
+    if quantity is None or not quantity.is_finite():
+        raise SparePartMovementError(f"{field} must be a finite number")
+    if quantity < 0 or (quantity == 0 and not allow_zero):
+        qualifier = "zero or greater" if allow_zero else "greater than zero"
+        raise SparePartMovementError(f"{field} must be {qualifier}")
+    if is_discrete_unit(unit) and quantity != quantity.to_integral_value():
+        raise SparePartMovementError(f"{field} must be a whole number for unit '{unit}'")
+    return quantity
 
 
 def _increase_cache(spare_part_id, quantity):
@@ -99,8 +123,7 @@ def _decrease_cache(spare_part_id, quantity):
 def _create_movement(*, spare_part, movement_type, quantity, user, business_date=None, **fields):
     if movement_type not in MOVEMENT_TYPES:
         raise SparePartMovementError(f"movement_type must be one of {MOVEMENT_TYPES}")
-    if quantity is None or quantity <= 0:
-        raise SparePartMovementError("quantity must be greater than zero")
+    validate_quantity_for_unit(quantity, spare_part.unit)
     if not spare_part.active:
         raise SparePartMovementError("Cannot record a movement against an inactive spare part")
 
@@ -160,6 +183,41 @@ def record_adjustment(spare_part, quantity, direction, user, *, business_date=No
     return _create_movement(
         spare_part=spare_part, movement_type=movement_type, quantity=quantity, user=user,
         business_date=business_date, reason=reason, remarks=remarks,
+    )
+
+
+def record_stock_count(spare_part, counted_quantity, user, *, business_date=None, reason=None, remarks=None):
+    """Record a physical count as a compensating ledger movement.
+
+    The ledger remains authoritative. Both compared quantities are stored on
+    the new movement so the correction can be reconstructed later.
+    """
+    validate_quantity_for_unit(counted_quantity, spare_part.unit, "counted_quantity", allow_zero=True)
+    if not spare_part.active:
+        raise SparePartMovementError("Cannot record a movement against an inactive spare part")
+    reason = (reason or "").strip()
+    if not reason:
+        raise SparePartMovementError("A reason is required for a stock count correction")
+    before = current_stock(spare_part.id)
+    difference = counted_quantity - before
+    movement_type = MOVEMENT_ADJUSTMENT_IN if difference >= 0 else MOVEMENT_ADJUSTMENT_OUT
+    magnitude = abs(difference)
+
+    if magnitude == 0:
+        movement = SparePartMovement(
+            business_date=business_date or business_today(), spare_part_id=spare_part.id,
+            movement_type=movement_type, quantity=Decimal("0"), unit_snapshot=spare_part.unit,
+            entered_by_user_id=user.id, status=STATUS_ACTIVE, reason=reason, remarks=remarks,
+            system_quantity_before=before, counted_quantity=counted_quantity,
+        )
+        db.session.add(movement)
+        db.session.flush()
+        return movement
+
+    return _create_movement(
+        spare_part=spare_part, movement_type=movement_type, quantity=magnitude, user=user,
+        business_date=business_date, reason=reason, remarks=remarks,
+        system_quantity_before=before, counted_quantity=counted_quantity,
     )
 
 
@@ -283,13 +341,14 @@ def dashboard_summary():
         SparePartMovement.query.filter_by(movement_type=MOVEMENT_STOCK_OUT, status=STATUS_ACTIVE, business_date=today)
         .count()
     )
+    statuses = {p.id: stock_status_for(p, stocks[p.id]) for p in parts}
     low_stock_list = [
         {
             "id": p.id, "name": p.name, "specifications": p.specifications,
             "display_name": p.display_name, "unit": p.unit,
             "current_stock": str(stocks[p.id]), "minimum_stock": str(p.minimum_stock),
         }
-        for p in parts if is_low_stock(p, stocks[p.id])
+        for p in parts if statuses[p.id] == "low"
     ]
     recent = (
         SparePartMovement.query.filter_by(status=STATUS_ACTIVE)
@@ -305,8 +364,10 @@ def dashboard_summary():
 
     return {
         "total_active_spare_parts": len(parts),
+        "healthy_stock_count": sum(1 for status in statuses.values() if status == "healthy"),
         "current_stock_items": sum(1 for v in stocks.values() if v > 0),
         "low_stock_count": len(low_stock_list),
+        "no_stock_count": sum(1 for status in statuses.values() if status == "no_stock"),
         "low_stock": low_stock_list,
         "stock_in_today": stock_in_today,
         "stock_out_today": stock_out_today,

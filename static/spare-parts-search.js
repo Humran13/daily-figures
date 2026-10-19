@@ -30,7 +30,8 @@
 
   // Secondary line in a results list: current stock, shown separately.
   function meta(part) {
-    return 'Stock: ' + part.current_stock + ' ' + part.unit;
+    var quantity = window.SparePartsUI ? SparePartsUI.formatQuantity(part.current_stock) : part.current_stock;
+    return 'Stock: ' + quantity + ' ' + part.unit;
   }
 
   async function search(query, options) {

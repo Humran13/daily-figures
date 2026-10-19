@@ -50,6 +50,11 @@ class SparePartMovement(db.Model):
     approved_by = db.Column(db.String(120), nullable=True)
     reason = db.Column(db.String(60), nullable=True)
     remarks = db.Column(db.Text, nullable=True)
+    # Present only for a physical Stock Count. They preserve the exact
+    # comparison that produced the compensating movement without rewriting
+    # any earlier ledger row.
+    system_quantity_before = db.Column(db.Numeric(12, 3), nullable=True)
+    counted_quantity = db.Column(db.Numeric(12, 3), nullable=True)
     status = db.Column(db.String(10), nullable=False, default=STATUS_ACTIVE, index=True)
     voided_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     voided_at = db.Column(db.DateTime(), nullable=True)
@@ -75,6 +80,12 @@ class SparePartMovement(db.Model):
             "approved_by": self.approved_by,
             "reason": self.reason,
             "remarks": self.remarks,
+            "system_quantity_before": str(self.system_quantity_before) if self.system_quantity_before is not None else None,
+            "counted_quantity": str(self.counted_quantity) if self.counted_quantity is not None else None,
+            "stock_count_difference": (
+                str(self.counted_quantity - self.system_quantity_before)
+                if self.counted_quantity is not None and self.system_quantity_before is not None else None
+            ),
             "status": self.status,
             "voided_by": self.voided_by,
             "voided_at": self.voided_at.isoformat() if self.voided_at else None,

@@ -52,6 +52,7 @@ def _to_dict(spare_part):
     d = spare_part.to_dict(current_stock=stock, include_pricing=_may_see_pricing())
     d["machines"] = [m.to_dict() for m in svc.spare_part_machines(spare_part.id)]
     d["low_stock"] = movement_svc.is_low_stock(spare_part, stock)
+    d["stock_status"] = movement_svc.stock_status_for(spare_part, stock)
     return d
 
 
@@ -66,6 +67,13 @@ def _parse_decimal(value, field):
         raise svc.SparePartError(f"{field} must be a finite number")
     if parsed < 0:
         raise svc.SparePartError(f"{field} cannot be negative")
+    return parsed
+
+
+def _parse_ugx(value, field):
+    parsed = _parse_decimal(value, field)
+    if parsed is not None and parsed != parsed.to_integral_value():
+        raise svc.SparePartError(f"{field} must be a whole UGX amount")
     return parsed
 
 
@@ -103,11 +111,15 @@ def list_spare_parts():
         request.args.get("q"), include_inactive=include_inactive, category_id=category,
     )
     stock_filter = request.args.get("stock")
-    if stock_filter not in (None, "", "low", "in_stock"):
+    if stock_filter not in (None, "", "low", "healthy", "no_stock", "in_stock"):
         return jsonify({"error": "invalid stock filter"}), 400
     rows = [_to_dict(p) for p in parts]
     if stock_filter == "low":
-        rows = [row for row in rows if row["low_stock"]]
+        rows = [row for row in rows if row["stock_status"] == "low"]
+    elif stock_filter in ("healthy",):
+        rows = [row for row in rows if row["stock_status"] == "healthy"]
+    elif stock_filter == "no_stock":
+        rows = [row for row in rows if row["stock_status"] == "no_stock"]
     elif stock_filter == "in_stock":
         rows = [row for row in rows if Decimal(row["current_stock"]) > 0]
     return jsonify(rows)
@@ -134,10 +146,10 @@ def create_spare_part():
     try:
         minimum_stock = _parse_decimal(d.get("minimum_stock"), "minimum_stock")
         safety_stock_override = _parse_decimal(d.get("safety_stock_override"), "safety_stock_override")
-        buying_price = _parse_decimal(d.get("buying_price"), "buying_price")
-        china_buying_price = _parse_decimal(d.get("china_buying_price"), "china_buying_price")
-        local_buying_price = _parse_decimal(d.get("local_buying_price"), "local_buying_price")
-        selling_price = _parse_decimal(d.get("selling_price"), "selling_price")
+        buying_price = _parse_ugx(d.get("buying_price"), "buying_price")
+        china_buying_price = _parse_ugx(d.get("china_buying_price"), "china_buying_price")
+        local_buying_price = _parse_ugx(d.get("local_buying_price"), "local_buying_price")
+        selling_price = _parse_ugx(d.get("selling_price"), "selling_price")
 
         if not d.get("confirm_duplicate"):
             duplicate = svc.find_probable_duplicate(
@@ -186,10 +198,10 @@ def update_spare_part(spare_part_id):
         if "safety_stock_override" in d:
             d["safety_stock_override"] = _parse_decimal(d.get("safety_stock_override"), "safety_stock_override")
         if "buying_price" in d:
-            d["buying_price"] = _parse_decimal(d.get("buying_price"), "buying_price")
+            d["buying_price"] = _parse_ugx(d.get("buying_price"), "buying_price")
         for field in ("china_buying_price", "local_buying_price", "selling_price"):
             if field in d:
-                d[field] = _parse_decimal(d.get(field), field)
+                d[field] = _parse_ugx(d.get(field), field)
         if "preferred_cost_source" in d:
             d["preferred_cost_source"] = d.get("preferred_cost_source") or None
         svc.update_spare_part(spare_part, d, machine_ids=d.get("machine_ids"))

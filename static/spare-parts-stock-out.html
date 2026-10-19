@@ -85,6 +85,7 @@
 
 <script src="/pwa.js" defer></script>
 <script src="/spare-parts-shell.js" defer></script>
+<script src="/spare-parts-ui.js"></script>
 <script src="/filter-autocomplete.js" defer></script>
 <script src="/spare-parts-search.js" defer></script>
 <script>
@@ -96,11 +97,9 @@ let spareParts = [];
 let departments = [];
 let allMachines = [];
 let people = [];
+let businessToday = null;
 
-function todayStr(){
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-}
+function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }
 
 let spareAutocomplete, requestedByAutocomplete, approvedByAutocomplete;
 
@@ -111,7 +110,7 @@ function renderSpareContext(){
   const p = spareParts.find(p => String(p.id) === String(id));
   if(!p){ ctx.classList.add('hidden'); return; }
   const machines = (p.machines||[]).map(m=>m.name).join(', ') || '—';
-  ctx.innerHTML = `<strong>${escapeHtml(SparePartSearch.label(p))}</strong><br>Machine: ${escapeHtml(machines)}<br>Current stock: ${escapeHtml(p.current_stock)} ${escapeHtml(p.unit)}`;
+  ctx.innerHTML = `<strong>${escapeHtml(SparePartSearch.label(p))}</strong><br>Machine: ${escapeHtml(machines)}<br>Current stock: ${escapeHtml(SparePartsUI.formatQuantity(p.current_stock))} ${escapeHtml(p.unit)}`;
   ctx.classList.remove('hidden');
 }
 
@@ -142,12 +141,14 @@ async function loadData(){
   renderMachineOptions();
 }
 
-document.getElementById('submitBtn').addEventListener('click', async ()=>{
+document.getElementById('submitBtn').addEventListener('click', async (event)=>{
+  const button = event.currentTarget;
+  await SparePartsUI.withBusy(button, async () => {
   const msg = document.getElementById('msg');
   const spareId = spareAutocomplete.selectedId();
-  if(!spareId){ msg.textContent = 'Select a spare part.'; msg.className = 'msg err'; return; }
+  if(!spareId){ msg.textContent = 'Select a spare part.'; msg.className = 'msg err'; SparePartsUI.notify(msg.textContent, 'error'); return; }
   const departmentId = document.getElementById('departmentSelect').value;
-  if(!departmentId){ msg.textContent = 'Select a department.'; msg.className = 'msg err'; return; }
+  if(!departmentId){ msg.textContent = 'Select a department.'; msg.className = 'msg err'; SparePartsUI.notify(msg.textContent, 'error'); return; }
   const machineId = document.getElementById('machineSelect').value;
   const body = {
     spare_part_id: Number(spareId),
@@ -164,7 +165,8 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
   });
   const data = await res.json();
   if(res.status === 201){
-    msg.textContent = 'Stock Out recorded.'; msg.className = 'msg ok';
+    msg.textContent = 'Stock Out recorded successfully.'; msg.className = 'msg ok';
+    SparePartsUI.notify(msg.textContent, 'success');
     document.getElementById('qtyInput').value = '';
     document.getElementById('requestedByInput').value = '';
     document.getElementById('approvedByInput').value = '';
@@ -173,12 +175,15 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
     renderSpareContext();
   } else {
     msg.textContent = data.error || 'Failed to record Stock Out.'; msg.className = 'msg err';
+    SparePartsUI.notify(msg.textContent, 'error');
   }
+  }, 'Recording…');
 });
 
 (async function init(){
   const s = await (await fetch('/api/session')).json();
   if(!s || !s.authed || s.active_section !== 'spare_parts'){ window.location.href = '/'; return; }
+  businessToday = s.business_today || null;
   document.getElementById('dateInput').value = todayStr();
   await loadData();
   spareAutocomplete = FilterAutocomplete.create({

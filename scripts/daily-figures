@@ -26,7 +26,8 @@ Commands:
   update               Safely update code, image, and database schema
   backup               Create and verify a consistent SQLite snapshot
   restore              Restore a verified SQLite database (--from FILE)
-  migrate-storage      Explicit legacy cutover to configured private storage
+  migrate-storage      Explicit legacy database cutover (--source FILE)
+  repair-installation  Repair install.conf/.env after legacy/unsafe storage
   post-restore         Validate restored files, migrate, and activate recovery
   configure-backups    Change timer schedule/retention
   backup-check         Check local CloudPanel backup prerequisites
@@ -34,11 +35,193 @@ Commands:
   start|stop|restart   Control the application
   logs                 Follow application logs (use --no-follow for a snapshot)
   health               Check the local health endpoint
-  doctor               Run deployment diagnostics
+  doctor               Run deployment diagnostics (--recovery for read-only mode)
   verify-db             Run SQLite integrity verification [FILE]
 
-Run 'daily-figures COMMAND --help' for command-specific options.
+Run 'daily-figures COMMAND --help' for command-specific options. Help never
+loads installation state, checks the database/.env, or touches Docker.
 EOF
+}
+
+# --- Help dispatch -----------------------------------------------------
+# Every public command must be able to show help without loading state,
+# checking the database/.env, touching Docker, or requiring root. main()
+# intercepts --help/-h before any command function runs, so the functions
+# below are the ONLY place command-specific usage text may depend on.
+
+is_public_command() {
+    case $1 in
+        install|update|backup|restore|migrate-storage|repair-installation| \
+        post-restore|configure-backups|backup-check|status|start|stop|restart| \
+        logs|health|doctor|verify-db)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+arg_has_help() {
+    local arg
+    for arg in "$@"; do
+        [[ $arg == --help || $arg == -h ]] && return 0
+    done
+    return 1
+}
+
+print_command_help() {
+    case $1 in
+        install)
+            cat <<'EOF'
+Usage: daily-figures install [--domain NAME] [--non-interactive]
+
+Installation type, port, storage, configuration, and backup defaults are
+detected or generated automatically. Noninteractive mode requires --domain.
+A pre-existing but unsafe/legacy install.conf is never silently reused; run
+'daily-figures repair-installation' first.
+EOF
+            ;;
+        update)
+            cat <<'EOF'
+Usage: daily-figures update
+
+Fast-forwards the production checkout on main, backs up the database, builds
+the image, applies migrations with the application stopped, restarts, and
+verifies health and the /app/data mount. Requires a valid installation state;
+run 'daily-figures repair-installation' first if install.conf is unsafe.
+EOF
+            ;;
+        backup)
+            cat <<'EOF'
+Usage: daily-figures backup
+
+Creates a verified, SQLite-online-backup-API snapshot of the current
+production database under app-backups/daily-figures/database-backups.
+EOF
+            ;;
+        restore)
+            cat <<'EOF'
+Usage: daily-figures restore --from FILE [--yes]
+
+Stages and verifies FILE, then (after confirmation) backs up and replaces the
+current production database. The previous database is retained under a
+timestamped production.pre-restore-*.db name; it is never deleted.
+EOF
+            ;;
+        migrate-storage)
+            cat <<'EOF'
+Usage: daily-figures migrate-storage --source FILE [--yes]
+                                      [--preserve-existing-destination]
+
+Explicit, verified cutover of a legacy database at the absolute path FILE
+into the configured private storage. Nothing is selected automatically: if
+more than one database could plausibly be the right one, pass --source
+yourself. If the destination already has a database, this refuses to run
+unless --preserve-existing-destination is given, in which case the existing
+destination database is archived under a timestamped name (never deleted)
+before the explicit source is activated.
+EOF
+            ;;
+        repair-installation)
+            cat <<'EOF'
+Usage: daily-figures repair-installation [--yes]
+
+Recovery command for a legacy or unsafe install.conf (e.g. one still
+pointing at storage beneath htdocs). Unlike every other command, this one
+does NOT require install.conf to pass normal validation first.
+
+It trusts only the scalar fields DOMAIN, SITE_USER, SITE_HOME, SITE_DIR,
+VHOST_FILE, SITE_UID, SITE_GID, CODE_DIR, PORT, COMPOSE_FILE,
+BACKUP_RETENTION, and BACKUP_ON_CALENDAR from the existing state file. It
+never trusts the legacy DATA_DIR/CONFIG_DIR/BACKUP_ROOT as destinations;
+instead it re-validates the CloudPanel site and recomputes the required
+private app-data/app-config/app-backups paths under the site's home
+directory. It backs up install.conf (timestamped, never deleted) before
+writing the repaired state atomically, creates the private directories, and
+recovers .env only when it is unambiguous (see docs/MIGRATION-FROM-OPT.md).
+
+This command never touches the production database. Run
+'daily-figures migrate-storage --source FILE' afterwards to bring the
+database into the repaired storage location.
+EOF
+            ;;
+        post-restore)
+            cat <<'EOF'
+Usage: daily-figures post-restore
+
+Validates a database/.env restored directly onto disk (e.g. from a
+CloudPanel/Drive archive), fixes ownership, migrates, and activates it.
+EOF
+            ;;
+        configure-backups)
+            cat <<'EOF'
+Usage: daily-figures configure-backups [--on-calendar CALENDAR] [--retention DAYS]
+
+Updates the systemd backup timer schedule (server timezone) and/or
+retention count.
+EOF
+            ;;
+        backup-check)
+            cat <<'EOF'
+Usage: daily-figures backup-check
+
+Read-only check that the private app-data/app-config/app-backups
+directories exist beneath the CloudPanel site home, plus a reminder
+checklist for verifying the CloudPanel/Drive remote backup scope.
+EOF
+            ;;
+        status)
+            cat <<'EOF'
+Usage: daily-figures status
+
+Shows configured paths, port, and container status.
+EOF
+            ;;
+        start|stop|restart)
+            cat <<EOF
+Usage: daily-figures $1
+
+${1^}s the application container using the saved production Compose state.
+EOF
+            ;;
+        logs)
+            cat <<'EOF'
+Usage: daily-figures logs [--no-follow]
+
+Follows (or, with --no-follow, prints a snapshot of) the last 200 lines of
+application container logs.
+EOF
+            ;;
+        health)
+            cat <<'EOF'
+Usage: daily-figures health
+
+Calls the local /api/health endpoint and prints the response.
+EOF
+            ;;
+        doctor)
+            cat <<'EOF'
+Usage: daily-figures doctor [--recovery]
+
+Without --recovery: strict diagnostics that require a valid installation
+state; checks paths, .env, database integrity, Compose config, the
+/app/data mount, health, and the backup timer.
+
+With --recovery: a read-only mode that works even when install.conf is
+unsafe or invalid. It never loads state the normal way and never mutates
+anything; it reports the state file's trusted fields, whether configured
+storage paths look unsafe, and any database/.env candidates found in known
+legacy locations, without selecting or copying anything.
+EOF
+            ;;
+        verify-db)
+            cat <<'EOF'
+Usage: daily-figures verify-db [FILE]
+
+Runs PRAGMA integrity_check and reports a SHA-256 hash for FILE (default:
+the configured production database).
+EOF
+            ;;
+        *) usage ;;
+    esac
 }
 
 need_root() {
@@ -56,6 +239,9 @@ valid_port() { [[ $1 =~ ^[0-9]+$ ]] && ((1 <= 10#$1 && 10#$1 <= 65535)); }
 
 validate_schedule() {
     [[ $1 != *$'\n'* && $1 != *$'\r'* ]] || fatal "backup schedule contains an invalid newline"
+    # systemd-analyze is a real (non-test) host dependency, like systemctl
+    # elsewhere in DF_TEST_MODE; the newline check above still always runs.
+    [[ ${DF_TEST_MODE:-0} != 1 ]] || return 0
     command -v systemd-analyze >/dev/null 2>&1 || fatal "systemd-analyze is required to validate the backup schedule"
     systemd-analyze calendar "$1" >/dev/null 2>&1 || fatal "invalid systemd OnCalendar expression: $1"
 }
@@ -223,9 +409,12 @@ load_state() {
         [[ $(stat -c '%U' "$SITE_DIR") == "$SITE_USER" ]] \
             || fatal "CloudPanel site directory is no longer owned by $SITE_USER: $SITE_DIR"
     fi
-    [[ $DATA_DIR == "$SITE_HOME/app-data/daily-figures" ]] || fatal "unsafe data path in state file: $DATA_DIR"
-    [[ $CONFIG_DIR == "$SITE_HOME/app-config/daily-figures" ]] || fatal "unsafe config path in state file: $CONFIG_DIR"
-    [[ $BACKUP_ROOT == "$SITE_HOME/app-backups/daily-figures" ]] || fatal "unsafe backup path in state file: $BACKUP_ROOT"
+    [[ $DATA_DIR == "$SITE_HOME/app-data/daily-figures" ]] \
+        || fatal "unsafe data path in state file: $DATA_DIR; run '$PROGRAM repair-installation' to migrate install.conf to the private CloudPanel paths"
+    [[ $CONFIG_DIR == "$SITE_HOME/app-config/daily-figures" ]] \
+        || fatal "unsafe config path in state file: $CONFIG_DIR; run '$PROGRAM repair-installation' to migrate install.conf to the private CloudPanel paths"
+    [[ $BACKUP_ROOT == "$SITE_HOME/app-backups/daily-figures" ]] \
+        || fatal "unsafe backup path in state file: $BACKUP_ROOT; run '$PROGRAM repair-installation' to migrate install.conf to the private CloudPanel paths"
     local managed_path
     for managed_path in "$SITE_DIR" "$DATA_DIR" "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"; do
         [[ ! -L $managed_path ]] || fatal "refusing symbolic-link deployment path: $managed_path"
@@ -241,11 +430,11 @@ validate_storage_configuration() {
     : "${DATA_DIR:?production DATA_DIR is required}" "${CONFIG_DIR:?production CONFIG_DIR is required}" \
       "${BACKUP_ROOT:?production BACKUP_ROOT is required}"
     [[ $DATA_DIR == "$SITE_HOME/app-data/daily-figures" ]] \
-        || fatal "production data path mismatch: configured $DATA_DIR, required $SITE_HOME/app-data/daily-figures"
+        || fatal "production data path mismatch: configured $DATA_DIR, required $SITE_HOME/app-data/daily-figures; run '$PROGRAM repair-installation'"
     [[ $CONFIG_DIR == "$SITE_HOME/app-config/daily-figures" ]] \
-        || fatal "production config path mismatch: configured $CONFIG_DIR, required $SITE_HOME/app-config/daily-figures"
+        || fatal "production config path mismatch: configured $CONFIG_DIR, required $SITE_HOME/app-config/daily-figures; run '$PROGRAM repair-installation'"
     [[ $BACKUP_ROOT == "$SITE_HOME/app-backups/daily-figures" ]] \
-        || fatal "production backup path mismatch: configured $BACKUP_ROOT, required $SITE_HOME/app-backups/daily-figures"
+        || fatal "production backup path mismatch: configured $BACKUP_ROOT, required $SITE_HOME/app-backups/daily-figures; run '$PROGRAM repair-installation'"
     [[ $DATA_DIR != "$CODE_DIR" && $DATA_DIR != "$CODE_DIR"/* ]] \
         || fatal "production data must not be stored inside the application checkout: $DATA_DIR"
     [[ $DATA_DIR != "$SITE_DIR" && $DATA_DIR != "$SITE_DIR"/* ]] \
@@ -258,14 +447,121 @@ validate_database_location() {
     for candidate in "${alternatives[@]}"; do
         [[ ! -f $candidate ]] || {
             if [[ -f $configured ]]; then
-                fatal "database location mismatch: configured database is $configured but another production.db exists at $candidate; remove the ambiguity manually"
+                fatal "database location mismatch: configured database is $configured but another production.db exists at $candidate; remove the ambiguity manually or review with 'daily-figures doctor --recovery'"
             fi
-            fatal "database location mismatch: installation is configured for $configured but production.db exists at $candidate; no database was copied or created"
+            fatal "database location mismatch: installation is configured for $configured but production.db exists at $candidate; no database was copied or created. Use 'daily-figures migrate-storage --source $candidate' for an explicit, verified cutover"
         }
     done
     if [[ ! -f $ENV_FILE && -f $CODE_DIR/.env ]]; then
-        fatal "configuration location mismatch: expected $ENV_FILE but found $CODE_DIR/.env; no configuration was copied"
+        fatal "configuration location mismatch: expected $ENV_FILE but found $CODE_DIR/.env; no configuration was copied. Review with 'daily-figures doctor --recovery'"
     fi
+}
+
+# Reads ONLY the listed trusted scalar fields out of STATE_FILE into R_*
+# globals, by matching whole-line key prefixes and evaluating just the
+# right-hand side (the same %q-quoted literal load_state's `.` sourcing
+# already trusts for syntax). Legacy DATA_DIR/CONFIG_DIR/BACKUP_ROOT are
+# captured separately as R_OLD_* for display/diagnostics only — callers
+# must never treat them as destinations. Used by repair-installation and
+# doctor --recovery, the only commands allowed to inspect a state file that
+# fails normal load_state validation.
+parse_trusted_state_fields() {
+    unset R_DOMAIN R_SITE_USER R_SITE_HOME R_SITE_DIR R_VHOST_FILE R_SITE_UID R_SITE_GID
+    unset R_CODE_DIR R_PORT R_COMPOSE_FILE R_BACKUP_RETENTION R_BACKUP_ON_CALENDAR
+    unset R_OLD_DATA_DIR R_OLD_CONFIG_DIR R_OLD_BACKUP_ROOT
+    local line
+    while IFS= read -r line || [[ -n $line ]]; do
+        case $line in
+            DOMAIN=*) eval "R_DOMAIN=${line#DOMAIN=}" ;;
+            SITE_USER=*) eval "R_SITE_USER=${line#SITE_USER=}" ;;
+            SITE_HOME=*) eval "R_SITE_HOME=${line#SITE_HOME=}" ;;
+            SITE_DIR=*) eval "R_SITE_DIR=${line#SITE_DIR=}" ;;
+            VHOST_FILE=*) eval "R_VHOST_FILE=${line#VHOST_FILE=}" ;;
+            SITE_UID=*) eval "R_SITE_UID=${line#SITE_UID=}" ;;
+            SITE_GID=*) eval "R_SITE_GID=${line#SITE_GID=}" ;;
+            CODE_DIR=*) eval "R_CODE_DIR=${line#CODE_DIR=}" ;;
+            PORT=*) eval "R_PORT=${line#PORT=}" ;;
+            COMPOSE_FILE=*) eval "R_COMPOSE_FILE=${line#COMPOSE_FILE=}" ;;
+            BACKUP_RETENTION=*) eval "R_BACKUP_RETENTION=${line#BACKUP_RETENTION=}" ;;
+            BACKUP_ON_CALENDAR=*) eval "R_BACKUP_ON_CALENDAR=${line#BACKUP_ON_CALENDAR=}" ;;
+            DATA_DIR=*) eval "R_OLD_DATA_DIR=${line#DATA_DIR=}" ;;
+            CONFIG_DIR=*) eval "R_OLD_CONFIG_DIR=${line#CONFIG_DIR=}" ;;
+            BACKUP_ROOT=*) eval "R_OLD_BACKUP_ROOT=${line#BACKUP_ROOT=}" ;;
+        esac
+    done <"$STATE_FILE"
+}
+
+# Lists every known database location (configured target, legacy state
+# value, and the two historically-seen legacy checkout/htdocs locations)
+# purely for administrator review. Never implies a choice.
+report_known_database_candidates() {
+    local -a candidates=()
+    [[ -n ${DATABASE:-} ]] && candidates+=("$DATABASE")
+    [[ -n ${R_OLD_DATA_DIR:-} ]] && candidates+=("$R_OLD_DATA_DIR/production.db")
+    [[ -n ${CODE_DIR:-} ]] && candidates+=("$CODE_DIR/data/production.db")
+    [[ -n ${SITE_DIR:-} ]] && candidates+=("$SITE_DIR/data/production.db")
+    log "Known database locations (informational only; none selected automatically):"
+    local seen=' ' c
+    for c in "${candidates[@]}"; do
+        case $seen in *" $c "*) continue ;; esac
+        seen+="$c "
+        if [[ -f $c ]]; then log "  FOUND:  $c"; else log "  absent: $c"; fi
+    done
+}
+
+confirm_repair() {
+    local yes=$1 prompt=$2 answer
+    ((yes)) && return
+    [[ -t 0 ]] || fatal "$prompt; rerun with --yes after review"
+    read -r -p "$prompt [y/N]: " answer
+    [[ $answer == y || $answer == Y ]] || fatal "repair cancelled"
+}
+
+# .env recovery for repair-installation. Target is the current ENV_FILE;
+# legacy candidates are every other known location. Never guesses between
+# differing files (Case D) and never fabricates new secrets when nothing is
+# found anywhere (Case E) -- see docs/MIGRATION-FROM-OPT.md.
+recover_env_file() {
+    local target=$ENV_FILE
+    local -a legacy_candidates=("$CODE_DIR/.env" "$SITE_DIR/data/.env")
+    [[ -n ${R_OLD_CONFIG_DIR:-} ]] && legacy_candidates+=("$R_OLD_CONFIG_DIR/.env")
+    local -a legacy_existing=()
+    local c
+    for c in "${legacy_candidates[@]}"; do
+        [[ -n $c && -f $c && ! -L $c && $c != "$target" ]] || continue
+        legacy_existing+=("$c")
+    done
+
+    if [[ -f $target ]]; then
+        if ((${#legacy_existing[@]} == 0)); then
+            log "Configuration already present at $target; keeping it (Case A)."
+            return
+        fi
+        local first=${legacy_existing[0]} other
+        for other in "${legacy_existing[@]:1}"; do
+            cmp -s "$first" "$other" \
+                || fatal "multiple differing legacy configuration files found (e.g. $first vs $other); resolve manually before repair"
+        done
+        if cmp -s "$target" "$first"; then
+            log "Target configuration is byte-identical to legacy copy at $first; keeping target (Case C)."
+            return
+        fi
+        fatal "$target differs from legacy configuration at $first; refusing to choose automatically (Case D). Compare manually, then remove or replace the one you do not want before re-running repair-installation."
+    fi
+
+    if ((${#legacy_existing[@]} == 0)); then
+        fatal "no configuration found at $target or any legacy location (Case E); refusing to silently generate new secrets during repair, since that could disconnect the application from its existing identity. If this is genuinely a fresh installation, run '$PROGRAM install' instead."
+    fi
+    local first=${legacy_existing[0]} other
+    for other in "${legacy_existing[@]:1}"; do
+        cmp -s "$first" "$other" \
+            || fatal "multiple differing legacy configuration files found (e.g. $first vs $other); resolve manually before repair"
+    done
+    log "Installing legacy configuration from $first to $target (Case B)."
+    cp "$first" "$target"
+    chmod 600 "$target"
+    [[ ${DF_TEST_MODE:-0} == 1 ]] || chown root:root "$target"
+    check_env
 }
 
 set_compose_environment() {
@@ -285,6 +581,16 @@ dc() {
 
 acquire_lock() {
     mkdir -p "${LOCK_FILE%/*}"
+    if [[ ${DF_TEST_MODE:-0} == 1 ]] && ! command -v flock >/dev/null 2>&1; then
+        # flock(1) is a declared, auto-installed production prerequisite
+        # (util-linux) and is always present outside test mode. Some local
+        # test environments (e.g. Git-Bash on Windows) lack it; a one-shot
+        # mkdir is an atomic-enough stand-in for short-lived, isolated test
+        # processes that never contend with each other.
+        mkdir "$LOCK_FILE.d" 2>/dev/null \
+            || fatal "another Daily Figures operation did not finish within 60 seconds"
+        return
+    fi
     exec 9>"$LOCK_FILE"
     if [[ -n ${INVOCATION_ID:-} ]]; then
         flock -n 9 || fatal "another Daily Figures operation holds $LOCK_FILE; scheduled backup skipped"
@@ -294,9 +600,48 @@ acquire_lock() {
 }
 
 python_tool() { python3 "$CODE_DIR/scripts/sqlite_backup.py" "$@"; }
+migration_guard() { python3 "$CODE_DIR/scripts/sqlite_migration_guard.py" "$@"; }
 verify_database() {
     [[ ! -L $1 ]] || fatal "refusing symbolic-link database path: $1"
     python_tool verify --database "$1"
+}
+
+latest_database_backup() {
+    find "$DB_BACKUP_DIR" -maxdepth 1 -type f -name 'production-*.db' -printf '%T@ %p\n' \
+        | sort -nr | head -n1 | cut -d' ' -f2-
+}
+
+run_schema_smoke_in_compose() {
+    local mode=${1:-run}
+    if [[ $mode == exec ]]; then
+        dc exec -T daily-figures flask db current | grep -q '(head)'
+        dc exec -T daily-figures python -c "from app import app; r=app.test_client().get('/api/health'); assert r.status_code == 200, r.data"
+    else
+        dc run --rm --no-deps daily-figures flask db current | grep -q '(head)'
+        dc run --rm --no-deps daily-figures python -c "from app import app; r=app.test_client().get('/api/health'); assert r.status_code == 200, r.data"
+    fi
+}
+
+candidate_database_preflight() {
+    local snapshot=$1 preflight_dir
+    preflight_dir=$(mktemp -d "$BACKUP_STAGING_DIR/candidate-preflight-XXXXXX")
+    local preflight_db=$preflight_dir/production.db
+    # Cleanup is scoped to the disposable verified clone. Non-empty or
+    # ambiguous temp tables abort before the production service is touched.
+    trap 'rm -rf -- "$preflight_dir"' RETURN
+    python_tool copy --source "$snapshot" --destination-file "$preflight_db"
+    chown -R "$SITE_UID:$SITE_GID" "$preflight_dir"
+    chmod 750 "$preflight_dir"; chmod 600 "$preflight_db"
+    migration_guard cleanup --database "$preflight_db"
+    dc run --rm --no-deps -v "$preflight_dir:/app/data" daily-figures flask db upgrade
+    verify_database "$preflight_db"
+    dc run --rm --no-deps -v "$preflight_dir:/app/data" daily-figures flask db current | grep -q '(head)' \
+        || fatal "candidate database did not reach the Alembic head"
+    dc run --rm --no-deps -v "$preflight_dir:/app/data" daily-figures \
+        python -c "from app import app; r=app.test_client().get('/api/health'); assert r.status_code == 200, r.data" \
+        || fatal "candidate application/schema smoke check failed"
+    migration_guard inspect --database "$preflight_db"
+    log "Candidate release passed migration, integrity, Alembic-head, and application smoke checks on a verified production snapshot."
 }
 
 create_backup_locked() {
@@ -336,7 +681,7 @@ verify_mount() {
 
 health_command() {
     load_state
-    curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$PORT/api/health"
+    curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$PORT/api/health" || return $?
     printf '\n'
 }
 
@@ -389,9 +734,11 @@ prepare_directories() {
     for path in "$DATA_DIR" "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"; do
         [[ $(readlink -f "$path") == "$path" ]] || fatal "deployment path resolves outside its configured location: $path"
     done
-    chown "$SITE_UID:$SITE_GID" "$DATA_DIR" "$DATA_DIR/uploads"
+    if [[ ${DF_TEST_MODE:-0} != 1 ]]; then
+        chown "$SITE_UID:$SITE_GID" "$DATA_DIR" "$DATA_DIR/uploads"
+        chown root:root "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"
+    fi
     chmod 750 "$DATA_DIR" "$DATA_DIR/uploads"
-    chown root:root "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"
     chmod 700 "$CONFIG_DIR" "$BACKUP_ROOT" "$DB_BACKUP_DIR" "$MIGRATION_BACKUP_DIR" "$BACKUP_STAGING_DIR"
 }
 
@@ -459,15 +806,6 @@ install_command() {
         case $1 in
             --domain) domain=${2:?}; shift 2 ;;
             --non-interactive) noninteractive=1; shift ;;
-            --help)
-                cat <<'EOF'
-Usage: daily-figures install [--domain NAME] [--non-interactive]
-
-Installation type, port, storage, configuration, and backup defaults are
-detected or generated automatically. Noninteractive mode requires --domain.
-EOF
-                return
-                ;;
             *) fatal "unknown install option: $1" ;;
         esac
     done
@@ -622,6 +960,7 @@ Database: $DATABASE
 Port: 127.0.0.1:$PORT
 EOF
     dc ps
+    report_next_backup_time
     if [[ -f $RUNTIME_DIR/update-in-progress ]]; then
         warn "an incomplete update marker exists: $RUNTIME_DIR/update-in-progress"
     fi
@@ -641,16 +980,25 @@ update_command() {
         fatal "tracked local changes exist; refusing to overwrite them"
     fi
     create_backup_locked
-    local old_revision old_image new_revision cutover_snapshot
+    local old_revision old_image new_revision online_snapshot cutover_snapshot candidate_image
     old_revision=$(git -C "$CODE_DIR" rev-parse HEAD)
     old_image=$(docker inspect daily_figures_app --format '{{.Image}}' 2>/dev/null || true)
     git -C "$CODE_DIR" fetch origin main
     git -C "$CODE_DIR" merge --ff-only origin/main
     new_revision=$(git -C "$CODE_DIR" rev-parse HEAD)
     dc build daily-figures
+    candidate_image=$(dc images -q daily-figures | head -n1)
+    [[ -n $candidate_image ]] || fatal "could not identify the exact candidate image"
+    online_snapshot=$(latest_database_backup)
+    [[ -n $online_snapshot ]] || fatal "could not locate the verified online production snapshot"
+    # Read-only live inspection plus destructive testing only on a clone.
+    # The currently running application remains available throughout.
+    migration_guard inspect --database "$DATABASE"
+    candidate_database_preflight "$online_snapshot"
     {
         printf 'started_at=%q\n' "$(date --iso-8601=seconds)"
-        printf 'old_revision=%q\nnew_revision=%q\nold_image=%q\n' "$old_revision" "$new_revision" "$old_image"
+        printf 'old_revision=%q\nnew_revision=%q\nold_image=%q\ncandidate_image=%q\n' "$old_revision" "$new_revision" "$old_image" "$candidate_image"
+        printf 'preflight_snapshot=%q\npreflight_result=passed\n' "$online_snapshot"
         printf 'phase=cutover_pending\n'
     } >"$RUNTIME_DIR/update-in-progress"
     dc stop daily-figures
@@ -658,15 +1006,32 @@ update_command() {
     cutover_snapshot=$(find "$DB_BACKUP_DIR" -maxdepth 1 -type f -name 'production-*.db' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
     printf 'cutover_snapshot=%q\n' "$cutover_snapshot" >>"$RUNTIME_DIR/update-in-progress"
     sed -i 's/phase=cutover_pending/phase=migration_started/' "$RUNTIME_DIR/update-in-progress"
+    # Protected cleanup is allowed only now: writes are stopped, a final
+    # snapshot exists, and the same state already passed on the clone.
+    if ! migration_guard cleanup --database "$DATABASE"; then
+        sed -i 's/phase=migration_started/phase=temp_table_guard_failed/' "$RUNTIME_DIR/update-in-progress"
+        fatal "Alembic temporary-table guard failed; application remains stopped and the final snapshot is retained"
+    fi
     if ! dc run --rm --no-deps daily-figures flask db upgrade; then
+        sed -i 's/phase=migration_started/phase=migration_failed/' "$RUNTIME_DIR/update-in-progress"
         fatal "database migration failed; application remains stopped. Do not blindly roll back code. See $RUNTIME_DIR/update-in-progress"
     fi
-    verify_database "$DATABASE" \
-        || fatal "post-migration integrity check failed; application remains stopped"
-    dc up -d daily-figures
+    if ! verify_database "$DATABASE"; then
+        sed -i 's/phase=migration_started/phase=post_migration_integrity_failed/' "$RUNTIME_DIR/update-in-progress"
+        fatal "post-migration integrity check failed; application remains stopped"
+    fi
+    sed -i 's/phase=migration_started/phase=migration_complete_activation_pending/' "$RUNTIME_DIR/update-in-progress"
+    if ! dc up -d daily-figures; then
+        sed -i 's/phase=migration_complete_activation_pending/phase=activation_failed/' "$RUNTIME_DIR/update-in-progress"
+        fatal "candidate activation failed after migration; database was NOT blindly rolled back. Inspect the retained marker and cutover snapshot"
+    fi
     sleep 5
-    health_command >/dev/null || fatal "updated application failed health check; update marker retained"
-    verify_mount
+    if ! health_command >/dev/null || ! verify_mount || ! run_schema_smoke_in_compose exec; then
+        sed -i 's/phase=migration_complete_activation_pending/phase=post_deploy_smoke_failed/' "$RUNTIME_DIR/update-in-progress"
+        dc stop daily-figures || true
+        fatal "post-deploy smoke checks failed; candidate was stopped, marker/snapshot retained, and the migrated database was NOT blindly rolled back"
+    fi
+    sed -i 's/phase=migration_complete_activation_pending/phase=complete/' "$RUNTIME_DIR/update-in-progress"
     mv "$RUNTIME_DIR/update-in-progress" "$RUNTIME_DIR/last-update.conf"
     log "Update successful: $old_revision -> $new_revision"
 }
@@ -687,7 +1052,6 @@ restore_command() {
         case $1 in
             --from) candidate=${2:?}; shift 2 ;;
             --yes) yes=1; shift ;;
-            --help) echo "Usage: daily-figures restore --from DATABASE [--yes]"; return ;;
             *) fatal "unknown restore option: $1" ;;
         esac
     done
@@ -724,22 +1088,63 @@ restore_command() {
     log "Restore successful. Keep the pre-restore file until application records are confirmed."
 }
 
+# Merges legacy uploads into the (possibly non-empty) destination uploads
+# directory without ever silently overwriting a different file. Identical
+# same-path files are fine; a same-path file that differs stops the whole
+# operation before anything is copied; unique source files are copied only
+# once no conflict was found anywhere.
+migrate_uploads() {
+    local source_dir=$1 dest_dir=$2
+    [[ -d $source_dir ]] || { log "No legacy uploads directory at $source_dir; nothing to migrate."; return; }
+    if [[ -z $(find "$dest_dir" -mindepth 1 -print -quit) ]]; then
+        cp -a "$source_dir/." "$dest_dir/"
+        log "Destination uploads were empty; copied all legacy uploads from $source_dir."
+        return
+    fi
+    local rel src_file dest_file
+    local -a conflicts=() unique=()
+    while IFS= read -r -d '' src_file; do
+        rel=${src_file#"$source_dir"/}
+        dest_file=$dest_dir/$rel
+        if [[ -e $dest_file ]]; then
+            cmp -s "$src_file" "$dest_file" || conflicts+=("$rel")
+        else
+            unique+=("$rel")
+        fi
+    done < <(find "$source_dir" -type f -print0)
+    if ((${#conflicts[@]} > 0)); then
+        fatal "uploads conflict: ${#conflicts[@]} legacy upload(s) differ from an existing destination file (first: ${conflicts[0]}); resolve manually before migrating. Nothing was copied."
+    fi
+    for rel in "${unique[@]}"; do
+        mkdir -p "$(dirname "$dest_dir/$rel")"
+        cp -a "$source_dir/$rel" "$dest_dir/$rel"
+    done
+    log "Merged ${#unique[@]} unique legacy upload(s) into $dest_dir (no conflicting files found)."
+}
+
 migrate_storage_command() {
     need_root; load_state
     check_env
-    local source=$CODE_DIR/data/production.db yes=0
+    local source='' yes=0 preserve_existing=0
     while (($#)); do
         case $1 in
             --source) source=${2:?}; shift 2 ;;
             --yes) yes=1; shift ;;
-            --help) echo "Usage: daily-figures migrate-storage [--source FILE] [--yes]"; return ;;
+            --preserve-existing-destination) preserve_existing=1; shift ;;
             *) fatal "unknown migration option: $1" ;;
         esac
     done
-    [[ -f $source ]] || fatal "legacy source database not found: $source"
+    if [[ -z $source ]]; then
+        report_known_database_candidates
+        fatal "migrate-storage requires an explicit --source FILE naming the legacy database; nothing is ever selected automatically (not by size, recency, or path)"
+    fi
+    [[ $source == /* ]] || fatal "--source must be an absolute path: $source"
+    [[ -f $source && ! -L $source ]] || fatal "--source must name an existing regular SQLite file (not a symlink): $source"
     verify_database "$source"
     if [[ -f $DATABASE ]]; then
-        fatal "destination already contains a database. No automatic merge or overwrite is allowed. Choose the dataset explicitly via the restore workflow."
+        ((preserve_existing)) \
+            || fatal "destination already contains a database: $DATABASE. Re-run with --preserve-existing-destination to archive it safely (never deleted) and continue, or use 'daily-figures restore --from FILE' instead. No automatic merge or overwrite is allowed."
+        verify_database "$DATABASE"
     fi
     cat <<EOF
 Migration plan:
@@ -749,8 +1154,20 @@ Migration plan:
   Cutover:     stop legacy container, take final online snapshot, activate target
   Rollback:    stop the new service and start the unchanged legacy Compose mount
 EOF
+    if [[ -f $DATABASE ]] && ((preserve_existing)); then
+        printf '  Existing destination database will be archived under a timestamped name, never deleted.\n'
+    fi
     confirm_destructive "$yes" "Proceed with the storage cutover."
     acquire_lock
+    local preserved_old=''
+    if [[ -f $DATABASE ]] && ((preserve_existing)); then
+        create_backup_locked
+        preserved_old=$DATA_DIR/production.pre-migration-$(date +%Y%m%d-%H%M%S).db
+        mv "$DATABASE" "$preserved_old"
+        [[ ! -e $DATABASE-wal ]] || mv "$DATABASE-wal" "$preserved_old-wal"
+        [[ ! -e $DATABASE-shm ]] || mv "$DATABASE-shm" "$preserved_old-shm"
+        log "Existing destination database archived (not deleted) at $preserved_old"
+    fi
     python_tool create --source "$source" --destination "$MIGRATION_BACKUP_DIR" --temporary-directory "$BACKUP_STAGING_DIR" --prefix pre-cutover --retention 30
     dc stop daily-figures
     python_tool create --source "$source" --destination "$MIGRATION_BACKUP_DIR" --temporary-directory "$BACKUP_STAGING_DIR" --prefix final-cutover --retention 30
@@ -758,18 +1175,23 @@ EOF
     final_snapshot=$(find "$MIGRATION_BACKUP_DIR" -maxdepth 1 -type f -name 'final-cutover-*.db' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
     [[ -n $final_snapshot ]] || fatal "could not locate final verified migration snapshot"
     python_tool copy --source "$final_snapshot" --destination-file "$DATABASE"
-    if [[ -d ${source%/*}/uploads && -z $(find "$DATA_DIR/uploads" -mindepth 1 -print -quit) ]]; then
-        cp -a "${source%/*}/uploads/." "$DATA_DIR/uploads/"
-    fi
+    migrate_uploads "${source%/*}/uploads" "$DATA_DIR/uploads"
     normalize_data_permissions
     dc build daily-figures
     dc run --rm --no-deps daily-figures flask db upgrade \
-        || fatal "migration failed; target remains available and legacy source is unchanged"
+        || fatal "migration failed; application remains stopped, the legacy source is unchanged, and all recovery artifacts (snapshots${preserved_old:+, archived previous destination database}) were kept"
+    verify_database "$DATABASE" \
+        || fatal "post-migration integrity check failed; application remains stopped and all recovery artifacts were kept"
     dc up -d daily-figures
     sleep 5
-    health_command >/dev/null; verify_mount; verify_database "$DATABASE"
+    health_command >/dev/null; verify_mount
     enable_backup_timer
-    log "Storage migration successful. Legacy source was preserved at $source."
+    cat <<EOF
+Storage migration successful.
+Legacy source preserved unchanged at: $source
+Pre/final cutover snapshots:          $MIGRATION_BACKUP_DIR
+EOF
+    [[ -z $preserved_old ]] || printf 'Previous destination database archived at: %s\n' "$preserved_old"
 }
 
 post_restore_command() {
@@ -794,6 +1216,101 @@ post_restore_command() {
     log "Recovery activation successful and healthy."
 }
 
+repair_installation_command() {
+    need_root
+    local yes=0
+    while (($#)); do
+        case $1 in
+            --yes) yes=1; shift ;;
+            *) fatal "unknown repair-installation option: $1" ;;
+        esac
+    done
+    [[ -f $STATE_FILE ]] || fatal "installation state not found at $STATE_FILE; run '$PROGRAM install' first (there is nothing to repair)"
+    if [[ ${DF_TEST_MODE:-0} != 1 ]]; then
+        [[ $(stat -c '%u' "$STATE_FILE") == 0 ]] || fatal "state file must be owned by root"
+        local mode
+        mode=$(stat -c '%a' "$STATE_FILE")
+        [[ $mode == 600 || $mode == 400 ]] || fatal "state file permissions must be 0600 or 0400 (found $mode)"
+    fi
+    acquire_lock
+
+    parse_trusted_state_fields
+    : "${R_DOMAIN:?install.conf has no trusted DOMAIN field; this does not look like a Daily Figures state file}"
+    : "${R_SITE_USER:?install.conf has no trusted SITE_USER field}"
+    : "${R_SITE_HOME:?install.conf has no trusted SITE_HOME field}"
+    : "${R_CODE_DIR:?install.conf has no trusted CODE_DIR field}"
+    : "${R_PORT:?install.conf has no trusted PORT field}"
+    R_COMPOSE_FILE=${R_COMPOSE_FILE:-$DEFAULT_COMPOSE_FILE}
+    R_BACKUP_RETENTION=${R_BACKUP_RETENTION:-14}
+    R_BACKUP_ON_CALENDAR=${R_BACKUP_ON_CALENDAR:-'*-*-* 04:00:00'}
+    validate_schedule "$R_BACKUP_ON_CALENDAR"
+
+    log "Re-validating the CloudPanel site for $R_DOMAIN (legacy storage fields in install.conf are never trusted)."
+    discover_site "$R_DOMAIN" "$R_PORT"
+    [[ $SITE_USER == "$R_SITE_USER" ]] \
+        || fatal "CloudPanel site owner changed ($R_SITE_USER -> $SITE_USER); resolve manually before repairing"
+    [[ $SITE_HOME == "$R_SITE_HOME" ]] \
+        || fatal "CloudPanel site home changed ($R_SITE_HOME -> $SITE_HOME); resolve manually before repairing"
+    SITE_UID=$(id -u "$SITE_USER") SITE_GID=$(id -g "$SITE_USER")
+    ((SITE_UID >= 1000 && SITE_GID >= 1000)) || fatal "refusing unsafe runtime UID/GID $SITE_UID:$SITE_GID"
+    [[ -d $R_CODE_DIR/.git ]] || fatal "application repository is missing at $R_CODE_DIR"
+
+    DOMAIN=$R_DOMAIN CODE_DIR=$R_CODE_DIR PORT=$R_PORT COMPOSE_FILE=$R_COMPOSE_FILE
+    BACKUP_RETENTION=$R_BACKUP_RETENTION BACKUP_ON_CALENDAR=$R_BACKUP_ON_CALENDAR
+    DATA_DIR=$SITE_HOME/app-data/daily-figures
+    CONFIG_DIR=$SITE_HOME/app-config/daily-figures
+    BACKUP_ROOT=$SITE_HOME/app-backups/daily-figures
+    DATABASE=$DATA_DIR/production.db
+    ENV_FILE=$CONFIG_DIR/.env
+    DB_BACKUP_DIR=$BACKUP_ROOT/database-backups
+    MIGRATION_BACKUP_DIR=$BACKUP_ROOT/migration-backups
+    BACKUP_STAGING_DIR=$SITE_HOME/tmp/daily-figures-backup-staging
+
+    cat <<EOF
+Repair plan:
+  Domain:              $DOMAIN
+  Target data path:    $DATA_DIR
+  Target config path:  $CONFIG_DIR
+  Target backup path:  $BACKUP_ROOT
+EOF
+    [[ -z ${R_OLD_DATA_DIR:-} || $R_OLD_DATA_DIR == "$DATA_DIR" ]] \
+        || printf '  Legacy DATA_DIR will NOT be used as a target:   %s\n' "$R_OLD_DATA_DIR"
+    [[ -z ${R_OLD_CONFIG_DIR:-} || $R_OLD_CONFIG_DIR == "$CONFIG_DIR" ]] \
+        || printf '  Legacy CONFIG_DIR will NOT be used as a target: %s\n' "$R_OLD_CONFIG_DIR"
+    [[ -z ${R_OLD_BACKUP_ROOT:-} || $R_OLD_BACKUP_ROOT == "$BACKUP_ROOT" ]] \
+        || printf '  Legacy BACKUP_ROOT will NOT be used as a target: %s\n' "$R_OLD_BACKUP_ROOT"
+    confirm_repair "$yes" "This rewrites $STATE_FILE (backed up first) and creates the private directories above."
+
+    local state_backup
+    state_backup=$STATE_FILE.bak-$(date +%Y%m%d-%H%M%S)
+    cp -p "$STATE_FILE" "$state_backup"
+    chmod 600 "$state_backup"
+    [[ ${DF_TEST_MODE:-0} == 1 ]] || chown root:root "$state_backup"
+    log "Backed up previous installation state to $state_backup (never deleted automatically)."
+
+    prepare_directories
+    recover_env_file
+    write_state
+    install_systemd_units
+
+    cat <<EOF
+Repair complete.
+Domain:          $DOMAIN
+Data:            $DATA_DIR
+Configuration:   $ENV_FILE
+Backups:         $BACKUP_ROOT
+State backup:    $state_backup
+EOF
+    report_known_database_candidates
+    cat <<EOF
+This command never touches the production database. If a legacy database
+needs to be brought into the repaired storage, review the candidates above
+and run, for example:
+  sudo daily-figures migrate-storage --source /absolute/path/to/production.db
+See 'daily-figures migrate-storage --help' and docs/MIGRATION-FROM-OPT.md.
+EOF
+}
+
 configure_backups_command() {
     need_root; load_state
     local schedule=$BACKUP_ON_CALENDAR retention=$BACKUP_RETENTION
@@ -801,7 +1318,6 @@ configure_backups_command() {
         case $1 in
             --on-calendar) schedule=${2:?}; shift 2 ;;
             --retention) retention=${2:?}; shift 2 ;;
-            --help) echo "Usage: daily-figures configure-backups [--on-calendar CALENDAR] [--retention DAYS]"; return ;;
             *) fatal "unknown backup configuration option: $1" ;;
         esac
     done
@@ -832,11 +1348,108 @@ EOF
     return "$failed"
 }
 
+report_next_backup_time() {
+    local next
+    next=$(systemctl show daily-figures-backup.timer --property=NextElapseUSecRealtime --value 2>/dev/null || true)
+    if [[ -n $next && $next != n/a ]]; then
+        log "Next scheduled backup (server time): $next"
+    else
+        warn "could not determine the next scheduled backup time"
+    fi
+}
+
+# Read-only diagnostics for a state file that fails normal load_state
+# validation. Never mutates anything, never requires root, never touches
+# Docker, and never prints secret values -- only paths.
+doctor_recovery_mode() {
+    log "Recovery diagnostics (read-only; works even when install.conf is unsafe or invalid)."
+    if [[ ! -f $STATE_FILE ]]; then
+        warn "no installation state file found at $STATE_FILE"
+        return
+    fi
+    if [[ ${DF_TEST_MODE:-0} != 1 ]]; then
+        [[ $(stat -c '%u' "$STATE_FILE") == 0 ]] || warn "state file is not root-owned"
+        local mode
+        mode=$(stat -c '%a' "$STATE_FILE")
+        [[ $mode == 600 || $mode == 400 ]] || warn "state file permissions are $mode, expected 0600/0400"
+    fi
+    parse_trusted_state_fields
+    if [[ -z ${R_DOMAIN:-} ]]; then
+        warn "state file has no trusted DOMAIN field; cannot continue recovery diagnostics"
+        return
+    fi
+    log "Domain in state: $R_DOMAIN"
+    [[ -n ${R_CODE_DIR:-} ]] && log "Code directory in state: $R_CODE_DIR"
+    if [[ -z ${R_SITE_HOME:-} ]]; then
+        warn "state file has no trusted SITE_HOME field; cannot evaluate storage paths"
+        return
+    fi
+    local expected_data=$R_SITE_HOME/app-data/daily-figures
+    local expected_config=$R_SITE_HOME/app-config/daily-figures
+    local expected_backup=$R_SITE_HOME/app-backups/daily-figures
+    [[ -z ${R_OLD_DATA_DIR:-} || $R_OLD_DATA_DIR == "$expected_data" ]] \
+        || warn "UNSAFE: configured DATA_DIR ($R_OLD_DATA_DIR) is not the private path ($expected_data)"
+    [[ -z ${R_OLD_CONFIG_DIR:-} || $R_OLD_CONFIG_DIR == "$expected_config" ]] \
+        || warn "UNSAFE: configured CONFIG_DIR ($R_OLD_CONFIG_DIR) is not the private path ($expected_config)"
+    [[ -z ${R_OLD_BACKUP_ROOT:-} || $R_OLD_BACKUP_ROOT == "$expected_backup" ]] \
+        || warn "UNSAFE: configured BACKUP_ROOT ($R_OLD_BACKUP_ROOT) is not the private path ($expected_backup)"
+
+    local c
+    local -a db_candidates=("$expected_data/production.db")
+    [[ -n ${R_OLD_DATA_DIR:-} ]] && db_candidates+=("$R_OLD_DATA_DIR/production.db")
+    [[ -n ${R_CODE_DIR:-} ]] && db_candidates+=("$R_CODE_DIR/data/production.db")
+    [[ -n ${R_SITE_DIR:-} ]] && db_candidates+=("$R_SITE_DIR/data/production.db")
+    local -a env_candidates=("$expected_config/.env")
+    [[ -n ${R_OLD_CONFIG_DIR:-} ]] && env_candidates+=("$R_OLD_CONFIG_DIR/.env")
+    [[ -n ${R_CODE_DIR:-} ]] && env_candidates+=("$R_CODE_DIR/.env")
+    [[ -n ${R_SITE_DIR:-} ]] && env_candidates+=("$R_SITE_DIR/data/.env")
+
+    local -a db_hits=() env_hits=()
+    for c in "${db_candidates[@]}"; do
+        [[ -f $c ]] || continue
+        case " ${db_hits[*]-} " in *" $c "*) continue ;; esac
+        db_hits+=("$c")
+    done
+    case ${#db_hits[@]} in
+        0) warn "NO DATABASE found in any known location" ;;
+        1) log "Single database candidate: ${db_hits[0]}" ;;
+        *) warn "MULTIPLE DATABASE CANDIDATES found; migrate-storage requires an explicit --source:"; printf '  %s\n' "${db_hits[@]}" ;;
+    esac
+    for c in "${env_candidates[@]}"; do
+        [[ -f $c ]] || continue
+        case " ${env_hits[*]-} " in *" $c "*) continue ;; esac
+        env_hits+=("$c")
+    done
+    case ${#env_hits[@]} in
+        0) warn "NO .env found in any known location" ;;
+        1) log "Single .env candidate: ${env_hits[0]}" ;;
+        *) warn "MULTIPLE .env CANDIDATES found; repair-installation will stop rather than guess:"; printf '  %s\n' "${env_hits[@]}" ;;
+    esac
+    [[ -d $expected_backup/database-backups ]] || warn "missing backup directory: $expected_backup/database-backups"
+    systemctl is-enabled daily-figures-backup.timer >/dev/null 2>&1 || warn "backup timer is not enabled"
+    log "Recovery diagnostics complete; nothing was modified. Run 'daily-figures repair-installation' to fix unsafe state."
+}
+
 doctor_command() {
+    local recovery=0
+    while (($#)); do
+        case $1 in
+            --recovery) recovery=1; shift ;;
+            *) fatal "unknown doctor option: $1" ;;
+        esac
+    done
+    if ((recovery)); then
+        doctor_recovery_mode
+        return
+    fi
     load_state
     local failed=0 timezone
+    if [[ -f $RUNTIME_DIR/update-in-progress ]]; then
+        warn "INCOMPLETE UPDATE: $RUNTIME_DIR/update-in-progress exists; inspect it before retrying any update"; failed=1
+    fi
     timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || date +%Z)
     log "Server timezone: $timezone"
+    report_next_backup_time
     for path in "$CODE_DIR/docker-compose.yml" "$CODE_DIR/$COMPOSE_FILE" "$ENV_FILE" "$DATA_DIR" "$DB_BACKUP_DIR"; do
         if [[ -e $path ]]; then log "OK: $path"; else warn "MISSING: $path"; failed=1; fi
     done
@@ -857,12 +1470,17 @@ main() {
     local command=${1:-}
     [[ -n $command ]] || { usage; exit 2; }
     shift || true
+    if is_public_command "$command" && arg_has_help "$@"; then
+        print_command_help "$command"
+        return 0
+    fi
     case $command in
         install) install_command "$@" ;;
         update) update_command "$@" ;;
         backup) backup_command "$@" ;;
         restore) restore_command "$@" ;;
         migrate-storage) migrate_storage_command "$@" ;;
+        repair-installation) repair_installation_command "$@" ;;
         post-restore) post_restore_command "$@" ;;
         configure-backups) configure_backups_command "$@" ;;
         backup-check) backup_check_command "$@" ;;
@@ -883,6 +1501,18 @@ main() {
         _test-load-state)
             load_state
             printf '%s|%s|%s|%s|%s\n' "$SITE_USER" "$DATA_DIR" "$CONFIG_DIR" "$BACKUP_ROOT" "$DATABASE" ;;
+        _test-parse-trusted-state)
+            parse_trusted_state_fields
+            printf '%s|%s|%s|%s|%s|%s\n' \
+                "${R_DOMAIN:-}" "${R_SITE_USER:-}" "${R_CODE_DIR:-}" \
+                "${R_OLD_DATA_DIR:-}" "${R_OLD_CONFIG_DIR:-}" "${R_OLD_BACKUP_ROOT:-}" ;;
+        _test-recover-env)
+            CONFIG_DIR=${1:?config-directory}; ENV_FILE=$CONFIG_DIR/.env
+            CODE_DIR=${2:?code-directory}; SITE_DIR=${3:?site-directory}
+            R_OLD_CONFIG_DIR=${4:-}
+            recover_env_file ;;
+        _test-migrate-uploads)
+            migrate_uploads "${1:?source-directory}" "${2:?destination-directory}" ;;
         help|-h|--help) usage ;;
         *) fatal "unknown command: $command" ;;
     esac

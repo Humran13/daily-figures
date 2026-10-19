@@ -88,6 +88,11 @@ The same command handles every installation state:
 - A partial previous installation is safe to rerun only when its saved private
   paths agree with the discovered CloudPanel site. Valid saved paths are reused
   exactly; missing or conflicting databases stop the installer.
+- A legacy or unsafe `install.conf` (e.g. one still pointing at storage
+  beneath `htdocs`) is never silently reused. Every command that loads it
+  stops with a pointer to `sudo daily-figures repair-installation`, the only
+  command that may inspect such a file; see
+  [docs/MIGRATION-FROM-OPT.md](docs/MIGRATION-FROM-OPT.md).
 
 Before applying migrations to an existing or restored database, the installer
 stops application writes and creates a verified snapshot under
@@ -170,6 +175,11 @@ sudo daily-figures backup
 sudo daily-figures doctor
 ```
 
+Every `daily-figures COMMAND --help` works without a valid installation,
+database, or `.env` -- it never loads state, touches Docker, or mutates
+anything. Run `sudo daily-figures doctor --recovery` for a read-only
+diagnostic that works even when `install.conf` is unsafe or invalid.
+
 `update` checks the database and mount, creates online and stopped-write
 snapshots, fast-forwards clean `main`, builds the image, applies migrations while
 the app is stopped, and verifies health afterward. The backup, update, restore,
@@ -177,17 +187,23 @@ and migration paths share a filesystem lock.
 
 ## Development and tests
 
-Local development may use the `./data` fallback in `docker-compose.yml`:
+`docker-compose.yml` has no local-storage fallback: it always requires
+`DAILY_FIGURES_DATA_DIR` to be set, so a bare `docker compose up -d --build`
+in a production checkout fails before creating a container instead of
+silently binding the wrong directory (see the incident behind
+[docs/MIGRATION-FROM-OPT.md](docs/MIGRATION-FROM-OPT.md)). Local development
+opts in to a `./data` bind mount explicitly with `docker-compose.dev.yml`:
 
 ```bash
 cp .env.example .env
 # Fill in local-only values.
-docker compose up -d --build
+DAILY_FIGURES_DATA_DIR=./data docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 Production always adds `docker-compose.production.yml`, which requires explicit
-absolute data and environment paths. Never use the bare development command in
-production. Use `sudo daily-figures update`, `start`, or `restart`; those commands
+absolute data and environment paths. Never use the bare/dev development
+commands in production, and never set `DAILY_FIGURES_DATA_DIR` to a relative
+path there. Use `sudo daily-figures update`, `start`, or `restart`; those commands
 load `/etc/daily-figures/install.conf` and the production Compose overlay.
 Run tests with:
 

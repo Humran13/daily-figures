@@ -31,5 +31,8 @@ Google OAuth connection.
 Run `sudo daily-figures backup-check`, then confirm in CloudPanel that the site
 user's `app-data/daily-figures`, `app-config/daily-figures`, and
 `app-backups/daily-figures` directories are included and no exclusion matches
-them. Confirm the remote schedule follows the local SQLite timer. The installer
-reports the VPS timezone; 05:00 is an example, not a hardcoded assumption.
+them. Confirm the remote schedule follows the local SQLite timer. `sudo daily-figures status`
+and `sudo daily-figures doctor` report both the VPS timezone and the next
+scheduled backup time; backup schedules always use server local time, not
+UTC or the browser/administrator's timezone, so 05:00 is an example, not a
+hardcoded assumption.
