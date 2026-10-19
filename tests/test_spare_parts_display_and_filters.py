@@ -127,25 +127,34 @@ def test_history_and_admin_pricing_use_display_identity(client, make_user):
     assert row["display_name"] == "Oil Seal [35x52x7]"
 
 
-def test_stock_movement_date_defaults_use_server_business_today(client, make_user):
+def test_stock_movement_date_defaults_use_server_business_today(app, client, make_user):
     """Movement dates must anchor on the Africa/Kampala business day, not the
     browser clock (a device in another timezone could otherwise post to the
     wrong day)."""
-    _login_spare_parts(client, make_user, "movement_date_mgr", "manager")
     helper = "function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }"
-    for page in (
-        "/spare-parts-master.html",
-        "/spare-parts-stock-in.html",
-        "/spare-parts-stock-out.html",
-    ):
-        html = client.get(page).get_data(as_text=True)
+
+    # Master Data is Super-Administrator-only now; checked in its own
+    # session rather than alongside the Manager-accessible Stock In/Out
+    # pages below.
+    _login_spare_parts(client, make_user, "movement_date_super", "super_admin")
+    master_html = client.get("/spare-parts-master.html").get_data(as_text=True)
+    assert helper in master_html
+    assert "businessToday = s.business_today || null;" in master_html
+
+    other = app.test_client()
+    _login_spare_parts(other, make_user, "movement_date_mgr", "manager")
+    for page in ("/spare-parts-stock-in.html", "/spare-parts-stock-out.html"):
+        html = other.get(page).get_data(as_text=True)
         assert helper in html, page
         assert "businessToday = s.business_today || null;" in html, page
 
 
 def test_stock_count_ui_posts_an_auditable_physical_count(client, make_user):
     """The Master page must expose the count workflow, not just the API."""
-    _login_spare_parts(client, make_user, "count_ui_mgr", "manager")
+    # Master Data is Super-Administrator-only now; the count correction
+    # API itself remains reachable by Manager independently (see
+    # webapp/routes/spare_part_movements.py's stock_count()).
+    _login_spare_parts(client, make_user, "count_ui_super", "super_admin")
     html = client.get("/spare-parts-master.html").get_data(as_text=True)
     assert 'id="countSpareInput"' in html
     assert 'id="countQty"' in html

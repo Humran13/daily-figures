@@ -421,7 +421,9 @@ def test_pricing_routes_reject_unauthenticated(client):
 # ---------- page-level checks (layout contract + access to the Admin pricing page) ----------
 
 def test_master_data_table_is_contained_with_required_columns(client, make_user):
-    _login(client, make_user, "page_mgr", "manager")
+    # Master Data is now a Super-Administrator-only page — layout/column
+    # coverage is checked from that role rather than Manager.
+    _login(client, make_user, "page_super", "super_admin")
     html = client.get("/spare-parts-master.html").get_data(as_text=True)
     wrap_start = html.index('<div class="table-wrap">')
     table_start = html.index('id="sparePartsTable"')
