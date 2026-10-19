@@ -622,13 +622,28 @@ run_schema_smoke_in_compose() {
     fi
 }
 
-candidate_database_preflight() {
+candidate_database_preflight() (
+    # Runs as a SUBSHELL (note the ( ) instead of { }), not a plain
+    # function: `trap ... RETURN` registers a process-wide handler that
+    # fires on EVERY subsequent function return for the rest of the
+    # script's execution, not just this function's own return (bash does
+    # not scope RETURN traps to the function that set them). Left as a
+    # plain function, the trap outlives this call, "preflight_dir" goes
+    # out of scope, and the NEXT function to return anywhere later in the
+    # script re-runs `rm -rf -- "$preflight_dir"` against an unset
+    # variable -- under `set -u` that is exactly the
+    # "preflight_dir: unbound variable" failure seen in production, firing
+    # after a fully successful update had already printed "Update
+    # successful". A subshell's EXIT trap cannot leak: it is cleared the
+    # moment the subshell process itself exits, win or lose, so cleanup
+    # fires exactly once and only for this call -- never for some later,
+    # unrelated function's return.
     local snapshot=$1 preflight_dir
     preflight_dir=$(mktemp -d "$BACKUP_STAGING_DIR/candidate-preflight-XXXXXX")
     local preflight_db=$preflight_dir/production.db
     # Cleanup is scoped to the disposable verified clone. Non-empty or
     # ambiguous temp tables abort before the production service is touched.
-    trap 'rm -rf -- "$preflight_dir"' RETURN
+    trap 'rm -rf -- "$preflight_dir"' EXIT
     python_tool copy --source "$snapshot" --destination-file "$preflight_db"
     chown -R "$SITE_UID:$SITE_GID" "$preflight_dir"
     chmod 750 "$preflight_dir"; chmod 600 "$preflight_db"
@@ -642,7 +657,7 @@ candidate_database_preflight() {
         || fatal "candidate application/schema smoke check failed"
     migration_guard inspect --database "$preflight_db"
     log "Candidate release passed migration, integrity, Alembic-head, and application smoke checks on a verified production snapshot."
-}
+)
 
 create_backup_locked() {
     [[ -f $DATABASE ]] || fatal "database is missing: $DATABASE"
@@ -971,6 +986,33 @@ logs_command() {
     if [[ ${1:-} == --no-follow ]]; then dc logs --tail=200 daily-figures; else dc logs --tail=200 -f daily-figures; fi
 }
 
+resolve_candidate_image() {
+    # Resolve the just-built candidate image from the service's CONFIGURED
+    # image reference, never from the running container's (old) image
+    # metadata and never via `dc images -q`, which lists whatever happens
+    # to be locally tagged for this service -- if `latest` moved during
+    # build and the previously-running container's old image is no longer
+    # inspectable under that tag, `dc images -q` can return nothing, the
+    # wrong image, or error out, all before the production container is
+    # even touched (this is the exact production incident: the running
+    # container still referenced the old image, the new build moved
+    # `latest`, and `dc images -q daily-figures` then failed with
+    # "No such image" for the OLD image ID it tried to resolve against).
+    # Asking Compose for the exact reference it resolved from the
+    # (possibly just-rebuilt) config, then inspecting that reference
+    # directly, ties candidate identity to "what Compose would run next",
+    # independent of whatever image ID the still-running container
+    # happens to reference, and independent of whether that old image is
+    # still inspectable at all.
+    local candidate_ref candidate_ref_count candidate_image
+    candidate_ref=$(dc config --images daily-figures)
+    candidate_ref_count=$(grep -c . <<<"$candidate_ref" 2>/dev/null || true)
+    [[ $candidate_ref_count -eq 1 ]] || fatal "could not resolve exactly one configured daily-figures service image reference"
+    candidate_image=$(docker image inspect "$candidate_ref" --format '{{.Id}}' 2>/dev/null || true)
+    [[ -n $candidate_image ]] || fatal "could not identify the exact candidate image after build"
+    printf '%s\n' "$candidate_image"
+}
+
 update_command() {
     need_root; load_state; acquire_lock
     [[ ! -f $RUNTIME_DIR/update-in-progress ]] || fatal "an incomplete update exists; inspect the marker and database before retrying"
@@ -987,8 +1029,7 @@ update_command() {
     git -C "$CODE_DIR" merge --ff-only origin/main
     new_revision=$(git -C "$CODE_DIR" rev-parse HEAD)
     dc build daily-figures
-    candidate_image=$(dc images -q daily-figures | head -n1)
-    [[ -n $candidate_image ]] || fatal "could not identify the exact candidate image"
+    candidate_image=$(resolve_candidate_image)
     online_snapshot=$(latest_database_backup)
     [[ -n $online_snapshot ]] || fatal "could not locate the verified online production snapshot"
     # Read-only live inspection plus destructive testing only on a clone.
@@ -1513,6 +1554,51 @@ main() {
             recover_env_file ;;
         _test-migrate-uploads)
             migrate_uploads "${1:?source-directory}" "${2:?destination-directory}" ;;
+        _test-resolve-candidate-image)
+            # Exercises the REAL resolve_candidate_image() unmodified;
+            # only `dc` is stubbed (no Compose/Dockerfile build needed),
+            # so `docker image inspect` below runs for real against
+            # whatever reference the test's own disposable Docker
+            # resources set up via DF_TEST_CANDIDATE_REF.
+            dc() {
+                [[ "$*" == "config --images daily-figures" ]] \
+                    || fatal "unexpected dc stub invocation: $*"
+                printf '%s\n' "${DF_TEST_CANDIDATE_REF:-}"
+            }
+            resolve_candidate_image ;;
+        _test-candidate-preflight-trap)
+            # Exercises the REAL candidate_database_preflight() unmodified
+            # end to end, with only the heavy external tools stubbed, to
+            # prove the EXIT-trap-in-a-subshell cleanup is correctly
+            # scoped: it must fire exactly once for this call and must
+            # never resurface on a later, unrelated function's return
+            # (the historic bug: a RETURN trap on a plain function leaked
+            # past this call and fired again when update_command() itself
+            # returned, long after preflight_dir had gone out of scope).
+            BACKUP_STAGING_DIR=${1:?staging-dir}
+            SITE_UID=0; SITE_GID=0
+            python_tool() { [[ ${1:-} != copy ]] || : >"${@: -1}"; }
+            migration_guard() { [[ ${DF_TEST_FAIL_AT:-} != "migration_guard_$1" ]]; }
+            verify_database() { :; }
+            dc() {
+                case "$*" in
+                    *'flask db upgrade') [[ ${DF_TEST_FAIL_AT:-} != upgrade ]] ;;
+                    *'flask db current')
+                        if [[ ${DF_TEST_FAIL_AT:-} == head ]]; then echo 'not-head'; else echo '(head)'; fi ;;
+                    *'test_client().get'*) [[ ${DF_TEST_FAIL_AT:-} != smoke ]] ;;
+                    *) fatal "unexpected dc stub invocation: $*" ;;
+                esac
+            }
+            chown() { :; }; chmod() { :; }
+            candidate_database_preflight "${2:-dummy-snapshot}"
+            log "preflight_returned_cleanly"
+            # Simulate the function returns that happen AFTER preflight in
+            # the real update_command (stop/migrate/activate/smoke), which
+            # is exactly where the historic leaked RETURN trap fired.
+            dummy_post_preflight_phase() { :; }
+            dummy_post_preflight_phase
+            dummy_post_preflight_phase
+            log "Update successful: trap-lifecycle regression check" ;;
         help|-h|--help) usage ;;
         *) fatal "unknown command: $command" ;;
     esac
