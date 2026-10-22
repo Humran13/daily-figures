@@ -7,6 +7,7 @@ boundary (see webapp/services/spare_part_fabrication_service.py's module
 docstring).
 """
 import logging
+import os
 
 from flask import Blueprint, abort, jsonify, request, send_file
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 spare_part_fabrications_bp = Blueprint(
     "spare_part_fabrications", __name__, url_prefix="/api/spare-parts/fabrications",
 )
+
+# Generic, safe failure message for any create/update commit failure —
+# never SQL text, filenames, filesystem paths, or a traceback. The real
+# exception is logged server-side by svc.finalize_write().
+_SAVE_FAILED_MSG = "Could not save fabrication. Nothing was changed; please try again."
+_DELETE_FAILED_MSG = "Delete failed. Nothing was removed; please try again."
 
 
 def _enrich(fabrication, parts):
@@ -53,7 +60,7 @@ def list_fabrications():
 def create_fabrication():
     form = request.form
     try:
-        fabrication = svc.create_fabrication(
+        result = svc.create_fabrication(
             spare_part_id=form.get("spare_part_id", type=int),
             fabrication_date=form.get("fabrication_date"),
             fabrication_cost_ugx=form.get("fabrication_cost_ugx"),
@@ -65,7 +72,19 @@ def create_fabrication():
     except svc.FabricationError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
-    db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("flush failed while creating a spare part fabrication")
+        return jsonify({"error": _SAVE_FAILED_MSG}), 500
+
+    # Commit + file cleanup are sequenced together here: a failed commit
+    # removes only the image this request itself just wrote (nothing else
+    # could be referencing it yet) and creates no DB record; a successful
+    # commit keeps it. See spare_part_fabrication_service.finalize_write().
+    if not svc.finalize_write(result):
+        return jsonify({"error": _SAVE_FAILED_MSG}), 500
+
+    fabrication = result.fabrication
     part = db.session.get(SparePart, fabrication.spare_part_id)
     return jsonify(_enrich(fabrication, {part.id: part} if part else {})), 201
 
@@ -83,14 +102,26 @@ def update_fabrication(fabrication_id):
             changes[field] = form.get(field, type=int) if field == "spare_part_id" else form.get(field)
     remove_image = form.get("remove_image") in ("1", "true", "True")
     try:
-        fabrication = svc.update_fabrication(
+        result = svc.update_fabrication(
             fabrication, changes, current_user(),
             image_file_storage=request.files.get("image"), remove_image=remove_image,
         )
     except svc.FabricationError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
-    db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("flush failed while updating spare part fabrication %s", fabrication_id)
+        return jsonify({"error": _SAVE_FAILED_MSG}), 500
+
+    # On a failed commit, the OLD image (replaced or being removed) is
+    # left completely untouched — it is still the correct, live file for
+    # the row that the rollback restores. Only a NEW image this request
+    # just wrote is cleaned up. See finalize_write().
+    if not svc.finalize_write(result):
+        return jsonify({"error": _SAVE_FAILED_MSG}), 500
+
+    fabrication = result.fabrication
     part = db.session.get(SparePart, fabrication.spare_part_id)
     return jsonify(_enrich(fabrication, {part.id: part} if part else {}))
 
@@ -102,12 +133,17 @@ def delete_fabrication(fabrication_id):
     if fabrication is None:
         return jsonify({"error": "not found"}), 404
     try:
-        svc.delete_fabrication(fabrication, current_user())
-        db.session.commit()
+        result = svc.delete_fabrication(fabrication, current_user())
     except SQLAlchemyError:
         db.session.rollback()
-        logger.exception("delete of spare part fabrication %s failed", fabrication_id)
-        return jsonify({"error": "Delete failed. Nothing was removed; please try again."}), 500
+        logger.exception("flush failed while deleting spare part fabrication %s", fabrication_id)
+        return jsonify({"error": _DELETE_FAILED_MSG}), 500
+
+    # On a failed commit the record (and therefore its image) must still
+    # exist — finalize_write() only deletes the image after a successful
+    # commit; nothing is cleaned up here if that commit fails.
+    if not svc.finalize_write(result):
+        return jsonify({"error": _DELETE_FAILED_MSG}), 500
     return jsonify({"ok": True})
 
 
@@ -118,6 +154,9 @@ def fabrication_image(fabrication_id):
     if fabrication is None:
         abort(404)
     path = svc.image_file_path(fabrication)
-    if path is None:
+    if path is None or not os.path.isfile(path):
         abort(404)
-    return send_file(path)
+    try:
+        return send_file(path)
+    except OSError:
+        abort(404)
