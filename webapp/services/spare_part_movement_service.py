@@ -221,6 +221,38 @@ def record_stock_count(spare_part, counted_quantity, user, *, business_date=None
     )
 
 
+def stock_count_reason_suggestions(query=None, limit=15):
+    """
+    Distinct previously-used Physical Stock Count reasons, for the Reason
+    "memory" autocomplete. A movement is identified as a genuine stock count
+    (rather than any other adjustment, opening balance, or void) solely by
+    having BOTH system_quantity_before and counted_quantity set — never by
+    inspecting its reason text — so internal values like opening_balance
+    can never surface here. Deduplicated case/whitespace-insensitively,
+    keeping the first-seen spelling as the display value, then ranked by
+    rank_suggestions.
+    """
+    from webapp.services.spare_part_service import normalize_text, rank_suggestions
+
+    rows = (
+        db.session.query(SparePartMovement.reason)
+        .filter(
+            SparePartMovement.system_quantity_before.isnot(None),
+            SparePartMovement.counted_quantity.isnot(None),
+            SparePartMovement.reason.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    seen = {}
+    for (raw_reason,) in rows:
+        display = normalize_text(raw_reason)
+        if not display:
+            continue
+        seen.setdefault(display.casefold(), display)
+    return rank_suggestions(list(seen.values()), query, limit=min(max(limit, 1), 20))
+
+
 def record_opening_balance(spare_part, quantity, user, *, business_date=None, remarks=None):
     return record_adjustment(spare_part, quantity, "in", user, business_date=business_date,
                               reason=REASON_OPENING_BALANCE, remarks=remarks)

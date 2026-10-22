@@ -102,7 +102,11 @@
       <div class="card">
         <h3>New Spare Part</h3>
         <div class="duplicate-warning hidden" id="duplicateWarning"></div>
-        <label>Name</label><input id="spName">
+        <div class="field">
+          <label>Name</label>
+          <input id="spName" autocomplete="off">
+          <div class="autocomplete-list hidden" id="spNameResults"></div>
+        </div>
         <label>Specifications (optional)</label><input id="spSpecifications" placeholder="e.g. 22213 or Digital - Medium">
         <label>Category (optional)</label>
         <select id="spCategory"><option value="">Uncategorized</option></select>
@@ -224,7 +228,11 @@
         <label>Count Date</label><input type="date" id="countDate">
         <label>Physical Count</label><input type="number" step="any" min="0" inputmode="decimal" id="countQty">
         <div class="context" id="countPreview">Select a spare part and enter the physical count.</div>
-        <label>Reason (required)</label><input id="countReason" placeholder="e.g. Weekly stock count reconciliation">
+        <div class="field">
+          <label>Reason (required)</label>
+          <input id="countReason" placeholder="e.g. Weekly stock count reconciliation" autocomplete="off">
+          <div class="autocomplete-list hidden" id="countReasonResults"></div>
+        </div>
         <label>Remarks (optional)</label><textarea id="countRemarks" rows="2"></textarea>
         <button class="btn btn-primary" id="submitCountBtn">Record Stock Count</button>
         <div class="msg" id="countMsg"></div>
@@ -284,6 +292,7 @@
 <script src="/spare-parts-ui.js"></script>
 <script src="/filter-autocomplete.js" defer></script>
 <script src="/spare-parts-search.js" defer></script>
+<script src="/name-memory.js" defer></script>
 <script>
 const UNITS = ['pcs','rolls','metres','sets','litres','other'];
 let isSuper = false;
@@ -295,6 +304,27 @@ let countSpareAutocomplete;
 let businessToday = null;
 let searchTimer = null;
 let pendingDelete = null;
+// Name/Reason "memory" — suggests previously-used free text, never selects
+// an existing record. spareNameMemory is seeded from an UNFILTERED spare
+// parts fetch (never from the filtered Existing Spare Parts table state),
+// so the Existing Spare Parts search/category filters never affect it.
+const spareNameMemory = NameMemory.createMemory({limit: 10});
+let spareNameAutocomplete;
+let countReasonAutocomplete;
+
+async function loadSpareNameMemory(){
+  const {data} = await api('/api/spare-parts?include_inactive=1');
+  spareNameMemory.setValues((data || []).map(p => p.name));
+}
+
+// Backed by GET /api/spare-parts/movements/reasons, which derives
+// suggestions from the movement ledger itself (genuine Physical Stock
+// Count rows only) — so a reason recorded moments ago is already
+// suggestible on the very next keystroke, with no client cache to refresh.
+async function countReasonSource(query){
+  const {status, data} = await api('/api/spare-parts/movements/reasons?' + new URLSearchParams({q: query}));
+  return status === 200 && Array.isArray(data) ? data.map(name => ({id: name, name})) : [];
+}
 
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -618,7 +648,9 @@ async function createSpare(confirmDuplicate){
   if(status === 201){
     warning.classList.add('hidden');
     setMsg('spareMsg', `${data.display_name || data.name} created successfully.`, true);
+    spareNameMemory.addValue(data.name);
     ['spName','spSpecifications','spMinStock','spChinaBuyingPrice','spLocalBuyingPrice','spSellingPrice','spPreferredCostSource'].forEach(id => document.getElementById(id).value='');
+    if(spareNameAutocomplete) spareNameAutocomplete.clear();
     syncNewSpareSource();
     refreshAll();
   } else if(status === 409 && data.error === 'possible_duplicate'){
@@ -746,6 +778,7 @@ submitCountBtn.addEventListener('click', () => SparePartsUI.withBusy(submitCount
     setMsg('countMsg', 'Stock count correction recorded successfully.', true);
     ['countQty','countReason','countRemarks'].forEach(id => document.getElementById(id).value='');
     countSpareAutocomplete.clear();
+    if(countReasonAutocomplete) countReasonAutocomplete.clear();
     await refreshAll(); renderCountPreview();
   } else setMsg('countMsg', data.error || 'Failed to record stock count.', false);
 }, 'Recording…'));
@@ -770,6 +803,16 @@ async function refreshAll(){
   countSpareAutocomplete = FilterAutocomplete.create({
     inputId:'countSpareInput', resultsId:'countSpareResults', onChange:renderCountPreview,
     source:SparePartSearch.source(), label:SparePartSearch.label, meta:SparePartSearch.meta,
+  });
+  await loadSpareNameMemory();
+  spareNameAutocomplete = FilterAutocomplete.create({
+    inputId:'spName', resultsId:'spNameResults', onChange: ()=>{},
+    source: async (q) => spareNameMemory.search(q),
+    meta: item => item.count > 1 ? `${item.count} existing specification${item.count === 1 ? '' : 's'}` : '',
+  });
+  countReasonAutocomplete = FilterAutocomplete.create({
+    inputId:'countReason', resultsId:'countReasonResults', onChange: ()=>{},
+    source: countReasonSource,
   });
   document.getElementById('countDate').value = todayStr();
 })();
