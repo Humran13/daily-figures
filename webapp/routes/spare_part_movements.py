@@ -111,6 +111,14 @@ def stock_count():
     return jsonify(movement.to_dict()), 201
 
 
+@spare_part_movements_bp.route("/reasons", methods=["GET"])
+@roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
+def reasons():
+    """Reason-memory suggestions for Physical Stock Count, scoped to the
+    same roles allowed to record a stock count — never more permissive."""
+    return jsonify(svc.stock_count_reason_suggestions(request.args.get("q")))
+
+
 @spare_part_movements_bp.route("/opening-balance", methods=["POST"])
 @roles_required(ROLE_MANAGER, ROLE_SUPER_ADMIN)
 def opening_balance():

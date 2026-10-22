@@ -19,11 +19,16 @@ is Super-Administrator-only (see that route's _critical_forbidden_response())
 way pricing is, even though Manager may still edit this same spare part's
 other fields. Already audited by that route's existing before/after diff.
 """
+from decimal import Decimal
+
 from flask import Blueprint, Response, jsonify, request
 
 from webapp.auth import current_user, roles_required
+from webapp.models.machine import Machine
+from webapp.models.spare_part import SparePart
 from webapp.models.user import ROLE_SUPER_ADMIN
 from webapp.services import branding_service
+from webapp.services import spare_part_analytics_service as analytics
 from webapp.services import spare_part_planning_service as planning_svc
 from webapp.services.audit_service import record_audit
 from webapp.services.export_service import MIME_TYPES, build_export
@@ -79,6 +84,62 @@ def planning_report():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(report)
+
+
+@spare_part_planning_bp.route("/replacement-estimates", methods=["GET"])
+@roles_required(ROLE_SUPER_ADMIN)
+def replacement_estimates():
+    """
+    Machine Replacement Estimates ("Estimated Working Period"): how long a
+    spare part typically runs on a specific machine before it is issued
+    to that machine again, inferred from repeat Stock Out dates — never
+    machine/spare "fits" master data, and never mixed across machines, so
+    two machines running the same part are never averaged together as if
+    they were one operating environment.
+    """
+    machine_id = _parse_int(request.args.get("machine_id"), None)
+    spare_part_id = _parse_int(request.args.get("spare_part_id"), None)
+    if machine_id is None:
+        return jsonify({
+            "results": [],
+            "guidance": "Select a machine to view replacement interval estimates.",
+        })
+
+    estimates = analytics.replacement_estimates(spare_part_id=spare_part_id, machine_id=machine_id)
+    part_ids = {e.spare_part_id for e in estimates}
+    machine_ids = {e.machine_id for e in estimates}
+    parts = {p.id: p for p in SparePart.query.filter(SparePart.id.in_(part_ids)).all()}
+    machine_names = {m.id: m.name for m in Machine.query.filter(Machine.id.in_(machine_ids)).all()}
+
+    rows = []
+    for e in estimates:
+        part = parts.get(e.spare_part_id)
+        if part is None:
+            continue
+        rows.append({
+            "spare_part_id": e.spare_part_id, "name": part.name, "specifications": part.specifications,
+            "display_name": part.display_name, "unit": part.unit,
+            "machine_id": e.machine_id, "machine_name": machine_names.get(e.machine_id, ""),
+            "issue_event_count": e.issue_event_count, "interval_count": e.interval_count,
+            "average_interval_days": (
+                str(e.average_interval_days.quantize(Decimal("0.1"))) if e.average_interval_days is not None else None
+            ),
+            "last_issue_date": e.last_issue_date, "estimated_next_need_date": e.estimated_next_need_date,
+            "evidence_label": e.evidence_label,
+        })
+    rows.sort(key=lambda r: (
+        r["estimated_next_need_date"] is None,
+        r["estimated_next_need_date"] or "",
+        r["display_name"].lower(),
+    ))
+    return jsonify({
+        "results": rows,
+        "methodology": (
+            "Based on all recorded machine issue history for each spare part + machine pair — "
+            "an estimate inferred from repeat Stock Out issue dates, not a measured component "
+            "lifespan. Not limited by Planning's historical analysis period control."
+        ),
+    })
 
 
 _EXPORT_COLUMNS = [

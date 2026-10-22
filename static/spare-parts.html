@@ -54,6 +54,10 @@
   .inventory-row.healthy .stock{ color:var(--teal); }
   .inventory-row.low .stock, .inventory-row.no_stock .stock{ color:var(--red); }
   .hidden{ display:none !important; }
+  .period-select{ font-size:12px; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:white; font-family:inherit; }
+  .rank-row{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .rank-row .rank-name{ overflow-wrap:anywhere; }
+  .rank-row .rank-qty{ white-space:nowrap; font-weight:700; }
 </style>
 </head>
 <body>
@@ -76,6 +80,18 @@
       <div class="inventory-head"><div class="section-title" id="inventoryTitle"></div><button class="clear-filter" type="button" id="clearInventoryFilter">Clear filter</button></div>
       <div id="inventoryList"></div>
     </section>
+
+    <div class="inventory-head">
+      <div class="section-title">Most Taken Out Spare Parts</div>
+      <select class="period-select" id="mostIssuedPeriod" aria-label="Period">
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="180">Last 180 days</option>
+        <option value="365" selected>Last 365 days</option>
+        <option value="all">All time</option>
+      </select>
+    </div>
+    <div id="mostIssuedList"></div>
 
     <div class="section-title">Recent Movements</div>
     <div id="recentMovementsList"></div>
@@ -102,6 +118,23 @@ async function loadDashboard(){
   recentEl.innerHTML = data.recent_movements.length
     ? data.recent_movements.map(m => `<div class="list-item"><strong>${escapeHtml(m.spare_part_display_name)}</strong><br>${escapeHtml(m.movement_type)} — ${escapeHtml(SparePartsUI.formatQuantity(m.quantity))} ${escapeHtml(m.unit_snapshot||'')}<div class="meta">Event: ${escapeHtml(m.business_date)} · Recorded: ${escapeHtml((m.created_at||'').replace('T',' ').slice(0,16))} · ${escapeHtml(m.reference)}</div></div>`).join('')
     : '<div class="meta" style="color:var(--ink-soft);padding:6px 0;">None yet</div>';
+}
+
+async function loadMostIssued(days){
+  const el = document.getElementById('mostIssuedList');
+  try{
+    const res = await fetch('/api/spare-parts/dashboard/most-issued?days=' + encodeURIComponent(days));
+    if(!res.ok) throw new Error('Unable to load.');
+    const data = await res.json();
+    const results = data.results || [];
+    el.innerHTML = results.length ? results.map((r, i) => `
+      <div class="list-item rank-row">
+        <div class="rank-name"><strong>${i + 1}. ${escapeHtml(r.display_name)}</strong></div>
+        <div class="rank-qty">${escapeHtml(SparePartsUI.formatQuantity(r.total_quantity))} ${escapeHtml(r.unit)}<div class="meta">${r.issue_count} issue${r.issue_count === 1 ? '' : 's'}</div></div>
+      </div>`).join('') : '<div class="meta" style="color:var(--ink-soft);padding:6px 0;">No Stock Out activity for this period.</div>';
+  }catch(err){
+    el.innerHTML = '<div class="meta" role="alert" style="color:var(--red);padding:6px 0;">Could not load this ranking.</div>';
+  }
 }
 
 let selectedStockFilter = null;
@@ -165,6 +198,8 @@ function clearInventoryFilter(options){
     return;
   }
   await loadDashboard();
+  await loadMostIssued(document.getElementById('mostIssuedPeriod').value);
+  document.getElementById('mostIssuedPeriod').addEventListener('change', event => loadMostIssued(event.target.value));
   document.querySelectorAll('[data-stock-filter]').forEach(card => card.addEventListener('click', event => {
     event.preventDefault();
     loadFilteredInventory(card.dataset.stockFilter);

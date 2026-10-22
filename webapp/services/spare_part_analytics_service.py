@@ -16,7 +16,7 @@ be rendering hundreds of rows at once).
 """
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func
 
@@ -199,6 +199,116 @@ def classify_trend(recent_total, preceding_total, *, has_full_preceding_window):
     else:
         label = "Stable"
     return TrendResult(label, recent_total, preceding_total, percent_change)
+
+
+# ---------- machine replacement / "estimated working period" ----------
+# Planning > Machine Replacement Estimates. An inferred estimate from the
+# gaps between repeat Stock Out ISSUE dates attributed to a machine
+# (movement.machine_id — an actual issue, never SparePart<->Machine
+# "fits" master data from spare_part_service.spare_part_machines()), not
+# a measured component lifespan: the app has no install/failure date.
+# Every caller/UI must present it with that caveat.
+
+EVIDENCE_INSUFFICIENT = "Insufficient history"
+EVIDENCE_LIMITED = "Limited history"
+EVIDENCE_DEVELOPING = "Developing history"
+EVIDENCE_ESTABLISHED = "Established history"
+
+
+@dataclass(frozen=True)
+class ReplacementEstimate:
+    spare_part_id: int
+    machine_id: int
+    issue_event_count: int
+    interval_count: int
+    average_interval_days: Decimal | None  # exact; round only for display
+    last_issue_date: str
+    estimated_next_need_date: str | None
+    evidence_label: str
+
+
+def machine_issue_dates(spare_part_id=None, machine_id=None):
+    """
+    Distinct business_date values of genuine active STOCK_OUT issues that
+    carry a machine_id, grouped by (spare_part_id, machine_id) and sorted
+    ascending. Several Stock Outs of the same part to the same machine on
+    the same business_date collapse into ONE issue event here, before any
+    interval is computed, so they can never produce an artificial 0-day
+    gap. Voided rows, any non-STOCK_OUT movement type, and rows with no
+    machine_id are never included.
+    """
+    query = db.session.query(
+        SparePartMovement.spare_part_id, SparePartMovement.machine_id, SparePartMovement.business_date,
+    ).filter(
+        SparePartMovement.movement_type == MOVEMENT_STOCK_OUT,
+        SparePartMovement.status == STATUS_ACTIVE,
+        SparePartMovement.machine_id.isnot(None),
+    ).distinct()
+    if spare_part_id is not None:
+        query = query.filter(SparePartMovement.spare_part_id == spare_part_id)
+    if machine_id is not None:
+        query = query.filter(SparePartMovement.machine_id == machine_id)
+
+    grouped = {}
+    for pid, mid, business_date in query.all():
+        grouped.setdefault((pid, mid), set()).add(business_date)
+    return {key: sorted(dates) for key, dates in grouped.items()}
+
+
+def _evidence_label(interval_count):
+    if interval_count <= 0:
+        return EVIDENCE_INSUFFICIENT
+    if interval_count == 1:
+        return EVIDENCE_LIMITED
+    if interval_count == 2:
+        return EVIDENCE_DEVELOPING
+    return EVIDENCE_ESTABLISHED
+
+
+def replacement_estimates(spare_part_id=None, machine_id=None):
+    """
+    One ReplacementEstimate per (spare_part, machine) pair that has at
+    least one recorded issue. Uses ALL recorded issue history for that
+    pair — deliberately NOT limited by Planning's separate historical
+    analysis period (which governs consumption/trend only; see
+    spare_part_planning_service.py) — so a short analysis window can
+    never make a genuinely months-long replacement interval disappear.
+
+    average_interval_days is the exact mean of the gaps between
+    consecutive distinct issue dates, kept as a Decimal (never rounded
+    early); estimated_next_need_date rounds that average to the nearest
+    whole day (round-half-up) only to advance the calendar date, which a
+    date arithmetically requires — the stored average itself stays exact
+    for the caller to round however it displays it.
+
+    0 issues: the pair is simply absent from the result (nothing to
+    estimate). 1 distinct issue date: returned with interval_count=0,
+    average_interval_days=None, evidence "Insufficient history" — one
+    data point is not an interval. 2+: every consecutive gap is averaged.
+    """
+    grouped = machine_issue_dates(spare_part_id=spare_part_id, machine_id=machine_id)
+    results = []
+    for (pid, mid), dates in grouped.items():
+        last_issue = dates[-1]
+        if len(dates) < 2:
+            results.append(ReplacementEstimate(
+                spare_part_id=pid, machine_id=mid, issue_event_count=len(dates), interval_count=0,
+                average_interval_days=None, last_issue_date=last_issue,
+                estimated_next_need_date=None, evidence_label=EVIDENCE_INSUFFICIENT,
+            ))
+            continue
+
+        parsed = [parse_date(d) for d in dates]
+        intervals = [(parsed[i] - parsed[i - 1]).days for i in range(1, len(parsed))]
+        average_days = Decimal(sum(intervals)) / Decimal(len(intervals))
+        rounded_offset = int(average_days.to_integral_value(rounding=ROUND_HALF_UP))
+        estimated_next = date_str(parsed[-1] + timedelta(days=rounded_offset))
+        results.append(ReplacementEstimate(
+            spare_part_id=pid, machine_id=mid, issue_event_count=len(dates), interval_count=len(intervals),
+            average_interval_days=average_days, last_issue_date=last_issue,
+            estimated_next_need_date=estimated_next, evidence_label=_evidence_label(len(intervals)),
+        ))
+    return results
 
 
 def forecast_monthly_demand(average_monthly_consumption_value, history=None):

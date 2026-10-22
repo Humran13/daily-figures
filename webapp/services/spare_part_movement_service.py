@@ -8,9 +8,10 @@ path below independently sums the ledger in Decimal, so the two can
 always be proven equal (see tests/test_spare_parts.py's reconciliation
 test) rather than trusting the cache blindly.
 """
+from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 
 from webapp.extensions import db
 from webapp.models.spare_part import SparePart, is_discrete_unit
@@ -221,6 +222,38 @@ def record_stock_count(spare_part, counted_quantity, user, *, business_date=None
     )
 
 
+def stock_count_reason_suggestions(query=None, limit=15):
+    """
+    Distinct previously-used Physical Stock Count reasons, for the Reason
+    "memory" autocomplete. A movement is identified as a genuine stock count
+    (rather than any other adjustment, opening balance, or void) solely by
+    having BOTH system_quantity_before and counted_quantity set — never by
+    inspecting its reason text — so internal values like opening_balance
+    can never surface here. Deduplicated case/whitespace-insensitively,
+    keeping the first-seen spelling as the display value, then ranked by
+    rank_suggestions.
+    """
+    from webapp.services.spare_part_service import normalize_text, rank_suggestions
+
+    rows = (
+        db.session.query(SparePartMovement.reason)
+        .filter(
+            SparePartMovement.system_quantity_before.isnot(None),
+            SparePartMovement.counted_quantity.isnot(None),
+            SparePartMovement.reason.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    seen = {}
+    for (raw_reason,) in rows:
+        display = normalize_text(raw_reason)
+        if not display:
+            continue
+        seen.setdefault(display.casefold(), display)
+    return rank_suggestions(list(seen.values()), query, limit=min(max(limit, 1), 20))
+
+
 def record_opening_balance(spare_part, quantity, user, *, business_date=None, remarks=None):
     return record_adjustment(spare_part, quantity, "in", user, business_date=business_date,
                               reason=REASON_OPENING_BALANCE, remarks=remarks)
@@ -324,6 +357,53 @@ def people_suggestions(query=None):
         q = query.strip().lower()
         names = {n for n in names if q in n.lower()}
     return sorted(names)[:50]
+
+
+MOST_ISSUED_PERIODS = {"30": 30, "90": 90, "180": 180, "365": 365, "all": None}
+
+
+def most_issued_spare_parts(days=365, limit=5):
+    """
+    Top spare parts by total ACTIVE Stock Out quantity over the trailing
+    `days` business days (None = all time), using business_date (an ISO
+    "YYYY-MM-DD" string, so a plain >= comparison is a valid date range)
+    rather than created_at. Only genuine active STOCK_OUT movements count
+    — never Stock In, adjustments, opening balances, stock-count
+    corrections, or voided rows. Each result keeps its own unit; different
+    spare parts' quantities are never summed together, only ranked by
+    their own numeric total. Tie-break: quantity desc, then issue-event
+    count desc, then display name asc, for a deterministic order.
+    """
+    query = db.session.query(
+        SparePartMovement.spare_part_id,
+        func.sum(SparePartMovement.quantity).label("total_quantity"),
+        func.count(SparePartMovement.id).label("issue_count"),
+    ).filter(
+        SparePartMovement.movement_type == MOVEMENT_STOCK_OUT,
+        SparePartMovement.status == STATUS_ACTIVE,
+    )
+    if days is not None:
+        cutoff = (date.fromisoformat(business_today()) - timedelta(days=days)).isoformat()
+        query = query.filter(SparePartMovement.business_date >= cutoff)
+    rows = query.group_by(SparePartMovement.spare_part_id).all()
+    if not rows:
+        return []
+
+    parts = {
+        p.id: p for p in SparePart.query.filter(SparePart.id.in_([r.spare_part_id for r in rows])).all()
+    }
+    results = []
+    for row in rows:
+        part = parts.get(row.spare_part_id)
+        if part is None:
+            continue
+        results.append({
+            "spare_part_id": part.id, "name": part.name, "specifications": part.specifications,
+            "display_name": part.display_name, "unit": part.unit,
+            "total_quantity": str(row.total_quantity), "issue_count": int(row.issue_count),
+        })
+    results.sort(key=lambda r: (-Decimal(r["total_quantity"]), -r["issue_count"], r["display_name"].lower()))
+    return results[:limit]
 
 
 # ---------- dashboard ----------

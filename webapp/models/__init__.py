@@ -25,6 +25,7 @@ from webapp.models.supplier import Supplier
 from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSupplier
 from webapp.models.spare_part_movement import SparePartMovement
 from webapp.models.spare_part_import_row import SparePartImportRow
+from webapp.models.spare_part_fabrication import SparePartFabrication
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -49,4 +50,5 @@ __all__ = [
     "SparePart", "SparePartMachine", "SparePartSupplier",
     "SparePartMovement",
     "SparePartImportRow",
+    "SparePartFabrication",
 ]

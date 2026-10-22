@@ -73,6 +73,18 @@
   .data-table td.actions .btn{ margin-left:4px; }
   .data-table tr:last-child td{ border-bottom:none; }
   .sub{ color:var(--ink-soft); font-size:11px; margin-top:2px; }
+  .fab-preview{ font-size:13px; background:var(--paper-dim); border-radius:8px; padding:10px; margin:4px 0 10px; }
+  .fab-preview .loss{ color:var(--red); }
+  .fab-preview .profit{ color:var(--teal); }
+  .fab-card{ display:flex; gap:10px; border:1.5px solid var(--line); border-radius:12px; padding:10px; margin-bottom:10px; }
+  .fab-thumb{ width:56px; height:56px; border-radius:8px; object-fit:cover; flex-shrink:0; background:var(--paper-dim); cursor:pointer; }
+  .fab-thumb-placeholder{ width:56px; height:56px; border-radius:8px; background:var(--paper-dim); flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--ink-soft); text-align:center; }
+  .fab-body{ flex:1; min-width:0; font-size:13px; }
+  .fab-body .amounts{ font-size:12px; color:var(--ink-soft); margin-top:3px; }
+  .fab-image-modal{ position:fixed; inset:0; background:rgba(27,36,48,.75); display:flex; align-items:center; justify-content:center; padding:16px; z-index:200; }
+  .fab-image-modal img{ max-width:100%; max-height:90vh; border-radius:8px; }
+  .fab-checkbox-label{ text-transform:none; font-weight:400; display:flex; align-items:center; gap:6px; }
+  .fab-checkbox-label input{ width:auto; margin:0; }
 
   /* Dialogs: edit form, and a strong delete confirmation. */
   .modal-backdrop{ position:fixed; inset:0; background:rgba(27,36,48,.55); display:flex; align-items:center; justify-content:center; padding:16px; z-index:100; }
@@ -96,13 +108,18 @@
       <div class="tab" data-panel="departments">Departments</div>
       <div class="tab" data-panel="suppliers">Suppliers</div>
       <div class="tab" data-panel="adjustments">Adjustments</div>
+      <div class="tab super-only" data-panel="fabrication">Fabrication</div>
     </div>
 
     <div class="panel active" id="panel-spare-parts">
       <div class="card">
         <h3>New Spare Part</h3>
         <div class="duplicate-warning hidden" id="duplicateWarning"></div>
-        <label>Name</label><input id="spName">
+        <div class="field">
+          <label>Name</label>
+          <input id="spName" autocomplete="off">
+          <div class="autocomplete-list hidden" id="spNameResults"></div>
+        </div>
         <label>Specifications (optional)</label><input id="spSpecifications" placeholder="e.g. 22213 or Digital - Medium">
         <label>Category (optional)</label>
         <select id="spCategory"><option value="">Uncategorized</option></select>
@@ -224,7 +241,11 @@
         <label>Count Date</label><input type="date" id="countDate">
         <label>Physical Count</label><input type="number" step="any" min="0" inputmode="decimal" id="countQty">
         <div class="context" id="countPreview">Select a spare part and enter the physical count.</div>
-        <label>Reason (required)</label><input id="countReason" placeholder="e.g. Weekly stock count reconciliation">
+        <div class="field">
+          <label>Reason (required)</label>
+          <input id="countReason" placeholder="e.g. Weekly stock count reconciliation" autocomplete="off">
+          <div class="autocomplete-list hidden" id="countReasonResults"></div>
+        </div>
         <label>Remarks (optional)</label><textarea id="countRemarks" rows="2"></textarea>
         <button class="btn btn-primary" id="submitCountBtn">Record Stock Count</button>
         <div class="msg" id="countMsg"></div>
@@ -243,6 +264,38 @@
         <label>Remarks (optional)</label><textarea id="adjRemarks" rows="2"></textarea>
         <button class="btn btn-primary" id="submitAdjBtn">Submit Adjustment</button>
         <div class="msg" id="adjMsg"></div>
+      </div>
+    </div>
+
+    <div class="panel super-only" id="panel-fabrication">
+      <div class="card">
+        <h3>New Fabrication Record</h3>
+        <div class="field">
+          <label>Spare Part</label>
+          <input id="fabSpareInput" placeholder="Search by name or specification..." autocomplete="off">
+          <div class="autocomplete-list hidden" id="fabSpareResults"></div>
+        </div>
+        <label>Fabrication Date</label><input type="date" id="fabDate">
+        <label>Fabrication Cost (UGX)</label><input type="number" step="1" min="0" inputmode="numeric" id="fabCost">
+        <label>Sold to Factory (UGX)</label><input type="number" step="1" min="0" inputmode="numeric" id="fabSold">
+        <div class="fab-preview" id="fabProfitPreview">Enter cost and sold-to-factory amounts to see profit/loss.</div>
+        <label>Image (optional)</label><input type="file" id="fabImage" accept="image/png,image/jpeg,image/webp">
+        <label class="fab-checkbox-label hidden" id="fabRemoveImageWrap">
+          <input type="checkbox" id="fabRemoveImage"> Remove current image
+        </label>
+        <label>Notes (optional)</label><textarea id="fabNotes" rows="2"></textarea>
+        <button class="btn btn-primary" id="createFabBtn">Record Fabrication</button>
+        <button class="btn hidden" id="cancelFabEditBtn" type="button">Cancel edit</button>
+        <div class="msg" id="fabMsg"></div>
+      </div>
+      <div class="card">
+        <h3>Fabrication History</h3>
+        <div class="row2">
+          <input id="fabSearch" placeholder="Search name or specification">
+          <input type="date" id="fabDateFrom" title="From">
+          <input type="date" id="fabDateTo" title="To">
+        </div>
+        <div id="fabHistoryList"></div>
       </div>
     </div>
   </main>
@@ -284,6 +337,7 @@
 <script src="/spare-parts-ui.js"></script>
 <script src="/filter-autocomplete.js" defer></script>
 <script src="/spare-parts-search.js" defer></script>
+<script src="/name-memory.js" defer></script>
 <script>
 const UNITS = ['pcs','rolls','metres','sets','litres','other'];
 let isSuper = false;
@@ -295,6 +349,27 @@ let countSpareAutocomplete;
 let businessToday = null;
 let searchTimer = null;
 let pendingDelete = null;
+// Name/Reason "memory" — suggests previously-used free text, never selects
+// an existing record. spareNameMemory is seeded from an UNFILTERED spare
+// parts fetch (never from the filtered Existing Spare Parts table state),
+// so the Existing Spare Parts search/category filters never affect it.
+let spareNameMemory;
+let spareNameAutocomplete;
+let countReasonAutocomplete;
+
+async function loadSpareNameMemory(){
+  const {data} = await api('/api/spare-parts?include_inactive=1');
+  spareNameMemory.setValues((data || []).map(p => p.name));
+}
+
+// Backed by GET /api/spare-parts/movements/reasons, which derives
+// suggestions from the movement ledger itself (genuine Physical Stock
+// Count rows only) — so a reason recorded moments ago is already
+// suggestible on the very next keystroke, with no client cache to refresh.
+async function countReasonSource(query){
+  const {status, data} = await api('/api/spare-parts/movements/reasons?' + new URLSearchParams({q: query}));
+  return status === 200 && Array.isArray(data) ? data.map(name => ({id: name, name})) : [];
+}
 
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -618,7 +693,9 @@ async function createSpare(confirmDuplicate){
   if(status === 201){
     warning.classList.add('hidden');
     setMsg('spareMsg', `${data.display_name || data.name} created successfully.`, true);
+    spareNameMemory.addValue(data.name);
     ['spName','spSpecifications','spMinStock','spChinaBuyingPrice','spLocalBuyingPrice','spSellingPrice','spPreferredCostSource'].forEach(id => document.getElementById(id).value='');
+    if(spareNameAutocomplete) spareNameAutocomplete.clear();
     syncNewSpareSource();
     refreshAll();
   } else if(status === 409 && data.error === 'possible_duplicate'){
@@ -746,9 +823,160 @@ submitCountBtn.addEventListener('click', () => SparePartsUI.withBusy(submitCount
     setMsg('countMsg', 'Stock count correction recorded successfully.', true);
     ['countQty','countReason','countRemarks'].forEach(id => document.getElementById(id).value='');
     countSpareAutocomplete.clear();
+    if(countReasonAutocomplete) countReasonAutocomplete.clear();
     await refreshAll(); renderCountPreview();
   } else setMsg('countMsg', data.error || 'Failed to record stock count.', false);
 }, 'Recording…'));
+
+// ---------- fabrication (Super Admin only; backend independently enforces this) ----------
+let fabSpareAutocomplete;
+let editingFabricationId = null;
+let records_fab = [];
+
+function fabImageUrl(id){ return '/api/spare-parts/fabrications/' + id + '/image'; }
+
+function renderFabProfitPreview(){
+  const cost = Number(document.getElementById('fabCost').value);
+  const sold = Number(document.getElementById('fabSold').value);
+  const preview = document.getElementById('fabProfitPreview');
+  if(document.getElementById('fabCost').value === '' || document.getElementById('fabSold').value === ''){
+    preview.textContent = 'Enter cost and sold-to-factory amounts to see profit/loss.';
+    return;
+  }
+  const diff = sold - cost;
+  const label = diff < 0 ? 'Loss' : 'Profit';
+  const cls = diff < 0 ? 'loss' : 'profit';
+  preview.innerHTML = `Cost: <strong>${escapeHtml(SparePartsUI.formatUGX(cost, false))}</strong><br>`+
+    `Sold to Factory: <strong>${escapeHtml(SparePartsUI.formatUGX(sold, false))}</strong><br>`+
+    `${label}: <strong class="${cls}">${escapeHtml(SparePartsUI.formatUGX(Math.abs(diff), false))}</strong>`;
+}
+document.getElementById('fabCost').addEventListener('input', renderFabProfitPreview);
+document.getElementById('fabSold').addEventListener('input', renderFabProfitPreview);
+
+function resetFabForm(){
+  editingFabricationId = null;
+  ['fabCost','fabSold','fabNotes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('fabImage').value = '';
+  document.getElementById('fabRemoveImage').checked = false;
+  document.getElementById('fabRemoveImageWrap').classList.add('hidden');
+  document.getElementById('fabDate').value = todayStr();
+  if(fabSpareAutocomplete) fabSpareAutocomplete.clear();
+  document.getElementById('createFabBtn').textContent = 'Record Fabrication';
+  document.getElementById('cancelFabEditBtn').classList.add('hidden');
+  renderFabProfitPreview();
+}
+document.getElementById('cancelFabEditBtn').addEventListener('click', resetFabForm);
+
+function openFabEdit(row){
+  editingFabricationId = row.id;
+  fabSpareAutocomplete.set(row.spare_part_id, row.display_name);
+  document.getElementById('fabDate').value = row.fabrication_date;
+  document.getElementById('fabCost').value = row.fabrication_cost_ugx;
+  document.getElementById('fabSold').value = row.sold_to_factory_ugx;
+  document.getElementById('fabNotes').value = row.notes || '';
+  document.getElementById('fabImage').value = '';
+  document.getElementById('fabRemoveImage').checked = false;
+  document.getElementById('fabRemoveImageWrap').classList.toggle('hidden', !row.has_image);
+  document.getElementById('createFabBtn').textContent = 'Save Changes';
+  document.getElementById('cancelFabEditBtn').classList.remove('hidden');
+  renderFabProfitPreview();
+  document.getElementById('panel-fabrication').scrollIntoView({behavior:'smooth'});
+}
+
+function fabCardHtml(row){
+  const thumb = row.has_image
+    ? `<img class="fab-thumb" src="${fabImageUrl(row.id)}" alt="" data-fab-image="${row.id}">`
+    : `<div class="fab-thumb-placeholder">No image</div>`;
+  const diff = row.profit_loss_ugx;
+  const cls = diff < 0 ? 'loss' : 'profit';
+  const label = diff < 0 ? 'Loss' : 'Profit';
+  return `<div class="fab-card" data-fab-id="${row.id}">
+    ${thumb}
+    <div class="fab-body">
+      <strong>${escapeHtml(row.display_name || row.spare_part_name || '')}</strong>
+      <div class="sub">${escapeHtml(row.fabrication_date)}</div>
+      <div class="amounts">Cost: ${escapeHtml(SparePartsUI.formatUGX(row.fabrication_cost_ugx, false))} ·
+        Sold: ${escapeHtml(SparePartsUI.formatUGX(row.sold_to_factory_ugx, false))} ·
+        ${label}: <span class="${cls}">${escapeHtml(SparePartsUI.formatUGX(Math.abs(diff), false))}</span></div>
+      ${row.notes ? `<div class="sub">${escapeHtml(row.notes)}</div>` : ''}
+      <div style="margin-top:6px;">
+        <button class="btn btn-sm" data-fab-edit="${row.id}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-fab-delete="${row.id}">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadFabricationHistory(){
+  const params = new URLSearchParams();
+  const q = document.getElementById('fabSearch').value.trim();
+  const from = document.getElementById('fabDateFrom').value;
+  const to = document.getElementById('fabDateTo').value;
+  if(q) params.set('q', q);
+  if(from) params.set('date_from', from);
+  if(to) params.set('date_to', to);
+  const {data} = await api('/api/spare-parts/fabrications?' + params.toString());
+  records_fab = data || [];
+  const list = document.getElementById('fabHistoryList');
+  list.innerHTML = records_fab.length ? records_fab.map(fabCardHtml).join('')
+    : '<p class="muted">No fabrication records yet.</p>';
+  list.querySelectorAll('[data-fab-edit]').forEach(btn => btn.addEventListener('click', () => {
+    const row = records_fab.find(r => r.id === Number(btn.dataset.fabEdit));
+    if(row) openFabEdit(row);
+  }));
+  list.querySelectorAll('[data-fab-delete]').forEach(btn => btn.addEventListener('click', () => deleteFabrication(Number(btn.dataset.fabDelete))));
+  list.querySelectorAll('[data-fab-image]').forEach(img => img.addEventListener('click', () => {
+    const modal = document.createElement('div');
+    modal.className = 'fab-image-modal';
+    modal.innerHTML = `<img src="${fabImageUrl(img.dataset.fabImage)}" alt="">`;
+    modal.addEventListener('click', () => modal.remove());
+    document.body.appendChild(modal);
+  }));
+}
+['fabSearch','fabDateFrom','fabDateTo'].forEach(id => document.getElementById(id).addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadFabricationHistory, 200);
+}));
+
+async function deleteFabrication(id){
+  const row = records_fab.find(r => r.id === id);
+  const label = row ? (row.display_name || row.spare_part_name) + ' on ' + row.fabrication_date : 'this record';
+  if(!window.confirm(`Permanently delete the fabrication record for ${label}? This cannot be undone.`)) return;
+  const {status, data} = await api(`/api/spare-parts/fabrications/${id}`, {method:'DELETE'});
+  if(status === 200){
+    SparePartsUI.notify('Fabrication record deleted.', 'success');
+    if(editingFabricationId === id) resetFabForm();
+    await loadFabricationHistory();
+  } else {
+    SparePartsUI.notify(data.error || 'Delete failed.', 'error');
+  }
+}
+
+const createFabBtn = document.getElementById('createFabBtn');
+createFabBtn.addEventListener('click', () => SparePartsUI.withBusy(createFabBtn, async () => {
+  const spareId = fabSpareAutocomplete.selectedId();
+  if(!spareId){ setMsg('fabMsg', 'Select a spare part.', false); return; }
+  const form = new FormData();
+  form.set('spare_part_id', spareId);
+  form.set('fabrication_date', document.getElementById('fabDate').value);
+  form.set('fabrication_cost_ugx', document.getElementById('fabCost').value);
+  form.set('sold_to_factory_ugx', document.getElementById('fabSold').value);
+  form.set('notes', document.getElementById('fabNotes').value);
+  const imageFile = document.getElementById('fabImage').files[0];
+  if(imageFile) form.set('image', imageFile);
+  if(document.getElementById('fabRemoveImage').checked) form.set('remove_image', '1');
+
+  const isEdit = editingFabricationId != null;
+  const url = isEdit ? `/api/spare-parts/fabrications/${editingFabricationId}` : '/api/spare-parts/fabrications';
+  const {status, data} = await api(url, {method: isEdit ? 'PATCH' : 'POST', body: form, headers: {}});
+  if(status === 201 || status === 200){
+    setMsg('fabMsg', isEdit ? 'Fabrication record updated.' : 'Fabrication record created.', true);
+    resetFabForm();
+    await loadFabricationHistory();
+  } else {
+    setMsg('fabMsg', data.error || 'Failed.', false);
+  }
+}, 'Saving…'));
 
 async function refreshAll(){
   await loadDepartments();
@@ -771,7 +999,26 @@ async function refreshAll(){
     inputId:'countSpareInput', resultsId:'countSpareResults', onChange:renderCountPreview,
     source:SparePartSearch.source(), label:SparePartSearch.label, meta:SparePartSearch.meta,
   });
+  spareNameMemory = NameMemory.createMemory({limit: 10});
+  await loadSpareNameMemory();
+  spareNameAutocomplete = FilterAutocomplete.create({
+    inputId:'spName', resultsId:'spNameResults', onChange: ()=>{},
+    source: async (q) => spareNameMemory.search(q),
+    meta: item => item.count > 1 ? `${item.count} existing specification${item.count === 1 ? '' : 's'}` : '',
+  });
+  countReasonAutocomplete = FilterAutocomplete.create({
+    inputId:'countReason', resultsId:'countReasonResults', onChange: ()=>{},
+    source: countReasonSource,
+  });
   document.getElementById('countDate').value = todayStr();
+  if(isSuper){
+    fabSpareAutocomplete = FilterAutocomplete.create({
+      inputId:'fabSpareInput', resultsId:'fabSpareResults', onChange: ()=>{},
+      source: SparePartSearch.source({includeInactive: true}), label: SparePartSearch.label, meta: SparePartSearch.meta,
+    });
+    document.getElementById('fabDate').value = todayStr();
+    await loadFabricationHistory();
+  }
 })();
 </script>
 </body>

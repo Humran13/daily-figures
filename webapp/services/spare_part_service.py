@@ -41,6 +41,36 @@ def normalize_key(value):
     return normalize_text(value).casefold()
 
 
+def rank_suggestions(display_values, query, limit=10):
+    """
+    Ranks a set of already-deduplicated display strings against a typed
+    query for an autocomplete "memory" field (spare-part Name, Stock Count
+    Reason): exact match, then starts-with, then any word starting with it,
+    then plain substring — all case/whitespace-insensitive. Ties break by
+    shorter value, then alphabetically, so a concise close match sorts
+    ahead of a long one that merely also qualifies.
+    """
+    q = normalize_key(query)
+    if not q:
+        return []
+    scored = []
+    for value in display_values:
+        key = normalize_key(value)
+        if key == q:
+            score = 0
+        elif key.startswith(q):
+            score = 1
+        elif re.search(r"\b" + re.escape(q), key):
+            score = 2
+        elif q in key:
+            score = 3
+        else:
+            continue
+        scored.append((score, len(value), value.casefold(), value))
+    scored.sort(key=lambda t: t[:3])
+    return [item[3] for item in scored[:limit]]
+
+
 # Whole-cell, case-insensitive exact matches only — never a substring
 # replacement, so a real multi-word product name (e.g. "Bearings Hajj",
 # "Grooved Bearings") is never mangled. Scoped to the import pipeline
