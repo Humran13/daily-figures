@@ -251,3 +251,13 @@ def delete_spare_part(spare_part_id):
 @login_required
 def dashboard():
     return jsonify(movement_svc.dashboard_summary())
+
+
+@spare_parts_bp.route("/dashboard/most-issued", methods=["GET"])
+@login_required
+def dashboard_most_issued():
+    period = request.args.get("days", "365")
+    if period not in movement_svc.MOST_ISSUED_PERIODS:
+        return jsonify({"error": f"days must be one of {sorted(movement_svc.MOST_ISSUED_PERIODS)}"}), 400
+    days = movement_svc.MOST_ISSUED_PERIODS[period]
+    return jsonify({"period": period, "results": movement_svc.most_issued_spare_parts(days=days)})

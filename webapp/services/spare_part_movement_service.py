@@ -8,9 +8,10 @@ path below independently sums the ledger in Decimal, so the two can
 always be proven equal (see tests/test_spare_parts.py's reconciliation
 test) rather than trusting the cache blindly.
 """
+from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 
 from webapp.extensions import db
 from webapp.models.spare_part import SparePart, is_discrete_unit
@@ -356,6 +357,53 @@ def people_suggestions(query=None):
         q = query.strip().lower()
         names = {n for n in names if q in n.lower()}
     return sorted(names)[:50]
+
+
+MOST_ISSUED_PERIODS = {"30": 30, "90": 90, "180": 180, "365": 365, "all": None}
+
+
+def most_issued_spare_parts(days=365, limit=5):
+    """
+    Top spare parts by total ACTIVE Stock Out quantity over the trailing
+    `days` business days (None = all time), using business_date (an ISO
+    "YYYY-MM-DD" string, so a plain >= comparison is a valid date range)
+    rather than created_at. Only genuine active STOCK_OUT movements count
+    — never Stock In, adjustments, opening balances, stock-count
+    corrections, or voided rows. Each result keeps its own unit; different
+    spare parts' quantities are never summed together, only ranked by
+    their own numeric total. Tie-break: quantity desc, then issue-event
+    count desc, then display name asc, for a deterministic order.
+    """
+    query = db.session.query(
+        SparePartMovement.spare_part_id,
+        func.sum(SparePartMovement.quantity).label("total_quantity"),
+        func.count(SparePartMovement.id).label("issue_count"),
+    ).filter(
+        SparePartMovement.movement_type == MOVEMENT_STOCK_OUT,
+        SparePartMovement.status == STATUS_ACTIVE,
+    )
+    if days is not None:
+        cutoff = (date.fromisoformat(business_today()) - timedelta(days=days)).isoformat()
+        query = query.filter(SparePartMovement.business_date >= cutoff)
+    rows = query.group_by(SparePartMovement.spare_part_id).all()
+    if not rows:
+        return []
+
+    parts = {
+        p.id: p for p in SparePart.query.filter(SparePart.id.in_([r.spare_part_id for r in rows])).all()
+    }
+    results = []
+    for row in rows:
+        part = parts.get(row.spare_part_id)
+        if part is None:
+            continue
+        results.append({
+            "spare_part_id": part.id, "name": part.name, "specifications": part.specifications,
+            "display_name": part.display_name, "unit": part.unit,
+            "total_quantity": str(row.total_quantity), "issue_count": int(row.issue_count),
+        })
+    results.sort(key=lambda r: (-Decimal(r["total_quantity"]), -r["issue_count"], r["display_name"].lower()))
+    return results[:limit]
 
 
 # ---------- dashboard ----------
