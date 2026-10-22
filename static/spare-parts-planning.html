@@ -53,6 +53,10 @@
 
   .export-links a{ font-size:12px; color:var(--teal); text-decoration:underline; margin-right:10px; }
   .methodology-note{ font-size:11px; color:var(--ink-soft); margin:6px 0 12px; }
+  .estimate-row{ border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; font-size:13px; }
+  .estimate-row .meta{ color:var(--ink-soft); font-size:11px; margin-top:3px; }
+  .estimate-row .evidence-tag{ display:inline-block; font-size:10px; padding:1px 6px; border-radius:8px; background:var(--paper-dim); color:var(--ink-soft); margin-left:6px; }
+  .replacement-note{ margin-top:-4px; }
 
   .table-wrap{ overflow-x:auto; border:1.5px solid var(--line); border-radius:12px; background:white; }
   table{ border-collapse:collapse; width:100%; font-size:12px; white-space:nowrap; }
@@ -157,6 +161,16 @@
         <label class="checkbox-field"><input type="checkbox" id="fIncludeInactive"> Include inactive</label>
         <button id="applyFiltersBtn" type="button">Filter</button>
       </div>
+    </div>
+
+    <div class="panel" id="replacementPanel">
+      <p class="panel-title">Machine Replacement Estimates</p>
+      <p class="methodology-note replacement-note">
+        Estimated Working Period — inferred from repeat Stock Out issue dates of a spare part to
+        the selected machine, not a measured installation/failure date. Uses all recorded issue
+        history for that machine, independent of the Historical Analysis Period above.
+      </p>
+      <div id="replacementList"></div>
     </div>
 
     <div class="cards" id="summaryCards"></div>
@@ -404,6 +418,37 @@ async function loadReport(){
   });
 }
 
+function formatInterval(days){
+  if(days == null) return null;
+  const n = Number(days);
+  return n >= 60 ? `${(n/30).toFixed(1)} months` : `${Math.round(n)} days`;
+}
+
+async function loadReplacementEstimates(){
+  const machineId = document.getElementById('fMachine').value;
+  const list = document.getElementById('replacementList');
+  if(!machineId){
+    list.innerHTML = '<p class="methodology-note">Select a machine to view replacement interval estimates.</p>';
+    return;
+  }
+  const params = new URLSearchParams({machine_id: machineId});
+  const res = await fetch('/api/spare-parts/planning/replacement-estimates?' + params.toString());
+  const data = await res.json();
+  let rows = data.results || [];
+  const q = document.getElementById('fSearch').value.trim().toLowerCase();
+  if(q) rows = rows.filter(r => r.display_name.toLowerCase().includes(q));
+  list.innerHTML = rows.length ? rows.map(r => `
+    <div class="estimate-row">
+      <strong>${escapeHtml(r.display_name)}</strong><span class="evidence-tag">${escapeHtml(r.evidence_label)}</span>
+      <div class="meta">
+        ${r.average_interval_days != null ? `Avg interval: ~${escapeHtml(formatInterval(r.average_interval_days))}` : 'Not enough history for an interval yet'}
+        · Last issued: ${escapeHtml(r.last_issue_date)}
+        · History: ${r.issue_event_count} issue${r.issue_event_count === 1 ? '' : 's'} / ${r.interval_count} interval${r.interval_count === 1 ? '' : 's'}
+        ${r.estimated_next_need_date ? ` · Estimated next need: ~${escapeHtml(r.estimated_next_need_date)}` : ''}
+      </div>
+    </div>`).join('') : '<p class="methodology-note">No Stock Out history for this machine yet.</p>';
+}
+
 async function loadLookups(){
   const [categories, machines, departments, suppliers] = await Promise.all([
     fetch('/api/spare-parts/categories').then(r => r.json()),
@@ -434,7 +479,8 @@ document.getElementById('cPeriod').addEventListener('change', e => {
   document.getElementById('cToWrap').classList.toggle('hidden', !isCustom);
 });
 document.getElementById('applyBtn').addEventListener('click', loadReport);
-document.getElementById('applyFiltersBtn').addEventListener('click', loadReport);
+document.getElementById('applyFiltersBtn').addEventListener('click', () => { loadReport(); loadReplacementEstimates(); });
+document.getElementById('fMachine').addEventListener('change', loadReplacementEstimates);
 
 (async function init(){
   const s = await (await fetch('/api/session')).json();
@@ -449,6 +495,7 @@ document.getElementById('applyFiltersBtn').addEventListener('click', loadReport)
   renderHead();
   await loadLookups();
   await loadReport();
+  await loadReplacementEstimates();
 })();
 </script>
 </body>
