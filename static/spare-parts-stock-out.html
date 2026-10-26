@@ -96,8 +96,18 @@ function escapeHtml(s){
 let spareParts = [];
 let departments = [];
 let allMachines = [];
-let people = [];
 let businessToday = null;
+
+// Requested By / Approved By share ONE People memory, queried live from
+// the server on every keystroke (ranked exact > starts-with > word-start
+// > contains) — so a name typed moments ago under either field is already
+// suggestible, under either field, with no local cache to refresh.
+async function peopleSource(query){
+  const res = await fetch('/api/spare-parts/movements/people?' + new URLSearchParams({q: query}));
+  if(!res.ok) return [];
+  const names = await res.json();
+  return Array.isArray(names) ? names.map(n => ({id: n, name: n})) : [];
+}
 
 function todayStr(){ return businessToday || new Date().toISOString().slice(0,10); }
 
@@ -136,7 +146,6 @@ async function loadData(){
   spareParts = await (await fetch('/api/spare-parts')).json();
   departments = await (await fetch('/api/spare-parts/departments')).json();
   allMachines = await (await fetch('/api/spare-parts/machines')).json();
-  people = await (await fetch('/api/spare-parts/movements/people')).json();
   renderDepartmentOptions();
   renderMachineOptions();
 }
@@ -168,8 +177,8 @@ document.getElementById('submitBtn').addEventListener('click', async (event)=>{
     msg.textContent = 'Stock Out recorded successfully.'; msg.className = 'msg ok';
     SparePartsUI.notify(msg.textContent, 'success');
     document.getElementById('qtyInput').value = '';
-    document.getElementById('requestedByInput').value = '';
-    document.getElementById('approvedByInput').value = '';
+    requestedByAutocomplete.clear();
+    approvedByAutocomplete.clear();
     document.getElementById('remarksInput').value = '';
     await loadData();
     renderSpareContext();
@@ -195,11 +204,11 @@ document.getElementById('submitBtn').addEventListener('click', async (event)=>{
   // submitted, never a resolved id, so a name not in the list remains valid.
   requestedByAutocomplete = FilterAutocomplete.create({
     inputId:'requestedByInput', resultsId:'requestedByResults', onChange: ()=>{},
-    source: async q => people.filter(n => n.toLowerCase().includes(q.toLowerCase())).slice(0,20).map(n => ({id:n, name:n})),
+    source: peopleSource,
   });
   approvedByAutocomplete = FilterAutocomplete.create({
     inputId:'approvedByInput', resultsId:'approvedByResults', onChange: ()=>{},
-    source: async q => people.filter(n => n.toLowerCase().includes(q.toLowerCase())).slice(0,20).map(n => ({id:n, name:n})),
+    source: peopleSource,
   });
 })();
 </script>

@@ -171,8 +171,10 @@ def _enrich_with_names(rows):
 
 
 @spare_part_movements_bp.route("/people", methods=["GET"])
-@login_required
+@roles_required(ROLE_OPERATOR, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_SUPER_ADMIN)
 def people():
+    """Requested By / Approved By "People memory" — names only, never
+    financial data, restricted to the roles that actually use Stock Out."""
     return jsonify(svc.people_suggestions(request.args.get("q")))
 
 

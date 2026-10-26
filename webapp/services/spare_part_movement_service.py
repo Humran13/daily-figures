@@ -336,27 +336,50 @@ def movement_history_data(args):
 # Reuses existing data sources only — active app usernames plus whatever
 # free-text names have already been typed into the ledger. Never creates
 # a user account; free typing always remains valid regardless of whether
-# a name appears here.
+# a name appears here. Requested By and Approved By deliberately share
+# this ONE pool (a name typed under either field becomes suggestible
+# under both) — these are person-name suggestions, not role assignments.
 
-def people_suggestions(query=None):
+def people_suggestions(query=None, limit=15):
+    """
+    Shared "People memory" for Stock Out's Requested By / Approved By.
+    Sourced from active application usernames plus every historical
+    SparePartMovement.requested_by/approved_by value, REGARDLESS of
+    movement status — a voided Stock Out reverses the stock transaction,
+    it does not retroactively prove the named person never existed, so
+    voided rows remain a valid suggestion source here (unlike every
+    quantity/consumption aggregate elsewhere in this module, which
+    excludes them).
+
+    Deduplicated case/whitespace-insensitively (" Mr.  Nsereko " and
+    "mr. nsereko" are the same suggestion), keeping the first-seen
+    spelling as the display value — old movement rows are never rewritten.
+
+    With no query: returns the full deduplicated set, alphabetical,
+    capped at 50 (the existing contract GET .../people with no `q` has
+    always had). With a query: ranks via rank_suggestions() (exact >
+    starts-with > word-start > contains, case-insensitive) and caps at
+    `limit`, so a keystroke-driven autocomplete dropdown never dumps the
+    whole list.
+    """
     from webapp.models.user import User
-    names = set()
+    from webapp.services.spare_part_service import normalize_text, rank_suggestions
+
+    seen = {}
     for (username,) in db.session.query(User.username).filter_by(active=True).all():
-        names.add(username)
-    for (value,) in db.session.query(SparePartMovement.requested_by).filter(
-        SparePartMovement.requested_by.isnot(None)
-    ).distinct().all():
-        if value:
-            names.add(value)
-    for (value,) in db.session.query(SparePartMovement.approved_by).filter(
-        SparePartMovement.approved_by.isnot(None)
-    ).distinct().all():
-        if value:
-            names.add(value)
-    if query:
-        q = query.strip().lower()
-        names = {n for n in names if q in n.lower()}
-    return sorted(names)[:50]
+        display = normalize_text(username)
+        if display:
+            seen.setdefault(display.casefold(), display)
+    for column in (SparePartMovement.requested_by, SparePartMovement.approved_by):
+        for (value,) in db.session.query(column).filter(column.isnot(None)).distinct().all():
+            display = normalize_text(value)
+            if display:
+                seen.setdefault(display.casefold(), display)
+
+    names = list(seen.values())
+    if not query:
+        return sorted(names)[:50]
+    return rank_suggestions(names, query, limit=limit)
 
 
 MOST_ISSUED_PERIODS = {"30": 30, "90": 90, "180": 180, "365": 365, "all": None}
