@@ -105,7 +105,7 @@ def test_dashboard_cards_are_semantic_links_to_visible_filters(client, make_user
     assert "healthy:'Healthy Stock'" in html
     assert "low:'Low Stock'" in html
     assert "no_stock:'No Stock'" in html
-    assert "new URLSearchParams(window.location.search).get('stock')" in html
+    assert "const initialStock = initialParams.get('stock');" in html
     assert "setInventoryUrl(initialStock, 'replace')" in html
     assert "if(requestId !== inventoryRequestId) return;" in html
     assert "inventoryRequestId++;" in html
