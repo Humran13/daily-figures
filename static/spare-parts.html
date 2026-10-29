@@ -48,6 +48,11 @@
   .inventory-head{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin:18px 0 8px; }
   .inventory-head .section-title{ margin:0; }
   .clear-filter{ color:var(--teal); font-size:12px; }
+  .inventory-filters{ display:flex; gap:8px; margin:0 0 10px; flex-wrap:wrap; }
+  .inventory-filters input[type=text]{ flex:1 1 160px; min-width:120px; font-size:12px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font-family:inherit; }
+  .inventory-filters select{ flex:1 1 140px; min-width:120px; font-size:12px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:white; font-family:inherit; }
+  .inventory-filters .reset-filters{ flex:0 0 auto; font-size:12px; color:var(--teal); background:none; border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
+  @media (max-width:480px){ .inventory-filters input[type=text], .inventory-filters select{ flex:1 1 100%; } }
   .inventory-row{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; }
   .inventory-row strong{ overflow-wrap:anywhere; }
   .inventory-row .stock{ text-align:right; white-space:nowrap; font-weight:700; }
@@ -78,6 +83,11 @@
 
     <section id="inventory" class="hidden" aria-live="polite">
       <div class="inventory-head"><div class="section-title" id="inventoryTitle"></div><button class="clear-filter" type="button" id="clearInventoryFilter">Clear filter</button></div>
+      <div class="inventory-filters">
+        <input type="text" id="inventorySearch" placeholder="Search spare part..." aria-label="Search spare parts">
+        <select id="inventoryCategoryFilter" aria-label="Filter by category"><option value="">All Categories</option></select>
+        <button type="button" class="reset-filters" id="resetInventoryFilters">Reset</button>
+      </div>
       <div id="inventoryList"></div>
     </section>
 
@@ -138,16 +148,39 @@ async function loadMostIssued(days){
 }
 
 let selectedStockFilter = null;
+let selectedCategoryId = '';
+let searchText = '';
 let inventoryRequestId = 0;
+let inventorySearchDebounce = null;
 const STOCK_FILTER_LABELS = {healthy:'Healthy Stock', low:'Low Stock', no_stock:'No Stock'};
 
 function setInventoryUrl(stock, mode){
   const url = new URL(window.location.href);
   if(stock) url.searchParams.set('stock', stock); else url.searchParams.delete('stock');
+  if(stock && selectedCategoryId) url.searchParams.set('category_id', selectedCategoryId); else url.searchParams.delete('category_id');
+  if(stock && searchText) url.searchParams.set('q', searchText); else url.searchParams.delete('q');
   url.hash = stock ? '#inventory' : '';
-  const state = {stock: stock || null};
+  const state = {stock: stock || null, category_id: stock ? (selectedCategoryId || null) : null, q: stock ? (searchText || null) : null};
   if(mode === 'replace') history.replaceState(state, '', url);
   else history.pushState(state, '', url);
+}
+
+async function loadCategoriesOnce(){
+  const select = document.getElementById('inventoryCategoryFilter');
+  try{
+    const res = await fetch('/api/spare-parts/categories');
+    if(!res.ok) throw new Error('Unable to load categories.');
+    const categories = await res.json();
+    if(!Array.isArray(categories)) throw new Error('Unable to load categories.');
+    const keep = selectedCategoryId;
+    select.innerHTML = '<option value="">All Categories</option>' +
+      categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+    select.value = keep;
+    select.disabled = false;
+  }catch(err){
+    select.innerHTML = '<option value="">All Categories</option>';
+    select.disabled = true;
+  }
 }
 
 async function loadFilteredInventory(stock, options){
@@ -159,10 +192,15 @@ async function loadFilteredInventory(stock, options){
   const section = document.getElementById('inventory');
   document.getElementById('inventoryTitle').textContent = 'Inventory — ' + STOCK_FILTER_LABELS[stock];
   section.classList.remove('hidden');
+  document.getElementById('inventoryCategoryFilter').value = selectedCategoryId;
+  document.getElementById('inventorySearch').value = searchText;
   if(opts.updateUrl !== false) setInventoryUrl(stock, opts.urlMode);
 
   try{
-    const res = await fetch('/api/spare-parts?stock=' + encodeURIComponent(stock));
+    const params = new URLSearchParams({stock});
+    if(selectedCategoryId) params.set('category_id', selectedCategoryId);
+    if(searchText) params.set('q', searchText);
+    const res = await fetch('/api/spare-parts?' + params.toString());
     if(!res.ok) throw new Error('Unable to load inventory.');
     const parts = await res.json();
     if(!Array.isArray(parts)) throw new Error('Unable to load inventory.');
@@ -185,6 +223,10 @@ function clearInventoryFilter(options){
   const opts = options || {};
   inventoryRequestId++;
   selectedStockFilter = null;
+  selectedCategoryId = '';
+  searchText = '';
+  document.getElementById('inventoryCategoryFilter').value = '';
+  document.getElementById('inventorySearch').value = '';
   document.getElementById('inventory').classList.add('hidden');
   document.getElementById('inventoryList').innerHTML = '';
   document.querySelectorAll('[data-stock-filter]').forEach(card => card.classList.remove('active'));
@@ -199,19 +241,46 @@ function clearInventoryFilter(options){
   }
   await loadDashboard();
   await loadMostIssued(document.getElementById('mostIssuedPeriod').value);
+  loadCategoriesOnce();
   document.getElementById('mostIssuedPeriod').addEventListener('change', event => loadMostIssued(event.target.value));
   document.querySelectorAll('[data-stock-filter]').forEach(card => card.addEventListener('click', event => {
     event.preventDefault();
     loadFilteredInventory(card.dataset.stockFilter);
   }));
   document.getElementById('clearInventoryFilter').addEventListener('click', () => clearInventoryFilter());
-  window.addEventListener('popstate', event => {
-    const stock = event.state && event.state.stock;
-    if(stock) loadFilteredInventory(stock, {updateUrl:false});
-    else clearInventoryFilter({updateUrl:false});
+  document.getElementById('inventoryCategoryFilter').addEventListener('change', event => {
+    selectedCategoryId = event.target.value;
+    if(selectedStockFilter) loadFilteredInventory(selectedStockFilter, {urlMode:'replace'});
   });
-  const initialStock = new URLSearchParams(window.location.search).get('stock');
+  document.getElementById('inventorySearch').addEventListener('input', event => {
+    searchText = event.target.value.trim();
+    clearTimeout(inventorySearchDebounce);
+    inventorySearchDebounce = setTimeout(() => {
+      if(selectedStockFilter) loadFilteredInventory(selectedStockFilter, {urlMode:'replace'});
+    }, 250);
+  });
+  document.getElementById('resetInventoryFilters').addEventListener('click', () => {
+    selectedCategoryId = '';
+    searchText = '';
+    document.getElementById('inventoryCategoryFilter').value = '';
+    document.getElementById('inventorySearch').value = '';
+    if(selectedStockFilter) loadFilteredInventory(selectedStockFilter, {urlMode:'replace'});
+  });
+  window.addEventListener('popstate', event => {
+    const state = event.state || {};
+    if(state.stock){
+      selectedCategoryId = state.category_id || '';
+      searchText = state.q || '';
+      loadFilteredInventory(state.stock, {updateUrl:false});
+    } else {
+      clearInventoryFilter({updateUrl:false});
+    }
+  });
+  const initialParams = new URLSearchParams(window.location.search);
+  const initialStock = initialParams.get('stock');
   if(Object.prototype.hasOwnProperty.call(STOCK_FILTER_LABELS, initialStock)){
+    selectedCategoryId = initialParams.get('category_id') || '';
+    searchText = initialParams.get('q') || '';
     await loadFilteredInventory(initialStock, {updateUrl:false});
     // Give this first history entry a state too, so Back returns to the
     // URL-restored filter instead of clearing it.
