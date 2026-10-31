@@ -227,6 +227,14 @@ def stock_reconciliation(profile, business_date):
         # A baseline row of zero exists only to say "none carried"; it should
         # not clutter the driver's daily list.
         product_ids.update(line.product_id for line in baseline.stock_lines if line.base_unit_qty > 0)
+    # The salesperson declares the starting stock themselves on the day the
+    # vehicle balance starts.  From the next date the previous counted return
+    # is authoritative, so the starting point is never re-declared (and never
+    # duplicated) on a later day.
+    opening_locked = baseline is not None and baseline.effective_date != business_date
+    # A closed day is read-only: the starting stock may only be corrected while
+    # the day is open (reopening needs a Manager).
+    day_open = day is None or day.status != DAY_CLOSED
     # Only products that actually belong to this vehicle balance are shown:
     # opening stock carried from an earlier count, stock loaded today, a
     # recorded adjustment, a sale, or a closing count.  A driver must never be
@@ -265,6 +273,14 @@ def stock_reconciliation(profile, business_date):
             "supports_packs": rule.has_pack_tier,
             "opening_source": source,
             "opening_source_date": source_date,
+            "can_set_opening": day_open and source != "previous_closing" and not opening_locked,
+            "rule": {
+                "cartons_to_packs": rule.cartons_to_packs,
+                "packs_to_pieces": rule.packs_to_pieces,
+                "pieces_per_carton": rule.pieces_per_carton,
+                "pieces_per_pack": rule.pieces_per_pack,
+                "has_pack_tier": rule.has_pack_tier,
+            },
             "opening": quantity_dict(opening, rule),
             "dispatch_loaded": quantity_dict(added_dispatch, rule),
             "manual_adjustment": quantity_dict(added_adjustment, rule),
@@ -575,33 +591,53 @@ def _range_tender(profile_id, date_from, date_to):
     return cash, mobile
 
 
-def money_balance(profile_id, business_date, account):
+def money_anchor(profile_id, business_date, account):
+    """Where the running money balance starts, and how much it carried.
+
+    A declared starting point always wins.  When the salesperson has not
+    declared one yet, the books start at their first Sales Day carrying
+    nothing: Cash at Hand is derived from the day's own activity instead of
+    waiting for a Manager to unlock it.
+    """
     business_date = valid_date(business_date)
     baseline = baseline_for(profile_id, business_date)
-    if baseline is None:
+    if baseline is not None:
+        opening = baseline.opening_cash_ugx if account == "cash" else baseline.opening_mobile_money_ugx
+        return baseline.effective_date, int(opening or 0)
+    first_date = db.session.query(func.min(SalesDay.business_date)).filter(
+        SalesDay.sales_profile_id == profile_id, SalesDay.business_date <= business_date,
+    ).scalar()
+    if first_date is None:
+        return None, 0
+    return valid_date(first_date, "business_date"), 0
+
+
+def money_balance(profile_id, business_date, account):
+    business_date = valid_date(business_date)
+    start_date, opening = money_anchor(profile_id, business_date, account)
+    if start_date is None:
         return None
-    opening = baseline.opening_cash_ugx if account == "cash" else baseline.opening_mobile_money_ugx
-    cash_tender, mobile_tender = _range_tender(profile_id, baseline.effective_date, business_date)
+    cash_tender, mobile_tender = _range_tender(profile_id, start_date, business_date)
     tender = cash_tender if account == "cash" else mobile_tender
-    collections = _money_collections_between(profile_id, baseline.effective_date, business_date, account)
+    collections = _money_collections_between(profile_id, start_date, business_date, account)
     expenses = _sum(db.session.query(func.sum(SalesExpense.amount_ugx)).filter(
         SalesExpense.sales_profile_id == profile_id, SalesExpense.status == ACTIVE,
-        SalesExpense.business_date >= baseline.effective_date, SalesExpense.business_date <= business_date,
+        SalesExpense.business_date >= start_date, SalesExpense.business_date <= business_date,
         SalesExpense.payment_method == account,
     ))
     incoming = _sum(db.session.query(func.sum(SalesMoneyTransfer.amount_ugx)).filter(
         SalesMoneyTransfer.sales_profile_id == profile_id, SalesMoneyTransfer.status == ACTIVE,
-        SalesMoneyTransfer.business_date >= baseline.effective_date, SalesMoneyTransfer.business_date <= business_date,
+        SalesMoneyTransfer.business_date >= start_date, SalesMoneyTransfer.business_date <= business_date,
         SalesMoneyTransfer.to_account == account,
     ))
     outgoing = _sum(db.session.query(func.sum(SalesMoneyTransfer.amount_ugx)).filter(
         SalesMoneyTransfer.sales_profile_id == profile_id, SalesMoneyTransfer.status == ACTIVE,
-        SalesMoneyTransfer.business_date >= baseline.effective_date, SalesMoneyTransfer.business_date <= business_date,
+        SalesMoneyTransfer.business_date >= start_date, SalesMoneyTransfer.business_date <= business_date,
         SalesMoneyTransfer.from_account == account,
     ))
     adjustments = _sum(db.session.query(func.sum(SalesCashAdjustment.amount_delta_ugx)).filter(
         SalesCashAdjustment.sales_profile_id == profile_id,
-        SalesCashAdjustment.business_date >= baseline.effective_date,
+        SalesCashAdjustment.business_date >= start_date,
         SalesCashAdjustment.business_date <= business_date,
         SalesCashAdjustment.account == account,
     ))
@@ -616,6 +652,10 @@ def daily_summary(profile, business_date):
     total_sales = split["total_sales_ugx"]
     expenses = SalesExpense.query.filter_by(sales_profile_id=profile.id, business_date=business_date, status=ACTIVE).all()
     total_expenses = sum(e.amount_ugx for e in expenses)
+    # Only these two accounts exist, and an expense paid from one never touches
+    # the other.  Keeping them apart is what makes Cash at Hand correct.
+    cash_expenses = sum(e.amount_ugx for e in expenses if e.payment_method == "cash")
+    mobile_expenses = sum(e.amount_ugx for e in expenses if e.payment_method == "mobile_money")
     # Everything collected on this date that belongs to an earlier debt is
     # counted here, on the date it was actually received.
     cash_receipts = split["cash_from_sales_ugx"]
@@ -630,7 +670,33 @@ def daily_summary(profile, business_date):
     actual_mobile = day.actual_mobile_money_ugx if day else None
     stock = stock_reconciliation(profile, business_date)
     stock_variance = any(r["variance"] is not None and r["variance"]["base_unit_qty"] != 0 for r in stock)
-    baseline_required = baseline_for(profile.id, business_date) is None or any(r["opening_source"] == "required" for r in stock)
+    baseline = baseline_for(profile.id, business_date)
+    # The starting return is the salesperson's own entry, never an approval.
+    # This block only says whether there is still something for them to type;
+    # nothing in it blocks returns, sales, expenses or cash.
+    opening_required = baseline is None or any(r["opening"] is None for r in stock)
+    opening = {
+        "required": opening_required,
+        # A closed day is read-only for everyone: the starting stock can only be
+        # corrected while the day is still open (reopen needs a Manager).
+        "can_declare": (day is None or day.status != DAY_CLOSED) and (
+            baseline is None or baseline.effective_date == business_date),
+        "started_on": baseline.effective_date if baseline else None,
+        "unset_products": [r["product_name"] for r in stock if r["opening"] is None],
+    }
+    # One card per product: the price rows the salesperson already saved today.
+    # Daily screens read this instead of rebuilding totals on the client.
+    product_cards = {}
+    for invoice in invoices:
+        for line in invoice.lines:
+            card = product_cards.setdefault(
+                line.product_id, {"product_id": line.product_id, "rows": [], "card_total_ugx": 0})
+            card["rows"].append({
+                "quantity": line.quantity, "unit": line.sale_unit,
+                "base_unit_qty": line.base_unit_qty, "unit_price_ugx": line.unit_price_ugx,
+                "line_total_ugx": line.line_total_ugx,
+            })
+            card["card_total_ugx"] += line.line_total_ugx
     # Plain-language mismatch warnings: the driver should never have to read a
     # ledger, only "stock count says X, sales entered say Y".
     stock_warnings = [
@@ -710,13 +776,17 @@ def daily_summary(profile, business_date):
             "new_debt_ugx": new_credit, "new_customer_receivables_ugx": new_credit,
             "expected_cash_ugx": expected_cash, "actual_cash_ugx": actual_cash,
             "cash_variance_ugx": None if expected_cash is None or actual_cash is None else actual_cash - expected_cash,
+            "cash_at_hand_ugx": expected_cash,
+            "cash_expenses_ugx": cash_expenses, "mobile_money_expenses_ugx": mobile_expenses,
             "expected_mobile_money_ugx": expected_mobile, "actual_mobile_money_ugx": actual_mobile,
             "mobile_variance_ugx": None if expected_mobile is None or actual_mobile is None else actual_mobile - expected_mobile,
             "tender_exceeds_sales": split["exceeds_total_sales"],
             "mobile_money_recorded": split["mobile_money_recorded"],
         },
-        "baseline_required": baseline_required,
-        "needs_reconciliation": baseline_required or stock_variance,
+        "opening": opening,
+        "product_cards": [product_cards[r["product_id"]] for r in stock if r["product_id"] in product_cards],
+        "baseline_required": opening_required,
+        "needs_reconciliation": stock_variance,
         "expense_suggestions": expense_suggestions,
     }
 
@@ -944,10 +1014,16 @@ def set_closing_stock(day, payload, actor, elevated=False):
     base_qty = unit_to_base(payload.get("quantity"), payload.get("unit"), rule) if payload.get("quantity") else 0
     row = SalesVehicleClosingLine.query.filter_by(sales_day_id=day.id, product_id=product.id).first()
     before = None if row is None else {"base_unit_qty": row.base_unit_qty}
-    rec = next(r for r in stock_reconciliation(day.profile, day.business_date) if r["product_id"] == product.id)
+    rec = next((r for r in stock_reconciliation(day.profile, day.business_date)
+                if r["product_id"] == product.id), None)
+    if rec is None:
+        raise SalesError(f"{product.name} is not part of this vehicle's stock. "
+                         "Save its starting stock first.")
     available = rec["available"]["base_unit_qty"] if rec["available"] else None
     if available is None:
-        raise SalesError("A starting point is required for this salesperson before this date. Ask a Manager to set the opening returns.")
+        # The salesperson types the starting return themselves; nothing here
+        # needs a Manager's approval.
+        raise SalesError(f"Enter the starting stock for {product.name} first, then save today's return.")
     if base_qty > available:
         raise SalesError("Return today cannot exceed total stock.")
     if row is None:
@@ -971,10 +1047,198 @@ def set_closing_stock(day, payload, actor, elevated=False):
     return row
 
 
+def save_returns_today(day, lines, actor, elevated=False):
+    """Save today's counted return for several products in one action.
+
+    The daily screen counts the whole vehicle at once, so one click must be
+    able to record every line.  Each line still goes through the same
+    validation as a single save.
+    """
+    if not isinstance(lines, list) or not lines:
+        raise SalesError("Enter the return today for at least one product.")
+    saved = []
+    for item in lines:
+        if not isinstance(item, dict):
+            raise SalesError("Each return line needs a product and a quantity.")
+        saved.append(set_closing_stock(day, item, actor, elevated=elevated))
+    return saved
+
+
+def set_opening_return(profile, business_date, product_id, quantity, unit, actor):
+    """The salesperson's own starting stock, entered on the first day.
+
+    This is data entry, not an approval: whoever holds the stock declares what
+    they are starting with.  It is only allowed while no earlier day has
+    carried a counted return forward, because from then on the previous
+    closing is authoritative.
+    """
+    business_date = valid_date(business_date)
+    product = db.session.get(Product, product_id)
+    if product is None or not product.active:
+        raise SalesError("an active product is required")
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=business_date).first()
+    if day is None:
+        raise SalesError("Create the Sales Day first.")
+    if day.status == DAY_CLOSED:
+        raise SalesError("A closed Sales Day must be reopened before it can be edited")
+    baseline = baseline_for(profile.id, business_date)
+    if baseline is not None and baseline.effective_date != business_date:
+        raise SalesError(
+            f"The starting stock was declared on {baseline.effective_date} and carries forward. "
+            "Correct that day's counted return instead."
+        )
+    prior = (
+        db.session.query(SalesVehicleClosingLine.id)
+        .join(SalesDay, SalesDay.id == SalesVehicleClosingLine.sales_day_id)
+        .filter(
+            SalesDay.sales_profile_id == profile.id,
+            SalesDay.business_date < business_date,
+            SalesVehicleClosingLine.product_id == product.id,
+        )
+        .first()
+    )
+    if prior:
+        raise SalesError(f"{product.name} already carries a counted return forward from an earlier day.")
+    if recorded_quantities(profile.id, business_date).get(product.id, 0):
+        raise SalesError(f"Sales are already recorded for {product.name}. "
+                         "Void them before changing its starting stock.")
+    rule = _rule_for(product.id, business_date)
+    base_qty = 0 if quantity in (None, "", 0) else unit_to_base(quantity, unit, rule)
+    if baseline is None:
+        baseline = SalesBaseline(
+            sales_profile_id=profile.id, effective_date=business_date,
+            opening_cash_ugx=0, opening_mobile_money_ugx=0,
+            notes="Starting stock declared by the salesperson", created_by=actor.id,
+        )
+        db.session.add(baseline)
+        db.session.flush()
+    line = SalesOpeningStockLine.query.filter_by(baseline_id=baseline.id, product_id=product.id).first()
+    before = None if line is None else {"base_unit_qty": line.base_unit_qty}
+    if line is None:
+        line = SalesOpeningStockLine(baseline_id=baseline.id, product_id=product.id,
+                                     base_unit_qty=base_qty, packaging_rule_id=rule.id)
+        db.session.add(line)
+    else:
+        line.base_unit_qty = base_qty
+        line.packaging_rule_id = rule.id
+    db.session.flush()
+    record_audit(actor, "correct" if before else "create", "sales_opening_stock", line.id,
+                 before=before,
+                 after={"base_unit_qty": base_qty, "business_date": business_date,
+                        "entered_by_role": getattr(actor, "role", None)})
+    return line
+
+
+
+def product_sales_rows(profile_id, business_date, product_id):
+    """Active sale invoices for one date that price this product."""
+    return [
+        invoice for invoice in sale_invoices(profile_id, business_date)
+        if any(line.product_id == product_id for line in invoice.lines)
+    ]
+
+
+def save_product_sales(profile, business_date, product_id, rows, actor):
+    """Save one product's sales card as a set of price rows.
+
+    The card is authoritative for one product on one day.  It is replaced as a
+    whole, so re-saving the same numbers changes nothing and an edited card can
+    never be counted twice.  Quantities must add up to the stock sold exactly:
+    an under- or over-priced card is refused with the difference spelled out
+    rather than silently balanced.
+    """
+    business_date = valid_date(business_date)
+    product = db.session.get(Product, product_id)
+    if product is None or not product.active:
+        raise SalesError("an active product is required")
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=business_date).first()
+    if day is None:
+        raise SalesError("Create the Sales Day first.")
+    if day.status == DAY_CLOSED:
+        raise SalesError("A closed Sales Day must be reopened before it can be edited")
+    rec = next((r for r in stock_reconciliation(profile, business_date)
+                if r["product_id"] == product.id), None)
+    if rec is None:
+        raise SalesError(f"{product.name} is not part of this vehicle's stock for {business_date}.")
+    if rec["available"] is None:
+        raise SalesError(f"Save the starting stock for {product.name} first.")
+    if rec["derived_sold"] is None:
+        raise SalesError(f"Save the return today for {product.name} first, then its sold quantity is known.")
+    sold = rec["derived_sold"]["base_unit_qty"]
+    rule = (db.session.get(PackagingRule, rec["packaging_rule_id"])
+            if rec["packaging_rule_id"] else None) or _rule_for(product.id, business_date)
+    if not isinstance(rows, list):
+        raise SalesError("rows must be a list of price rows")
+    parsed = []
+    priced = 0
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            raise SalesError(f"Row {index} is not a valid price row.")
+        unit = item.get("unit")
+        if unit not in SALE_UNITS:
+            raise SalesError(f"Row {index}: unit must be one of {SALE_UNITS}.")
+        base_qty = unit_to_base(item.get("quantity"), unit, rule)
+        price = whole_ugx(item.get("unit_price_ugx"), f"Row {index} selling price")
+        if price <= 0:
+            raise SalesError(f"Row {index}: the selling price must be greater than zero.")
+        priced += base_qty
+        parsed.append({"product_id": product.id, "quantity": item.get("quantity"),
+                       "unit": unit, "unit_price_ugx": price})
+    if priced != sold:
+        if priced < sold:
+            raise SalesError(
+                f"{product.name}: the rows price {_quantity_label(priced, rule)} "
+                f"but {_quantity_label(sold, rule)} were sold. "
+                f"Add another row for the remaining {_quantity_label(sold - priced, rule)}."
+            )
+        raise SalesError(
+            f"{product.name}: the rows price {_quantity_label(priced, rule)} "
+            f"but only {_quantity_label(sold, rule)} were sold. "
+            f"Remove {_quantity_label(priced - sold, rule)}."
+        )
+    existing = product_sales_rows(profile.id, business_date, product.id)
+    signature = [(p["quantity"], p["unit"], p["unit_price_ugx"]) for p in parsed]
+    if len(existing) == 1:
+        current = [(line.quantity, line.sale_unit, line.unit_price_ugx) for line in existing[0].lines]
+        if current == signature:
+            return existing[0], "unchanged"
+    for invoice in existing:
+        if any(line.product_id != product.id for line in invoice.lines):
+            raise SalesError(
+                f"{product.name}: sale {invoice.reference} also prices another product. "
+                "Void that sale first, then save this product's card."
+            )
+        void_record(invoice, actor, f"Replaced by the {product.name} sales card for {business_date}")
+    if not parsed:
+        db.session.flush()
+        record_audit(actor, "update", "sales_card", day.id,
+                     before={"product_id": product.id, "business_date": business_date},
+                     after={"product_id": product.id, "business_date": business_date, "rows": []})
+        return None, "cleared"
+    invoice = SalesInvoice(
+        reference=f"SAL-{uuid4().hex[:10].upper()}", sales_profile_id=profile.id,
+        business_date=business_date, notes=f"{product.name} sales card",
+        idempotency_key=f"card-{profile.id}-{business_date}-{product.id}-{uuid4().hex[:8]}",
+        created_by=actor.id, is_opening_receivable=False,
+    )
+    db.session.add(invoice)
+    db.session.flush()
+    for p in parsed:
+        base_qty = unit_to_base(p["quantity"], p["unit"], rule)
+        invoice.lines.append(SalesInvoiceLine(
+            product_id=product.id, quantity=p["quantity"], sale_unit=p["unit"],
+            base_unit_qty=base_qty, packaging_rule_id=rule.id,
+            unit_price_ugx=p["unit_price_ugx"], line_total_ugx=p["quantity"] * p["unit_price_ugx"],
+        ))
+    db.session.flush()
+    record_audit(actor, "create", "sales_card", invoice.id,
+                 after={"product_id": product.id, "business_date": business_date, "rows": parsed,
+                        "card_total_ugx": invoice_total(invoice)})
+    return invoice, "created"
+
+
 def close_day(day, actor, override_reason=None, elevated=False):
     summary = daily_summary(day.profile, day.business_date)
-    if summary["baseline_required"]:
-        raise SalesError("A starting point is required for this salesperson before this date. Ask a Manager to set the opening returns.")
     uncounted = [r for r in summary["stock"] if r["closing"] is None]
     if uncounted:
         raise SalesError(f"Enter the return today for {uncounted[0]['product_name']} before closing.")

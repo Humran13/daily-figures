@@ -624,7 +624,117 @@ def test_stock_cycle_counts_returned_stock_and_shows_mismatch(client, sales_setu
     assert compact["opening"]["cartons"] == 40
 
 
-def test_vehicle_return_writes_no_warehouse_return_and_new_products_start_at_zero(client, sales_setup):
+def _declare_opening(client, profile_id, lines, date="2026-10-30"):
+    return client.put(f"/api/sales/days/{date}/opening-stock",
+                      json={"sales_profile_id": profile_id, "lines": lines})
+
+
+def _save_returns(client, profile_id, lines, date="2026-10-30"):
+    return client.put(f"/api/sales/days/{date}/returns",
+                      json={"sales_profile_id": profile_id, "lines": lines})
+
+
+def _save_card(client, profile_id, product_id, rows, date="2026-10-30"):
+    return client.put(f"/api/sales/days/{date}/products/{product_id}/sales",
+                      json={"sales_profile_id": profile_id, "rows": rows})
+
+
+def _day_summary(client, profile_id, date="2026-10-30"):
+    return client.get(f"/api/sales/days/{date}?sales_profile_id={profile_id}").get_json()
+
+
+def _attach_recipient(profile, recipient_id):
+    """Give a second salesperson the same vehicle so dispatched stock appears."""
+    profile.recipient_customer_id = recipient_id
+    db.session.commit()
+
+
+def test_sales_cards_reconcile_oct_30_exact_figures_with_mobile_money(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    saved = _save_returns(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 40, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 5, "unit": "carton"},
+    ])
+    assert saved.status_code == 200, saved.get_json()
+
+    compact_card = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000},
+        {"quantity": 10, "unit": "carton", "unit_price_ugx": 80_000},
+    ])
+    assert compact_card.status_code == 200, compact_card.get_json()
+    napkin_card = _save_card(client, s["profile"].id, s["napkin"].id, [
+        {"quantity": 20, "unit": "carton", "unit_price_ugx": 103_000},
+        {"quantity": 5, "unit": "carton", "unit_price_ugx": 104_000},
+    ])
+    assert napkin_card.status_code == 200, napkin_card.get_json()
+
+    for description, amount in (("Lunch", 10_000), ("Fahad", 20_000), ("Breakfast", 10_000)):
+        assert _cash_expense(client, s["profile"].id, description, amount).status_code == 201
+    assert client.post("/api/sales/expenses", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-30", "description": "Data bundle",
+        "amount_ugx": 15_000, "payment_method": "mobile_money", "idempotency_key": str(uuid4()),
+    }).status_code == 201
+    split = client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "mobile_money_from_sales_ugx": 2_000_000})
+    assert split.status_code == 200, split.get_json()
+
+    summary = _day_summary(client, s["profile"].id)
+    totals = summary["totals"]
+    assert totals["total_sales_ugx"] == 11_280_000
+    assert totals["mobile_money_from_sales_ugx"] == 2_000_000
+    assert totals["cash_from_sales_ugx"] == 9_280_000
+    assert totals["new_debt_ugx"] == 0
+    assert totals["cash_expenses_ugx"] == 40_000
+    assert totals["mobile_money_expenses_ugx"] == 15_000
+    assert totals["cash_at_hand_ugx"] == 9_240_000
+    assert totals["expected_mobile_money_ugx"] == 1_985_000
+    assert totals["total_expenses_ugx"] == 55_000
+    assert summary["needs_reconciliation"] is False
+    compact = next(r for r in summary["stock"] if r["product_id"] == s["compact"].id)
+    napkin = next(r for r in summary["stock"] if r["product_id"] == s["napkin"].id)
+    assert compact["derived_sold"]["cartons"] == compact["recorded_sold"]["cartons"] == 110
+    assert napkin["derived_sold"]["cartons"] == napkin["recorded_sold"]["cartons"] == 25
+    cards = {card["product_id"]: card for card in summary["product_cards"]}
+    assert cards[s["compact"].id]["card_total_ugx"] == 8_700_000
+    assert cards[s["napkin"].id]["card_total_ugx"] == 2_580_000
+    assert len(cards[s["compact"].id]["rows"]) == 2
+
+    counted = client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "actual_cash_count_ugx": 9_240_000,
+        "actual_mobile_money_ugx": 1_985_000})
+    assert counted.status_code == 200
+    closed = client.post("/api/sales/days/2026-10-30/close", json={"sales_profile_id": s["profile"].id})
+    assert closed.status_code == 200, closed.get_json()
+
+
+def test_salesperson_declares_starting_stock_without_a_manager(client, sales_setup):
+    s = sales_setup; _login(client, s["other"])
+    _attach_recipient(s["other_profile"], s["profile"].recipient_customer_id)
+    _open_day(client, s["other_profile"].id)
+
+    start = _day_summary(client, s["other_profile"].id)
+    assert start["baseline_required"] is True
+    assert start["opening"]["can_declare"] is True
+    assert set(start["opening"]["unset_products"]) == {"Compact Standard", "Napkin Standard"}
+    assert start["totals"]["cash_at_hand_ugx"] == 0
+
+    response = _declare_opening(client, s["other_profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 50, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 10, "unit": "carton"},
+    ])
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    compact = next(r for r in body["stock"] if r["product_id"] == s["compact"].id)
+    assert compact["opening"]["cartons"] == 50
+    assert compact["available"]["cartons"] == 150
+    assert compact["can_set_opening"] is True  # same-day correction stays possible
+    assert body["opening"]["required"] is False
+    assert body["opening"]["started_on"] == "2026-10-30"
+    assert SalesBaseline.query.filter_by(sales_profile_id=s["other_profile"].id).count() == 1
+    audited = AuditLog.query.filter_by(entity_type="sales_opening_stock").count()
+    assert audited == 2
+
     s = sales_setup; _login(client, s["operator"])
     _open_day(client, s["profile"].id)
     customers_before = Customer.query.count()
@@ -665,3 +775,403 @@ def test_vehicle_return_writes_no_warehouse_return_and_new_products_start_at_zer
     assert response.status_code == 200, response.get_json()
     row = next(r for r in response.get_json()["stock"] if r["product_id"] == extra.id)
     assert row["derived_sold"]["cartons"] == 6
+
+
+def test_operator_balances_the_whole_day_without_a_manager(client, sales_setup):
+    s = sales_setup; _login(client, s["other"])
+    _attach_recipient(s["other_profile"], s["profile"].recipient_customer_id)
+    _open_day(client, s["other_profile"].id)
+    pid = s["other_profile"].id
+
+    early_return = _save_returns(client, pid, [{"product_id": s["compact"].id, "quantity": 40, "unit": "carton"}])
+    assert early_return.status_code == 400
+    assert "starting stock" in early_return.get_json()["error"].lower()
+    early_card = _save_card(client, pid, s["compact"].id, [{"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    assert early_card.status_code == 400
+    assert "starting stock" in early_card.get_json()["error"].lower()
+
+    declared = _declare_opening(client, pid, [
+        {"product_id": s["compact"].id, "quantity": 50, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 10, "unit": "carton"},
+    ])
+    assert declared.status_code == 200, declared.get_json()
+    late_card = _save_card(client, pid, s["compact"].id, [{"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    assert late_card.status_code == 400
+    assert "return today" in late_card.get_json()["error"].lower()
+
+    assert _save_returns(client, pid, [
+        {"product_id": s["compact"].id, "quantity": 40, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 5, "unit": "carton"},
+    ]).status_code == 200
+    assert _save_card(client, pid, s["compact"].id, [
+        {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000},
+        {"quantity": 10, "unit": "carton", "unit_price_ugx": 80_000},
+    ]).status_code == 200
+    assert _save_card(client, pid, s["napkin"].id, [
+        {"quantity": 20, "unit": "carton", "unit_price_ugx": 103_000},
+        {"quantity": 5, "unit": "carton", "unit_price_ugx": 104_000},
+    ]).status_code == 200
+    for description, amount in (("Lunch", 10_000), ("Fahad", 20_000), ("Breakfast", 10_000)):
+        assert _cash_expense(client, pid, description, amount).status_code == 201
+    assert client.post("/api/sales/expenses", json={
+        "sales_profile_id": pid, "business_date": "2026-10-30", "description": "Data bundle",
+        "amount_ugx": 15_000, "payment_method": "mobile_money", "idempotency_key": str(uuid4()),
+    }).status_code == 201
+    assert client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": pid, "mobile_money_from_sales_ugx": 2_000_000}).status_code == 200
+
+    summary = _day_summary(client, pid)
+    totals = summary["totals"]
+    assert totals["total_sales_ugx"] == 11_280_000
+    assert totals["cash_at_hand_ugx"] == 9_240_000
+    assert totals["expected_mobile_money_ugx"] == 1_985_000
+    assert summary["needs_reconciliation"] is False
+    assert summary["opening"]["required"] is False
+
+    assert client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": pid, "actual_cash_count_ugx": 9_240_000,
+        "actual_mobile_money_ugx": 1_985_000}).status_code == 200
+    closed = client.post("/api/sales/days/2026-10-30/close", json={"sales_profile_id": pid})
+    assert closed.status_code == 200, closed.get_json()
+    assert closed.get_json()["day"]["status"] == "closed"
+    reopened = client.post("/api/sales/days/2026-10-30/reopen", json={"sales_profile_id": pid})
+    assert reopened.status_code == 403
+    after = _day_summary(client, pid)
+    assert after["opening"]["can_declare"] is False
+    assert all(r["can_set_opening"] is False for r in after["stock"])
+
+
+def test_declared_starting_stock_carries_forward_to_the_next_day(client, sales_setup):
+    s = sales_setup; _login(client, s["other"])
+    _attach_recipient(s["other_profile"], s["profile"].recipient_customer_id)
+    _open_day(client, s["other_profile"].id)
+    pid = s["other_profile"].id
+    _declare_opening(client, pid, [
+        {"product_id": s["compact"].id, "quantity": 50, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 10, "unit": "carton"},
+    ])
+    _save_returns(client, pid, [
+        {"product_id": s["compact"].id, "quantity": 40, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 5, "unit": "carton"},
+    ])
+    assert _open_day(client, pid, date="2026-10-31").status_code == 201
+    nxt = _day_summary(client, pid, date="2026-10-31")
+    compact = next(r for r in nxt["stock"] if r["product_id"] == s["compact"].id)
+    assert compact["opening"]["cartons"] == 40
+    assert compact["opening_source"] == "previous_closing"
+    assert compact["can_set_opening"] is False
+    assert compact["closing"] is None
+    assert nxt["opening"]["started_on"] == "2026-10-30"
+    assert nxt["opening"]["unset_products"] == []
+
+
+
+def test_starting_stock_is_refused_once_sales_exist_and_allows_a_same_day_correction(client, sales_setup):
+    s = sales_setup; _login(client, s["other"])
+    _attach_recipient(s["other_profile"], s["profile"].recipient_customer_id)
+    _open_day(client, s["other_profile"].id)
+    pid = s["other_profile"].id
+    _declare_opening(client, pid, [
+        {"product_id": s["compact"].id, "quantity": 50, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 10, "unit": "carton"},
+    ])
+    assert _post_plain_sale(client, pid, s["compact"].id, 1, 7_900_000).status_code == 201
+    sold = _declare_opening(client, pid, [{"product_id": s["compact"].id, "quantity": 55, "unit": "carton"}])
+    assert sold.status_code == 400
+    assert "Sales are already recorded" in sold.get_json()["error"]
+
+    _save_returns(client, pid, [{"product_id": s["napkin"].id, "quantity": 5, "unit": "carton"}])
+    corrected = _declare_opening(client, pid, [{"product_id": s["napkin"].id, "quantity": 15, "unit": "carton"}])
+    assert corrected.status_code == 200
+    row = next(r for r in corrected.get_json()["stock"] if r["product_id"] == s["napkin"].id)
+    # A same-day correction is allowed and the sold quantity follows it exactly.
+    assert row["opening"]["cartons"] == 15
+    assert row["derived_sold"]["base_unit_qty"] == 3500 - 500
+
+
+def test_starting_stock_is_refused_on_a_day_after_the_declaration_day(client, sales_setup):
+    s = sales_setup; _login(client, s["other"])
+    _attach_recipient(s["other_profile"], s["profile"].recipient_customer_id)
+    _open_day(client, s["other_profile"].id)
+    pid = s["other_profile"].id
+    _declare_opening(client, pid, [{"product_id": s["compact"].id, "quantity": 50, "unit": "carton"}])
+    _open_day(client, pid, date="2026-10-31")
+    refused = _declare_opening(client, pid, [{"product_id": s["compact"].id, "quantity": 9, "unit": "carton"}],
+                               date="2026-10-31")
+    assert refused.status_code == 400
+    assert "declared on 2026-10-30" in refused.get_json()["error"]
+
+
+def test_starting_stock_needs_a_day_and_a_real_product(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    missing_day = _declare_opening(client, s["profile"].id,
+                                   [{"product_id": s["compact"].id, "quantity": 1, "unit": "carton"}],
+                                   date="2026-11-05")
+    assert missing_day.status_code == 400
+    assert "Create the Sales Day first" in missing_day.get_json()["error"]
+    _open_day(client, s["profile"].id)
+    empty = _declare_opening(client, s["profile"].id, [])
+    assert empty.status_code == 400
+    assert "at least one product" in empty.get_json()["error"]
+    bad_product = _declare_opening(client, s["profile"].id,
+                                   [{"product_id": 99_999, "quantity": 1, "unit": "carton"}])
+    assert bad_product.status_code == 400
+    assert "active product" in bad_product.get_json()["error"]
+    bad_qty = _declare_opening(client, s["profile"].id,
+                               [{"product_id": s["compact"].id, "quantity": "lots", "unit": "carton"}])
+    assert bad_qty.status_code == 400
+    assert "positive whole number" in bad_qty.get_json()["error"]
+    bad_unit = _declare_opening(client, s["profile"].id,
+                                [{"product_id": s["compact"].id, "quantity": 1, "unit": "bag"}])
+    assert bad_unit.status_code == 400
+    assert "unit must be one of" in bad_unit.get_json()["error"]
+
+
+
+
+def test_returns_save_counts_every_product_in_one_action(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    body = _save_returns(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 40, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 2, "unit": "pack"},
+    ])
+    assert body.status_code == 200, body.get_json()
+    stock = {r["product_id"]: r for r in body.get_json()["stock"]}
+    assert stock[s["compact"].id]["closing"]["cartons"] == 40
+    assert stock[s["napkin"].id]["closing"]["packs"] == 2
+    assert stock[s["compact"].id]["derived_sold"]["cartons"] == 110
+    assert stock[s["napkin"].id]["derived_sold"]["base_unit_qty"] == 3000 - 20
+
+
+def test_returns_save_rejects_bad_and_excessive_lines(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    empty = _save_returns(client, s["profile"].id, [])
+    assert empty.status_code == 400
+    assert "at least one product" in empty.get_json()["error"]
+    foreign = _save_returns(client, s["profile"].id, [{"product_id": 98_765, "quantity": 1, "unit": "carton"}])
+    assert foreign.status_code == 400
+    assert "product not found" in foreign.get_json()["error"]
+    stranger = Product(name="Stranger Product", display_order=9, active=True)
+    db.session.add(stranger); db.session.flush()
+    db.session.add(PackagingRule(product_id=stranger.id, cartons_to_packs=10, packs_to_pieces=10,
+                                 effective_from=datetime(2026, 1, 1), created_by=s["manager"].id))
+    db.session.commit()
+    outside = _save_returns(client, s["profile"].id, [{"product_id": stranger.id, "quantity": 1, "unit": "carton"}])
+    assert outside.status_code == 400
+    assert "not part of this vehicle" in outside.get_json()["error"]
+    too_much = _save_returns(client, s["profile"].id, [{"product_id": s["compact"].id, "quantity": 151, "unit": "carton"}])
+    assert too_much.status_code == 400
+    assert "cannot exceed" in too_much.get_json()["error"].lower()
+
+
+def test_returns_and_starting_stock_are_read_only_on_a_closed_day(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    _save_returns(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 40, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 5, "unit": "carton"},
+    ])
+    _save_card(client, s["profile"].id, s["compact"].id, [{"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    _save_card(client, s["profile"].id, s["napkin"].id, [{"quantity": 25, "unit": "carton", "unit_price_ugx": 103_000}])
+    client.patch("/api/sales/days/2026-10-30", json={"sales_profile_id": s["profile"].id,
+                                                     "actual_cash_count_ugx": 11_280_000})
+    assert client.post("/api/sales/days/2026-10-30/close",
+                       json={"sales_profile_id": s["profile"].id}).status_code == 200
+    blocked_returns = _save_returns(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 41, "unit": "carton"}])
+    assert blocked_returns.status_code == 400
+    assert "closed Sales Day" in blocked_returns.get_json()["error"]
+    blocked_opening = _declare_opening(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 51, "unit": "carton"}])
+    assert blocked_opening.status_code == 400
+    assert "closed Sales Day" in blocked_opening.get_json()["error"]
+    blocked_card = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    assert blocked_card.status_code == 400
+    assert "closed Sales Day" in blocked_card.get_json()["error"]
+
+
+def _card_ready(client, s):
+    """Open the day with a counted return so a sales card can be saved."""
+    _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    _save_returns(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 40, "unit": "carton"},
+        {"product_id": s["napkin"].id, "quantity": 5, "unit": "carton"},
+    ])
+
+
+def test_card_saves_rows_and_reports_what_it_did(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    first = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000},
+        {"quantity": 10, "unit": "carton", "unit_price_ugx": 80_000},
+    ])
+    assert first.status_code == 200, first.get_json()
+    assert first.get_json()["card"]["action"] == "created"
+    invoice_id = first.get_json()["card"]["invoice_id"]
+    assert invoice_id is not None
+
+    again = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000},
+        {"quantity": 10, "unit": "carton", "unit_price_ugx": 80_000},
+    ])
+    assert again.get_json()["card"]["action"] == "unchanged"
+    assert again.get_json()["card"]["invoice_id"] == invoice_id
+    assert SalesInvoice.query.filter_by(sales_profile_id=s["profile"].id,
+                                        status=sales_service.ACTIVE).count() == 1
+    card = next(c for c in again.get_json()["product_cards"] if c["product_id"] == s["compact"].id)
+    assert card["card_total_ugx"] == 8_700_000
+    assert len(card["rows"]) == 2
+
+
+def test_card_replaces_its_old_rows_without_double_counting(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000},
+        {"quantity": 10, "unit": "carton", "unit_price_ugx": 80_000},
+    ])
+    replaced = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000},
+    ])
+    assert replaced.status_code == 200, replaced.get_json()
+    assert replaced.get_json()["card"]["action"] == "created"
+    assert replaced.get_json()["totals"]["total_sales_ugx"] == 8_690_000
+    statuses = sorted(i.status for i in SalesInvoice.query.filter_by(sales_profile_id=s["profile"].id))
+    assert statuses == sorted([sales_service.ACTIVE, sales_service.VOID])
+
+
+def test_card_refuses_under_and_over_priced_rows(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    under = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000}])
+    assert under.status_code == 400
+    assert "Add another row for the remaining" in under.get_json()["error"]
+    over = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 120, "unit": "carton", "unit_price_ugx": 79_000}])
+    assert over.status_code == 400
+    assert "Remove" in over.get_json()["error"]
+
+
+def test_card_rejects_bad_rows(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    url = f"/api/sales/days/2026-10-30/products/{s['compact'].id}/sales"
+    assert client.put(url, json={"sales_profile_id": s["profile"].id, "rows": "two"}).status_code == 400
+    assert "rows must be a list" in client.put(url, json={
+        "sales_profile_id": s["profile"].id, "rows": "two"}).get_json()["error"]
+    not_dict = client.put(url, json={"sales_profile_id": s["profile"].id, "rows": [1]})
+    assert not_dict.status_code == 400
+    assert "not a valid price row" in not_dict.get_json()["error"]
+    bad_unit = client.put(url, json={"sales_profile_id": s["profile"].id, "rows": [
+        {"quantity": 1, "unit": "bag", "unit_price_ugx": 1_000}]})
+    assert bad_unit.status_code == 400
+    assert "unit must be one of" in bad_unit.get_json()["error"]
+    no_price = client.put(url, json={"sales_profile_id": s["profile"].id, "rows": [
+        {"quantity": 1, "unit": "carton", "unit_price_ugx": 0}]})
+    assert no_price.status_code == 400
+    assert "greater than zero" in no_price.get_json()["error"]
+    no_qty = client.put(url, json={"sales_profile_id": s["profile"].id, "rows": [
+        {"quantity": 0, "unit": "carton", "unit_price_ugx": 1_000}]})
+    assert no_qty.status_code == 400
+    assert "positive whole number" in no_qty.get_json()["error"]
+
+
+
+def test_card_clear_is_refused_while_stock_still_says_sold(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    refused = _save_card(client, s["profile"].id, s["compact"].id, [])
+    assert refused.status_code == 400
+    assert "Add another row for the remaining" in refused.get_json()["error"]
+    # Returning the whole load leaves nothing sold, so the card can be emptied.
+    _save_returns(client, s["profile"].id, [{"product_id": s["compact"].id, "quantity": 150, "unit": "carton"}])
+    cleared = _save_card(client, s["profile"].id, s["compact"].id, [])
+    assert cleared.status_code == 200, cleared.get_json()
+    assert cleared.get_json()["card"]["action"] == "cleared"
+    body = cleared.get_json()
+    assert body["totals"]["total_sales_ugx"] == 0
+    row = next(r for r in body["stock"] if r["product_id"] == s["compact"].id)
+    assert row["derived_sold"]["base_unit_qty"] == 0
+    assert row["variance"]["base_unit_qty"] == 0
+    assert SalesInvoice.query.filter_by(sales_profile_id=s["profile"].id,
+                                        status=sales_service.ACTIVE).count() == 0
+
+
+def test_card_refuses_an_invoice_that_also_prices_another_product(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    mixed = client.post("/api/sales/invoices", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-30", "idempotency_key": str(uuid4()),
+        "lines": [
+            {"product_id": s["compact"].id, "quantity": 10, "unit": "carton", "unit_price_ugx": 79_000},
+            {"product_id": s["napkin"].id, "quantity": 5, "unit": "carton", "unit_price_ugx": 103_000},
+        ],
+    })
+    assert mixed.status_code == 201, mixed.get_json()
+    refused = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    assert refused.status_code == 400
+    assert "also prices another product" in refused.get_json()["error"]
+    assert "Void that sale first" in refused.get_json()["error"]
+
+
+def test_card_cannot_be_saved_on_another_salespersons_profile(client, sales_setup):
+    s = sales_setup
+    _login(client, s["other"])
+    _open_day(client, s["other_profile"].id)
+    response = _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 1, "unit": "carton", "unit_price_ugx": 1_000}])
+    assert response.status_code in (403, 404)
+    day = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={s['profile'].id}")
+    assert day.status_code in (403, 404)
+
+
+def test_viewer_cannot_write_stock_money_or_cards(client, sales_setup, make_user):
+    s = sales_setup
+    viewer = make_user("sales-viewer", "password123", ROLE_VIEWER)
+    _grant(viewer)
+    _login(client, viewer)
+    assert _save_returns(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 1, "unit": "carton"}]).status_code == 403
+    assert _declare_opening(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "quantity": 1, "unit": "carton"}]).status_code == 403
+    assert _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 1, "unit": "carton", "unit_price_ugx": 1_000}]).status_code == 403
+
+
+def test_operator_voids_own_expense_but_not_another_profiles(client, sales_setup):
+    s = sales_setup
+    _card_ready(client, s)
+    own = _cash_expense(client, s["profile"].id, "Lunch", 10_000)
+    assert own.status_code == 201
+    expense_id = own.get_json()["id"]
+    voided = client.post(f"/api/sales/void/expense/{expense_id}", json={"reason": "Wrong amount"})
+    assert voided.status_code == 200, voided.get_json()
+    assert _day_summary(client, s["profile"].id)["totals"]["cash_expenses_ugx"] == 0
+
+    foreign = _cash_expense(client, s["profile"].id, "Fuel", 20_000)
+    foreign_id = foreign.get_json()["id"]
+    _login(client, s["other"])
+    _open_day(client, s["other_profile"].id)
+    blocked = client.post(f"/api/sales/void/expense/{foreign_id}", json={"reason": "Not mine"})
+    assert blocked.status_code in (403, 404)
+    _login(client, s["operator"])
+    assert _day_summary(client, s["profile"].id)["totals"]["cash_expenses_ugx"] == 20_000
+
+
+def test_mobile_money_and_debt_split_cannot_exceed_sales(client, sales_setup):
+    s = sales_setup; _card_ready(client, s)
+    _save_card(client, s["profile"].id, s["compact"].id, [
+        {"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}])
+    too_much = client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "mobile_money_from_sales_ugx": 8_690_001})
+    assert too_much.status_code == 400
+    assert "cannot exceed Total Sales" in too_much.get_json()["error"]
+    exactly = client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "mobile_money_from_sales_ugx": 8_690_000})
+    assert exactly.status_code == 200
+    assert exactly.get_json()["totals"]["cash_from_sales_ugx"] == 0
+    assert exactly.get_json()["totals"]["cash_at_hand_ugx"] == 0
+

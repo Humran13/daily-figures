@@ -20,55 +20,50 @@
   </nav>
 
   <section id="dailyView" class="view">
-    <div id="baselineWarning" class="warning hidden">Starting point required. A Manager or Super Administrator must set a trusted opening balance.</div>
+    <div id="openingNotice" class="warning hidden"></div>
 
     <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
       <p class="hint">Previous Return + Stock Added = Total Stock. Total Stock − Return Today = Sold. A return here is unsold stock still in the vehicle, never a warehouse return.</p>
       <div id="stockList" class="stack empty">Open a day to begin.</div>
+      <div id="declareForm" class="starting-form hidden">
+        <span class="start-label">Carrying a product that is not listed? Declare it here</span>
+        <select id="declareProduct" aria-label="Product to declare"></select>
+        <input id="declareQty" type="number" min="0" inputmode="numeric" placeholder="Qty" aria-label="Starting quantity">
+        <select id="declareUnit" aria-label="Starting unit"><option value="carton">Cartons</option><option value="piece">Pieces</option></select>
+        <button id="declareOpening">Add to vehicle stock</button>
+      </div>
       <div id="stockWarnings" class="warning hidden"></div>
+      <div class="actions sticky-actions">
+        <button id="saveOpening">Save starting stock</button>
+        <button id="saveReturns" class="primary">Save returns today</button>
+      </div>
     </section>
 
-    <section class="card"><h2><span class="step">2</span> Sales value</h2>
-      <p class="hint">Enter what was sold and its selling price. No customer is needed. The same product can be added again at a different price.</p>
-      <div class="form-grid">
-        <label>Product<select id="saleProduct"></select></label>
-        <label>Quantity<input id="saleQty" type="number" min="1" inputmode="numeric"></label>
-        <label>Unit<select id="saleUnit"><option value="carton">Carton</option><option value="pack">Pack</option><option value="piece">Piece</option></select></label>
-        <label>Selling Price per unit (UGX)<input id="salePrice" type="number" min="0" step="1" inputmode="numeric"></label>
-      </div>
-      <p class="hint" id="saleLineTotal">Value: —</p>
-      <button id="addSale" class="primary">Add sale</button>
+    <section class="card"><h2><span class="step">2</span> Sold today</h2>
+      <p class="hint">Your stock count decides how much was sold. You never type it twice.</p>
+      <div id="soldList" class="stack empty">Open a day to see what was sold.</div>
+    </section>
+
+    <section class="card"><h2><span class="step">3</span> Sales cards</h2>
+      <p class="hint">One card per product. Add a row for every price you sold at — the rows must add up to what was sold. No customer is needed.</p>
+      <div id="cardList" class="stack empty">Open a day to price today's sales.</div>
       <div id="invoiceList" class="stack"></div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">3</span> Money balance</h2>
+    <section class="card money-card"><h2><span class="step">4</span> Total sales today</h2>
       <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
-      <div class="form-grid">
-        <label>Mobile Money from today's sales<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
-        <button id="saveMobileSplit">Save Mobile Money</button>
-      </div>
       <p class="hint" id="tenderHint"></p>
-      <h3 class="block-title">Cash</h3>
-      <div class="cash-focus">
-        <div><span>Cash Expected</span><strong id="expectedCashBig">—</strong></div>
-        <div><span>Cash Counted</span><input id="actualCash" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your cash"></div>
-        <div><span>Difference</span><strong id="cashDifferenceBig">—</strong></div>
-      </div>
-      <h3 class="block-title">Mobile Money</h3>
-      <div class="cash-focus mobile-focus">
-        <div><span>Mobile Money Expected</span><strong id="expectedMobileBig">—</strong></div>
-        <div><span>Mobile Money Counted</span><input id="actualMobile" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your Mobile Money"></div>
-        <div><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
-      </div>
-      <div class="actions">
-        <button id="saveCounts">Save counted money</button>
-        <button id="closeDay" class="primary">Close day</button>
-        <button id="reopenDay" class="hidden">Reopen day</button>
-      </div>
-      <p class="hint">A shortage or overage is shown, never hidden. Only a Manager can change what the books expect.</p>
     </section>
 
-    <section class="card"><h2>Expenses and money movement</h2>
+    <section class="card money-card"><h2><span class="step">5</span> Mobile Money</h2>
+      <div class="form-grid">
+        <label>Received on Mobile Money today (UGX)<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
+        <button id="saveMobileSplit">Save Mobile Money</button>
+      </div>
+      <p class="hint">Saved once for the whole day, never per sale row. Cash at Hand is Total Sales minus this Mobile Money minus cash expenses.</p>
+    </section>
+
+    <section class="card"><h2><span class="step">6</span> Expenses and money movement</h2>
       <div class="quick-actions">
         <button data-toggle-form="expenseForm">Add expense</button>
         <button data-toggle-form="transferForm">Record money transfer / handover</button>
@@ -88,6 +83,28 @@
         <button id="addTransfer">Record transfer</button>
         <div id="transferList"></div>
       </div>
+    </section>
+
+    <section class="card money-card"><h2><span class="step">7</span> Cash at hand</h2>
+      <p class="hint">What you should physically be holding once today's money is settled.</p>
+      <div class="cash-focus">
+        <div><span>Cash at Hand</span><strong id="expectedCashBig">—</strong></div>
+        <div><span>Cash Counted</span><input id="actualCash" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your cash"></div>
+        <div><span>Difference</span><strong id="cashDifferenceBig">—</strong></div>
+      </div>
+      <p class="hint" id="cashEquation"></p>
+      <h3 class="block-title">Mobile Money counted</h3>
+      <div class="cash-focus mobile-focus">
+        <div><span>Mobile Money Expected</span><strong id="expectedMobileBig">—</strong></div>
+        <div><span>Mobile Money Counted</span><input id="actualMobile" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your Mobile Money"></div>
+        <div><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
+      </div>
+      <div class="actions">
+        <button id="saveCounts">Save counted money</button>
+        <button id="closeDay" class="primary">Close day</button>
+        <button id="reopenDay" class="hidden">Reopen day</button>
+      </div>
+      <p class="hint">A shortage or overage is shown, never hidden. Only a Manager can change what the books expect.</p>
     </section>
   </section>
 
