@@ -29,7 +29,7 @@ from webapp.models.spare_part_fabrication import SparePartFabrication
 from webapp.models.sales import (
     SalesProfile, SalesBaseline, SalesOpeningStockLine, SalesDay, SalesVehicleClosingLine,
     SalesStockAdjustment, SalesInvoice, SalesInvoiceLine, SalesPayment, SalesExpense,
-    SalesMoneyTransfer, SalesCashAdjustment,
+    SalesMoneyTransfer, SalesCashAdjustment, SalesDebtor, SalesDebt, SalesDebtPayment,
 )
 
 __all__ = [
@@ -58,5 +58,5 @@ __all__ = [
     "SparePartFabrication",
     "SalesProfile", "SalesBaseline", "SalesOpeningStockLine", "SalesDay", "SalesVehicleClosingLine",
     "SalesStockAdjustment", "SalesInvoice", "SalesInvoiceLine", "SalesPayment", "SalesExpense",
-    "SalesMoneyTransfer", "SalesCashAdjustment",
+    "SalesMoneyTransfer", "SalesCashAdjustment", "SalesDebtor", "SalesDebt", "SalesDebtPayment",
 ]

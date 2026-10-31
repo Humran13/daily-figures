@@ -41,6 +41,9 @@ The additive migration introduces:
 - `sales_expenses`
 - `sales_money_transfers`
 - `sales_cash_adjustments`
+- `sales_debtors` (free-text debtor names, per SalesProfile)
+- `sales_debts` (unpaid amounts; `sale` or `opening`)
+- `sales_debt_payments` (collections dated when received)
 
 Accounting records use soft voids/reversals, dated business events, actor IDs and audit entries. Critical create endpoints use unique client idempotency keys. Money is stored as whole UGX integers. Stock is stored in integer base units with the historical PackagingRule reference.
 
@@ -50,9 +53,23 @@ Accounting records use soft voids/reversals, dated business events, actor IDs an
 
 New stock loaded on date `D` is derived live from finalized Dispatch lines whose recipient matches the profile and whose Dispatch date is `D`. Voiding or correcting a Dispatch changes Sales calculations automatically. Dispatch quantities are never copied to an authoritative Sales load table, so they cannot be double-counted. Manager/Super Admin manual stock adjustments are audited exceptions with a required reason.
 
-## Vehicle stock calculation
+## Vehicle stock and Returns (the core rule)
 
-For salesperson `S`, product `P`, date `D`:
+A "return" in this module is unsold stock the driver brought back and left in
+the vehicle. It is never a warehouse/customer return, refund or damaged-stock
+transaction, and a vehicle return never posts into Finished Goods. The next
+morning the stock given is added to whatever the vehicle still holds:
+
+```text
+Previous Return  = most recent prior closing Return (or the trusted opening)
+Stock Added      = finalized Dispatch base units + active stock adjustments
+Total Stock      = Previous Return + Stock Added
+Return Today     = the physical count still in the vehicle at day end
+Sold             = Total Stock − Return Today
+Difference       = Sold (stock) − quantities entered on the sale lines
+```
+
+For salesperson `S`, product `P`, date `D` the same rule is stored/derived as:
 
 ```text
 Opening Vehicle Stock = most recent prior physical Closing Vehicle Stock
@@ -68,9 +85,21 @@ Stock-derived Sold = Available Stock - Closing Vehicle Stock
 Quantity Variance = Stock-derived Sold - Recorded/priced Sale base units
 ```
 
-No historical evidence means `Opening balance required`; zero is never silently assumed. Closing stock greater than available is rejected, not clamped. A normal close requires an explicit closing count for each active product and exact quantity reconciliation. An elevated override requires a reason and remains visibly flagged.
+A profile with no trusted starting point at all shows `Starting point
+required`; zero is never silently assumed for a vehicle that has never been
+counted. Once a trusted starting point exists for that vehicle, a product it
+does not list means "not carried yet", so newly dispatched stock reconciles
+from zero instead of blocking the day. Closing stock greater than total stock
+is rejected, not clamped. A normal close requires an explicit closing count for
+each product and exact quantity reconciliation. An elevated override requires a
+reason and remains visibly flagged.
 
-Changing an old closing count immediately changes that date's derived sold quantity and the next selling day's opening. It never edits invoice quantities, prices, customers or payments. Later physical counts remain independent observations and become the next anchor. The correction-preview endpoint shows the immediate derived, variance and next-opening impact before an elevated correction.
+Changing an old closing count immediately changes that date's sold quantity and
+the next selling day's opening return. It never edits invoice quantities,
+prices, debtors or payments. Later physical counts remain independent
+observations and become the next anchor. The correction-preview endpoint shows
+the immediate derived, difference and next-opening impact before an elevated
+correction.
 
 ## Priced sales and receivables
 
@@ -83,7 +112,13 @@ Current Outstanding = Invoice Total - all active allocated payments
 Outstanding as of date D = Invoice Total - active payments received on/before D
 ```
 
-Any transaction that leaves an outstanding balance requires a real Customer. Overpayment is rejected. Opening receivables are special customer-linked invoices that establish historical debt but are excluded from Total Sales.
+An ordinary paid sale needs no customer at all. The legacy `customer_id` /
+per-sale payment columns stay on historical rows and remain readable: when a
+sale does carry a customer and is paid only in part, that remainder is a
+customer receivable (recorded through the original per-sale credit path, which
+still requires a real Customer and rejects overpayment). New unpaid amounts use
+the free-text Debtors ledger instead (below). Opening receivables are
+customer-linked historical invoices that never count as current Total Sales.
 
 Payments are independent dated ledger entries. A late payment reduces current debt and contributes to cash/mobile receipts only on its actual payment date. It does not rewrite the original sale date or historical day-close receivable. Debtor aging uses the application business date and buckets 0–30, 31–60, 61–90 and 90+ days.
 
@@ -151,7 +186,7 @@ The mobile acceptance flow runs against a disposable database with Playwright (v
 
 ```bash
 # terminal 1 — disposable data, never production
-export DB_PATH=/tmp/sales-browser.db SECRET_KEY=local-test
+export DB_PATH=/tmp/sales-browser.db SECRET_KEY=local-test PYTHONPATH=.
 python -m flask db upgrade
 python scripts/_sales_browser_seed.py
 python -m flask run --port 5055
@@ -160,5 +195,93 @@ python -m flask run --port 5055
 SALES_TEST_BASE_URL=http://127.0.0.1:5055 npx playwright test
 ```
 
-The browser test signs in as an Operator, loads the day, counts every product, records a sale and an expense, closes the day, confirms the ownership check returns 403 for a foreign profile ID and asserts the page has no horizontal overflow at 375px.
+The browser test signs in as an Operator, loads the day, counts every product's
+return, records a sale (no customer), records the day's Mobile Money once,
+records a cash expense, counts Cash and Mobile Money (both differences must be
+zero), closes the day, confirms the ownership check returns 403 for a foreign
+profile ID, and asserts no horizontal overflow and touch-friendly controls at
+375×812.
+
+
+## Operator workflow (corrected)
+
+The person using the Daily Sales screen is a driver / field salesperson, not an
+accountant. The screen follows the real-world order of the day:
+
+1. Open the salesperson / day.
+2. Vehicle stock: Previous Return + Stock Added = Total Stock; Total Stock −
+   Return Today = Sold. Previous Return is filled from the last counted return,
+   so nothing is retyped in the morning.
+3. Sales value: quantity, unit and Selling Price per line. Add the same product
+   again for each different price.
+4. Money balance: Total Sales, Mobile Money, Debtors, Expenses, Cash from
+   sales, then Cash Expected / Cash Counted / Difference and Mobile Money
+   Expected / Counted / Difference.
+5. Expenses and money movements stay collapsed until they are actually needed.
+
+An ordinary paid sale never asks for a customer, invoice, per-sale payment
+method or amount received. The same product can be sold at several prices on
+the same day and every price line stays its own sale line. Unpaid amounts are
+recorded separately in the Debtors tab as a name and an amount.
+
+The daily stock list only shows products that belong to that salesperson's
+vehicle balance: a positive opening count, stock loaded today, a recorded
+adjustment, a sale, or an existing closing count. A driver is never forced to
+type zero for every unrelated active product. Advanced stock adjustments stay
+Manager/Super Admin controls. If the physical count and the entered sales
+disagree, a plain warning says how many units differ; the correction never
+edits the sales, prices, debts, cash or Mobile Money.
+
+### Debtors are free text
+
+`sales_debtors`, `sales_debts` and `sales_debt_payments` (migration
+`19f4c7a2b8d1`) store the salesperson's own debtor names, scoped to their
+SalesProfile. Names are normalized (whitespace collapsed, case-folded), so
+"Darius", "darius" and "DARIUS" are one debtor and one suggestion. Names stay
+available after a debt is settled and never create rows in the Finished Goods
+`customers` table. `kind='sale'` reduces that day's collectable cash;
+`kind='opening'` is historical debt established by a Manager and never counts
+as current-period sales. Payments are allocated oldest-first internally, but
+the operator only sees "outstanding" and "record payment".
+
+### Tender split and expected money
+
+`sales_days.mobile_money_from_sales_ugx` records the Mobile Money collected
+from that day's sales. When it is NULL, legacy per-sale Mobile Money receipts
+for the same date are used, so deployed history reconciles exactly as before.
+
+```text
+Cash from today's sales = Total Sales − New debts − Mobile Money from sales
+
+Expected Cash = Opening Cash
+              + Cash from each day's sales
+              + Old debts collected in Cash (on the receipt date)
+              + Transfers into Cash
+              − Cash expenses
+              − Transfers out of Cash
+              ± audited Cash adjustments
+```
+
+Mobile Money follows the same shape. A debt is not a second sale: recording
+it leaves Total Sales unchanged and only reduces that day's collectable cash.
+A later payment increases Cash or Mobile Money on the date received, reduces
+the debtor's outstanding balance, and never rewrites the original sale date.
+New debts plus Mobile Money may never exceed the sales already entered; the
+API rejects that impossible combination.
+
+### Day close
+
+Closing requires a physical Cash Counted figure. Expected cash stays
+ledger-derived, so a shortage or overage appears as the Difference and is
+never written back as the expected balance. Mobile Money has its own count and
+Difference, so cash counted can never hide a Mobile Money gap. Only an audited
+Manager/Super Admin adjustment changes the expected books.
+
+### Role-based view
+
+Operators see Daily and Debtors. Reconciliation and exports remain available
+to Managers, Accountants, Viewers and Super Admins. Hiding a tab is never used
+as authorization: every route keeps its existing server-side role and
+ownership checks, forged profile IDs are rejected, and the operator profile is
+always derived from the authenticated user.
 

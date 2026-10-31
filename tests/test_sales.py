@@ -10,7 +10,7 @@ from webapp.models.dispatch import Dispatch, DispatchLine, STATUS_FINALIZED
 from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
 from webapp.models.sales import (
-    SalesBaseline, SalesDay, SalesInvoice, SalesOpeningStockLine, SalesProfile,
+    SalesBaseline, SalesDay, SalesDebtor, SalesInvoice, SalesOpeningStockLine, SalesProfile,
 )
 from webapp.models.section import SECTION_SALES, Section
 from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
@@ -122,6 +122,9 @@ def test_exact_oct_30_stock_sales_expenses_and_cash(client, sales_setup):
                "amount_ugx": 1000, "payment_method": "cash", "idempotency_key": "retry-expense", "notes": None}
     assert client.post("/api/sales/expenses", json=payload).status_code == 201
     assert client.post("/api/sales/expenses", json=payload).status_code == 200
+    counted = client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "actual_cash_count_ugx": 11_240_000})
+    assert counted.status_code == 200
     closed = client.post("/api/sales/days/2026-10-30/close", json={"sales_profile_id": s["profile"].id})
     assert closed.status_code == 200, closed.get_json()
     assert client.post("/api/sales/expenses", json={**payload, "idempotency_key": "after-close"}).status_code == 400
@@ -135,6 +138,8 @@ def test_historical_closing_correction_propagates_without_editing_sales(client, 
     assert _post_sale(client, s["profile"].id, s["compact"].id, 110, 79000).status_code == 201
     client.put("/api/sales/days/2026-10-30/closing-stock", json={"sales_profile_id": s["profile"].id,
                     "product_id": s["napkin"].id, "quantity": 30, "unit": "carton"})
+    assert client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "actual_cash_count_ugx": 8_690_000}).status_code == 200
     assert client.post("/api/sales/days/2026-10-30/close", json={"sales_profile_id": s["profile"].id}).status_code == 200
     invoice = SalesInvoice.query.filter_by(sales_profile_id=s["profile"].id).one()
     original_price = invoice.lines[0].unit_price_ugx
@@ -378,3 +383,285 @@ def test_debtor_payment_expense_and_stock_reports_are_scoped_and_audited(client,
     response = client.get("/api/sales/reports/debtors.csv")
     assert response.status_code == 200
     assert "Kampala Retailer" in response.data.decode()
+
+
+def _open_day(client, profile_id, date="2026-10-30"):
+    response = client.post("/api/sales/days", json={"business_date": date, "sales_profile_id": profile_id})
+    assert response.status_code in (200, 201), response.get_json()
+    return response
+
+
+def _post_plain_sale(client, profile_id, product_id, quantity, price, date="2026-10-30"):
+    """An ordinary paid sale: product, quantity, price. No customer anywhere."""
+    return client.post("/api/sales/invoices", json={
+        "sales_profile_id": profile_id, "business_date": date, "idempotency_key": str(uuid4()),
+        "lines": [{"product_id": product_id, "quantity": quantity, "unit": "carton", "unit_price_ugx": price}],
+    })
+
+
+def _cash_expense(client, profile_id, description, amount, date="2026-10-30"):
+    return client.post("/api/sales/expenses", json={
+        "sales_profile_id": profile_id, "business_date": date, "description": description,
+        "amount_ugx": amount, "payment_method": "cash", "idempotency_key": str(uuid4()), "notes": None,
+    })
+
+
+def test_paid_sale_needs_no_customer_and_keeps_each_price_line(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    customers_before = Customer.query.count()
+    for quantity, price in ((100, 79_000), (10, 80_000)):
+        response = _post_plain_sale(client, s["profile"].id, s["compact"].id, quantity, price)
+        assert response.status_code == 201, response.get_json()
+        assert response.get_json()["customer_id"] is None
+    summary = sales_service.daily_summary(s["profile"], "2026-10-30")
+    assert summary["totals"]["total_sales_ugx"] == 8_700_000
+    assert len(summary["invoices"]) == 2
+    assert {row["lines"][0]["unit_price_ugx"] for row in summary["invoices"]} == {79_000, 80_000}
+    assert summary["totals"]["cash_from_sales_ugx"] == 8_700_000
+    assert summary["totals"]["expected_cash_ugx"] == 8_700_000
+    # Ordinary sales never create Finished Goods customers and never need one.
+    assert Customer.query.count() == customers_before
+
+
+def test_mobile_money_and_free_text_debt_reduce_cash_without_extra_sales(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    for product, quantity, price in ((s["compact"], 100, 79_000), (s["compact"], 10, 80_000),
+                                     (s["napkin"], 20, 103_000), (s["napkin"], 5, 104_000)):
+        assert _post_plain_sale(client, s["profile"].id, product.id, quantity, price).status_code == 201
+    for description, amount in (("Lunch", 10_000), ("Fahad", 20_000), ("Breakfast", 10_000)):
+        assert _cash_expense(client, s["profile"].id, description, amount).status_code == 201
+    assert client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "mobile_money_from_sales_ugx": 2_000_000}).status_code == 200
+
+    debt = client.post("/api/sales/debts", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-30",
+        "name": "Darius", "amount_ugx": 1_000_000, "idempotency_key": str(uuid4()),
+    })
+    assert debt.status_code == 201, debt.get_json()
+
+    summary = sales_service.daily_summary(s["profile"], "2026-10-30")
+    assert summary["totals"]["total_sales_ugx"] == 11_280_000  # the debt is not a second sale
+    assert summary["totals"]["new_debt_ugx"] == 1_000_000
+    assert summary["totals"]["mobile_money_from_sales_ugx"] == 2_000_000
+    assert summary["totals"]["cash_from_sales_ugx"] == 8_280_000
+    assert summary["totals"]["expected_cash_ugx"] == 8_240_000
+
+    assert client.post("/api/sales/transfers", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-30",
+        "from_account": "cash", "to_account": "mobile_money", "amount_ugx": 1_000_000,
+        "idempotency_key": str(uuid4())}).status_code == 201
+    summary = sales_service.daily_summary(s["profile"], "2026-10-30")
+    assert summary["totals"]["expected_cash_ugx"] == 7_240_000
+    assert summary["totals"]["expected_mobile_money_ugx"] == 3_000_000
+    assert summary["totals"]["total_sales_ugx"] == 11_280_000
+    assert summary["totals"]["total_expenses_ugx"] == 40_000
+
+    # Mobile Money + unpaid amounts can never exceed the sales already counted.
+    too_much = client.post("/api/sales/debts", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-30",
+        "name": "Darius", "amount_ugx": 9_000_000, "idempotency_key": str(uuid4()),
+    })
+    assert too_much.status_code == 400
+    assert "cannot exceed Total Sales" in too_much.get_json()["error"]
+
+
+
+def test_debt_payment_reduces_outstanding_on_payment_date_only(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    assert _post_plain_sale(client, s["profile"].id, s["compact"].id, 1, 1_000_000).status_code == 201
+    debt = client.post("/api/sales/debts", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-30",
+        "name": "  Darius  ", "amount_ugx": 1_000_000, "idempotency_key": str(uuid4()),
+    })
+    assert debt.status_code == 201, debt.get_json()
+    debtor_id = debt.get_json()["debtor_id"]
+
+    _open_day(client, s["profile"].id, "2026-11-02")
+    payment = client.post(f"/api/sales/debtors/{debtor_id}/payments", json={
+        "amount_ugx": 400_000, "payment_method": "cash", "payment_date": "2026-11-02",
+        "idempotency_key": str(uuid4())})
+    assert payment.status_code == 201, payment.get_json()
+    assert payment.get_json()["outstanding_ugx"] == 600_000
+
+    original = sales_service.daily_summary(s["profile"], "2026-10-30")
+    assert original["totals"]["total_sales_ugx"] == 1_000_000  # the old sale date is untouched
+    later = sales_service.daily_summary(s["profile"], "2026-11-02")
+    assert later["totals"]["total_sales_ugx"] == 0
+    assert later["totals"]["old_debt_collections_ugx"] == 400_000
+    assert later["totals"]["expected_cash_ugx"] == 400_000
+
+    clearing = client.post(f"/api/sales/debtors/{debtor_id}/payments", json={
+        "amount_ugx": 600_000, "payment_method": "cash", "payment_date": "2026-11-02",
+        "idempotency_key": str(uuid4())})
+    assert clearing.status_code == 201
+    assert clearing.get_json()["outstanding_ugx"] == 0
+    assert sales_service.daily_summary(s["profile"], "2026-11-02")["totals"]["expected_cash_ugx"] == 1_000_000
+    # The name stays available for the salesperson's memory after it is settled.
+    assert sales_service.debtor_names([s["profile"].id]) == ["Darius"]
+    assert Customer.query.filter_by(name="Darius").count() == 0
+
+
+def test_debtor_names_are_case_insensitive_memory_and_never_customers(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    assert _post_plain_sale(client, s["profile"].id, s["compact"].id, 10, 100_000).status_code == 201
+    for name in ("Darius", "darius", "  DARIUS  ", "Derrick"):
+        response = client.post("/api/sales/debts", json={
+            "sales_profile_id": s["profile"].id, "business_date": "2026-10-30",
+            "name": name, "amount_ugx": 1_000, "idempotency_key": str(uuid4())})
+        assert response.status_code == 201, response.get_json()
+
+    names = sales_service.debtor_names([s["profile"].id])
+    assert sorted(value.casefold() for value in names) == ["darius", "derrick"]
+    assert SalesDebtor.query.count() == 2
+    debtors = client.get(f"/api/sales/debtors?sales_profile_id={s['profile'].id}").get_json()
+    darius = next(row for row in debtors if (row["name"] or "").casefold() == "darius")
+    assert darius["outstanding_ugx"] == 3_000
+    # Entering a debtor never creates a row in the Finished Goods customers table.
+    assert Customer.query.filter_by(name="Darius").count() == 0
+    assert Customer.query.filter_by(name="Derrick").count() == 0
+
+
+
+def test_operator_stock_list_only_shows_products_that_belong_to_the_vehicle(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    unrelated = Product(name="Unrelated Widget", display_order=9, active=True)
+    db.session.add(unrelated); db.session.commit()
+    ids = {row["product_id"] for row in sales_service.daily_summary(s["profile"], "2026-10-30")["stock"]}
+    assert {s["compact"].id, s["napkin"].id} <= ids
+    assert unrelated.id not in ids
+
+
+def test_close_requires_cash_in_hand_and_expected_stays_ledger_derived(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    for product, remaining in ((s["compact"], 150), (s["napkin"], 30)):
+        assert client.put("/api/sales/days/2026-10-30/closing-stock", json={
+            "sales_profile_id": s["profile"].id, "product_id": product.id,
+            "quantity": remaining, "unit": "carton"}).status_code == 200
+    refused = client.post("/api/sales/days/2026-10-30/close", json={"sales_profile_id": s["profile"].id})
+    assert refused.status_code == 400
+    assert "Cash Counted" in refused.get_json()["error"]
+    assert client.patch("/api/sales/days/2026-10-30", json={
+        "sales_profile_id": s["profile"].id, "actual_cash_count_ugx": 5_000}).status_code == 200
+    closed = client.post("/api/sales/days/2026-10-30/close", json={"sales_profile_id": s["profile"].id})
+    assert closed.status_code == 200, closed.get_json()
+    # The shortage is an observation; the expected ledger is not overwritten.
+    assert closed.get_json()["totals"]["expected_cash_ugx"] == 0
+    assert closed.get_json()["totals"]["cash_variance_ugx"] == 5_000
+
+
+def test_opening_debt_is_historical_and_collectable_without_a_customer(client, sales_setup):
+    s = sales_setup; _login(client, s["manager"])
+    response = client.post("/api/sales/opening-debts", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-29",
+        "name": "Old Customer", "amount_ugx": 500_000, "idempotency_key": str(uuid4()),
+    })
+    assert response.status_code == 201, response.get_json()
+    assert response.get_json()["kind"] == "opening"
+    summary = sales_service.daily_summary(s["profile"], "2026-10-30")
+    assert summary["totals"]["total_sales_ugx"] == 0
+    assert summary["totals"]["new_debt_ugx"] == 0
+    debtors = client.get(f"/api/sales/debtors?sales_profile_id={s['profile'].id}&as_of=2026-10-30").get_json()
+    assert any(row["name"] == "Old Customer" and row["outstanding_ugx"] == 500_000 for row in debtors)
+    assert Customer.query.filter_by(name="Old Customer").count() == 0
+
+    _login(client, s["operator"])
+    debtor_id = response.get_json()["debtor_id"]
+    assert client.post(f"/api/sales/debtors/{debtor_id}/payments", json={
+        "amount_ugx": 500_000, "payment_method": "mobile_money", "payment_date": "2026-10-31",
+        "idempotency_key": str(uuid4())}).status_code == 201
+    later = sales_service.daily_summary(s["profile"], "2026-10-31")
+    assert later["totals"]["total_sales_ugx"] == 0
+    assert later["totals"]["expected_mobile_money_ugx"] == 500_000
+
+
+def test_operator_without_a_sales_profile_gets_a_human_message(client, make_user):
+    user = make_user("no-sales-profile", "password123", ROLE_OPERATOR)
+    _grant(user); _login(client, user)
+    assert client.get("/api/sales/metadata").status_code == 200
+    response = client.get("/api/sales/days/2026-10-30")
+    assert response.status_code == 400
+    assert "not been set up" in response.get_json()["error"]
+    assert "sales_profile_id" not in response.get_json()["error"]
+
+
+def test_stock_cycle_counts_returned_stock_and_shows_mismatch(client, sales_setup):
+    """Acceptance A + C: 50 carried + 100 given = 150 out, 40 back, so 110 sold."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    assert client.put("/api/sales/days/2026-10-30/closing-stock", json={
+        "sales_profile_id": s["profile"].id, "product_id": s["compact"].id,
+        "quantity": 40, "unit": "carton"}).status_code == 200
+
+    summary = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={s['profile'].id}").get_json()
+    compact = next(r for r in summary["stock"] if r["product_id"] == s["compact"].id)
+    assert compact["opening_source"] == "baseline"
+    assert (compact["opening"]["cartons"], compact["added"]["cartons"],
+            compact["available"]["cartons"]) == (50, 100, 150)
+    assert (compact["closing"]["cartons"], compact["derived_sold"]["cartons"]) == (40, 110)
+
+    # Only 105 of the 110 cartons are priced.  The difference is reported on
+    # both sides of the comparison; neither figure is silently rewritten.
+    assert _post_plain_sale(client, s["profile"].id, s["compact"].id, 105, 79_000).status_code == 201
+    summary = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={s['profile'].id}").get_json()
+    compact = next(r for r in summary["stock"] if r["product_id"] == s["compact"].id)
+    assert compact["derived_sold"]["cartons"] == 110
+    assert compact["recorded_sold"]["cartons"] == 105
+    assert compact["variance"]["cartons"] == 5
+    assert summary["totals"]["total_sales_ugx"] == 105 * 79_000
+    assert any("difference 5 cartons" in warning for warning in summary["stock_warnings"])
+
+    # Tomorrow starts from the counted return; the driver retypes nothing.
+    _open_day(client, s["profile"].id, "2026-10-31")
+    tomorrow = client.get(f"/api/sales/days/2026-10-31?sales_profile_id={s['profile'].id}").get_json()
+    compact = next(r for r in tomorrow["stock"] if r["product_id"] == s["compact"].id)
+    assert compact["opening_source"] == "previous_closing"
+    assert compact["opening"]["cartons"] == 40
+
+
+def test_vehicle_return_writes_no_warehouse_return_and_new_products_start_at_zero(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    customers_before = Customer.query.count()
+    dispatches_before = {dispatch.id: dispatch.status for dispatch in Dispatch.query.all()}
+    audit_types_before = {row.entity_type for row in AuditLog.query.all()}
+
+    assert client.put("/api/sales/days/2026-10-30/closing-stock", json={
+        "sales_profile_id": s["profile"].id, "product_id": s["compact"].id,
+        "quantity": 40, "unit": "carton"}).status_code == 200
+
+    # Unsold stock left in the vehicle is only a vehicle return: no customer
+    # return, refund, dispatch change or Finished Goods customer is created.
+    assert Customer.query.count() == customers_before
+    assert {dispatch.id: dispatch.status for dispatch in Dispatch.query.all()} == dispatches_before
+    assert {row.entity_type for row in AuditLog.query.all()} - audit_types_before == {"sales_vehicle_closing"}
+
+    # Stock given for a product that the trusted starting point does not list
+    # still reconciles: nothing carried is an explicit zero, not a blocker.
+    extra = Product(name="New Vehicle Line", display_order=9, active=True)
+    db.session.add(extra); db.session.flush()
+    extra_rule = PackagingRule(product_id=extra.id, cartons_to_packs=10, packs_to_pieces=10,
+                               effective_from=datetime(2026, 1, 1), created_by=s["manager"].id)
+    db.session.add(extra_rule); db.session.flush()
+    dispatch = Dispatch(dispatch_number="D-NEW", date="2026-10-30", shift="Day",
+                        customer_id=s["profile"].recipient_customer_id,
+                        status=STATUS_FINALIZED, created_by=s["manager"].id)
+    db.session.add(dispatch); db.session.flush()
+    db.session.add(DispatchLine(dispatch_id=dispatch.id, product_id=extra.id, cartons=10, packs=0, pieces=0,
+                                base_unit_qty=10 * 100, packaging_rule_id=extra_rule.id))
+    db.session.commit()
+
+    row = next(r for r in sales_service.daily_summary(s["profile"], "2026-10-30")["stock"]
+               if r["product_id"] == extra.id)
+    assert row["opening"]["base_unit_qty"] == 0
+    assert row["available"]["cartons"] == 10
+    response = client.put("/api/sales/days/2026-10-30/closing-stock", json={
+        "sales_profile_id": s["profile"].id, "product_id": extra.id, "quantity": 4, "unit": "carton"})
+    assert response.status_code == 200, response.get_json()
+    row = next(r for r in response.get_json()["stock"] if r["product_id"] == extra.id)
+    assert row["derived_sold"]["cartons"] == 6

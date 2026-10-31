@@ -185,11 +185,14 @@
     nav.className = 'ash-nav';
 
     if (pageKey === 'sales') {
-      [
+      var salesNav = [
         { key: 'sales', label: 'Daily Sales', href: '/sales.html#daily' },
         { key: 'sales_debtors', label: 'Debtors', href: '/sales.html#debtors' },
-        { key: 'sales_history', label: 'Reconciliation', href: '/sales.html#history' },
-      ].forEach(function (item) { nav.appendChild(navLink(item, pageKey)); });
+      ];
+      // Drivers get the two working tabs only; reconciliation stays a
+      // Manager/accountant review view (the API keeps its own checks).
+      if (role !== 'operator') salesNav.push({ key: 'sales_history', label: 'Reconciliation', href: '/sales.html#history' });
+      salesNav.forEach(function (item) { nav.appendChild(navLink(item, pageKey)); });
       if (role === 'super_admin') nav.appendChild(navLink({ key: 'admin', label: 'Admin', href: '/admin.html' }, pageKey));
     } else if (role === 'operator') {
       // Operators get a single, unchanging navigation frame everywhere

@@ -6,9 +6,10 @@ from webapp.extensions import db
 from webapp.models.customer import CATEGORY_SALESPERSON, Customer
 from webapp.models.product import Product
 from webapp.models.sales import (
-    ACTIVE, DAY_CLOSED, DAY_DRAFT, DAY_REOPENED, MONEY_ACCOUNTS, PAYMENT_METHODS, VOID,
-    SalesBaseline, SalesCashAdjustment, SalesDay, SalesExpense, SalesInvoice, SalesMoneyTransfer,
-    SalesOpeningStockLine, SalesPayment, SalesProfile, SalesStockAdjustment,
+    ACTIVE, DAY_CLOSED, DAY_DRAFT, DAY_REOPENED, DEBT_OPENING, MONEY_ACCOUNTS, PAYMENT_METHODS, VOID,
+    SalesBaseline, SalesCashAdjustment, SalesDay, SalesDebt, SalesDebtPayment, SalesDebtor,
+    SalesExpense, SalesInvoice, SalesMoneyTransfer, SalesOpeningStockLine, SalesPayment,
+    SalesProfile, SalesStockAdjustment,
 )
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import (
@@ -16,7 +17,7 @@ from webapp.models.user import (
 )
 from webapp.services import branding_service
 from webapp.services.audit_service import record_audit
-from webapp.services.business_calendar import utcnow
+from webapp.services.business_calendar import business_today, utcnow
 from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services import sales_service as svc
 
@@ -34,7 +35,7 @@ def _profile(profile_id=None, *, write=False):
     if user.role == ROLE_OPERATOR:
         profile = SalesProfile.query.filter_by(user_id=user.id, active=True).first()
         if profile is None:
-            raise svc.SalesError("Your account does not have an active Sales Profile")
+            raise svc.SalesError("Your Sales account has not been set up. Please contact a Manager.")
         if profile_id is not None and int(profile_id) != profile.id:
             raise PermissionError("You cannot access another salesperson's records")
         return profile
@@ -91,6 +92,8 @@ def metadata():
         "sales_categories": [c.to_dict() for c in categories],
         "payment_methods": PAYMENT_METHODS, "money_accounts": MONEY_ACCOUNTS,
         "can_manage": _elevated(), "can_record_payment_for_all": user.role in (*ELEVATED, ROLE_ACCOUNTANT),
+        "role": user.role, "can_view_reconciliation": user.role != ROLE_OPERATOR,
+        "debtor_names": svc.debtor_names([p.id for p in profiles]),
     })
 
 
@@ -239,14 +242,26 @@ def day_detail(date_str):
             day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
             if day is None: raise svc.SalesError("Create the Sales Day first")
             if day.status == DAY_CLOSED: raise svc.SalesError("A closed Sales Day must be reopened before it can be edited")
-            before = {"actual_cash_count_ugx": day.actual_cash_count_ugx, "actual_mobile_money_ugx": day.actual_mobile_money_ugx, "notes": day.notes}
+            before = {"actual_cash_count_ugx": day.actual_cash_count_ugx, "actual_mobile_money_ugx": day.actual_mobile_money_ugx,
+                      "mobile_money_from_sales_ugx": day.mobile_money_from_sales_ugx, "notes": day.notes}
             if "actual_cash_count_ugx" in data:
                 day.actual_cash_count_ugx = None if data["actual_cash_count_ugx"] is None else svc.whole_ugx(data["actual_cash_count_ugx"], "actual_cash_count_ugx")
             if "actual_mobile_money_ugx" in data:
                 day.actual_mobile_money_ugx = None if data["actual_mobile_money_ugx"] is None else svc.whole_ugx(data["actual_mobile_money_ugx"], "actual_mobile_money_ugx")
+            if "mobile_money_from_sales_ugx" in data:
+                raw = data["mobile_money_from_sales_ugx"]
+                value = None if raw is None else svc.whole_ugx(raw, "mobile_money_from_sales_ugx")
+                if value is not None:
+                    # Mobile Money and unpaid amounts can never exceed the
+                    # sales already entered for this date.
+                    svc.assert_tender_within_sales(profile.id, date_str, extra_mobile=value)
+                day.mobile_money_from_sales_ugx = value
             if "notes" in data: day.notes = (data["notes"] or "").strip() or None
             record_audit(current_user(), "update", "sales_day", day.id, before=before,
-                         after={"actual_cash_count_ugx": day.actual_cash_count_ugx, "actual_mobile_money_ugx": day.actual_mobile_money_ugx, "notes": day.notes})
+                         after={"actual_cash_count_ugx": day.actual_cash_count_ugx,
+                                "actual_mobile_money_ugx": day.actual_mobile_money_ugx,
+                                "mobile_money_from_sales_ugx": day.mobile_money_from_sales_ugx,
+                                "notes": day.notes})
             db.session.commit()
         return jsonify(svc.daily_summary(profile, date_str))
     except svc.SalesError as exc:
@@ -281,9 +296,9 @@ def closing_stock_preview(date_str):
         rule = svc._rule_for(product.id, date_str)
         new_closing = 0 if data.get("quantity") == 0 else svc.unit_to_base(data.get("quantity"), data.get("unit"), rule)
         row = next(r for r in svc.stock_reconciliation(profile, date_str) if r["product_id"] == product.id)
-        if row["available"] is None: raise svc.SalesError("A reconciliation opening balance is required before this date.")
+        if row["available"] is None: raise svc.SalesError("A starting point is required for this salesperson before this date. Ask a Manager to set the opening returns.")
         available = row["available"]["base_unit_qty"]
-        if new_closing > available: raise svc.SalesError("Closing vehicle stock cannot exceed available stock.")
+        if new_closing > available: raise svc.SalesError("Return today cannot exceed total stock.")
         old_derived = row["derived_sold"]["base_unit_qty"] if row["derived_sold"] else None
         new_derived = available - new_closing; recorded = row["recorded_sold"]["base_unit_qty"]
         next_day = SalesDay.query.filter(SalesDay.sales_profile_id == profile.id,
@@ -368,6 +383,78 @@ def add_payment(invoice_id):
         db.session.commit(); return jsonify({"payment": svc.payment_dict(payment), "invoice": svc.invoice_dict(invoice)}), 201 if created else 200
     except svc.SalesError as exc:
         db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/debts", methods=["POST"])
+@login_required
+def create_debt():
+    """Record an unpaid amount. Names are free text; no Customer is required."""
+    if not _operational_writer(): return _error("This role cannot record debts", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    try:
+        business_date = svc.valid_date(data.get("business_date") or business_today())
+        _require_editable_day(profile, business_date)
+        debt, created = svc.create_debt(profile, {**data, "business_date": business_date}, current_user())
+        db.session.commit()
+        return jsonify({"id": debt.id, "debtor_id": debt.debtor_id,
+                        "name": debt.debtor.name if debt.debtor else None,
+                        "amount_ugx": debt.amount_ugx, "kind": debt.kind}), 201 if created else 200
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/opening-debts", methods=["POST"])
+@login_required
+def opening_debt():
+    """Historical debt established by a Manager, using a free-text name."""
+    if not _elevated(): return _error("Manager or Super Administrator authority is required", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    try:
+        debt, created = svc.create_debt(profile, data, current_user(), kind=DEBT_OPENING)
+        db.session.commit()
+        return jsonify({"id": debt.id, "debtor_id": debt.debtor_id,
+                        "name": debt.debtor.name if debt.debtor else None,
+                        "amount_ugx": debt.amount_ugx, "kind": debt.kind}), 201 if created else 200
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/debtors/<int:debtor_id>/payments", methods=["POST"])
+@login_required
+def add_debt_payment(debtor_id):
+    debtor = db.session.get(SalesDebtor, debtor_id)
+    if debtor is None: return _error("not found", 404)
+    profile, err = _profile_response(debtor.sales_profile_id, write=True)
+    if err: return err
+    data = request.get_json(silent=True) or {}
+    try:
+        payment_date = svc.valid_date(data.get("payment_date") or business_today(), "payment_date")
+        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=payment_date).first()
+        if day is not None and day.status == DAY_CLOSED:
+            raise svc.SalesError("A closed Sales Day must be reopened before it can be edited")
+        payment, created = svc.record_debt_payment(debtor, {**data, "payment_date": payment_date}, current_user())
+        db.session.commit()
+        return jsonify({
+            "payment": {"id": payment.id, "debtor_id": payment.debtor_id, "payment_date": payment.payment_date,
+                        "amount_ugx": payment.amount_ugx, "payment_method": payment.payment_method,
+                        "status": payment.status},
+            "debtor": svc.debtor_dict(debtor), "outstanding_ugx": svc.debtor_balance(debtor),
+        }), 201 if created else 200
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/debtor-names")
+@login_required
+def debtor_names():
+    """Existing debtor names for autocomplete (case-insensitive identity)."""
+    profile, err = _profile_response(request.args.get("sales_profile_id"))
+    if err: return err
+    return jsonify(svc.debtor_names([profile.id]))
 
 
 def _create_simple(model, fields, entity):
@@ -471,7 +558,8 @@ def cash_adjustment():
 def void_entity(entity, record_id):
     if not _elevated(): return _error("Manager or Super Administrator authority is required", 403)
     mapping = {"invoice": SalesInvoice, "payment": SalesPayment, "expense": SalesExpense,
-               "transfer": SalesMoneyTransfer, "stock-adjustment": SalesStockAdjustment}
+               "transfer": SalesMoneyTransfer, "stock-adjustment": SalesStockAdjustment,
+               "debt": SalesDebt, "debt-payment": SalesDebtPayment}
     model = mapping.get(entity)
     if model is None: return _error("unknown entity", 404)
     row = db.session.get(model, record_id)
@@ -538,13 +626,20 @@ def daily_export(fmt):
     if err: return err
     try:
         business_date = svc.valid_date(request.args.get("business_date")); summary = svc.daily_summary(profile, business_date)
-        rows = [{"section": "Stock", "item": r["product_name"], "detail": f"Opening {r['opening']['label'] if r['opening'] else 'required'}; Added {r['added']['label']}; Closing {r['closing']['label'] if r['closing'] else 'not counted'}; Sold {r['derived_sold']['label'] if r['derived_sold'] else 'pending'}", "amount": ""} for r in summary["stock"]]
-        rows += [{"section": "Sales", "item": inv["reference"], "detail": inv["customer_name"] or "Walk-in", "amount": inv["total_ugx"]} for inv in summary["invoices"] if not inv["is_opening_receivable"]]
+        rows = [{"section": "Stock", "item": r["product_name"], "detail": f"Previous Return {r['opening']['label'] if r['opening'] else 'required'}; Stock Added {r['added']['label']}; Return Today {r['closing']['label'] if r['closing'] else 'not counted'}; Sold {r['derived_sold']['label'] if r['derived_sold'] else 'pending'}", "amount": ""} for r in summary["stock"]]
+        rows += [{"section": "Sale", "item": inv["reference"], "detail": inv["customer_name"] or "Paid sale", "amount": inv["total_ugx"]} for inv in summary["invoices"] if not inv["is_opening_receivable"]]
+        rows += [{"section": "Unpaid debt", "item": d["name"] or "", "detail": d["kind"], "amount": d["amount_ugx"]} for d in summary["debts"]]
         rows += [{"section": "Expense", "item": e["description"], "detail": e["payment_method"], "amount": e["amount_ugx"]} for e in summary["expenses"]]
-        content = build_export(fmt, title="Daily Sales & Reconciliation Summary",
+        for label, key in (("Sales", "total_sales_ugx"), ("Less unpaid debts", "new_debt_ugx"),
+                           ("Less Mobile Money", "mobile_money_from_sales_ugx"),
+                           ("Cash from today's sales", "cash_from_sales_ugx"),
+                           ("Expenses", "total_expenses_ugx"), ("Expected Cash", "expected_cash_ugx"),
+                           ("Cash in Hand", "actual_cash_ugx"), ("Difference", "cash_variance_ugx")):
+            rows.append({"section": "Money", "item": label, "detail": "", "amount": summary["totals"][key]})
+        content = build_export(fmt, title="Daily Sales & Cash Summary",
             filters={"date": business_date, "salesperson": profile.display_name}, generated_by=current_user().username,
             columns=[("section", "Section"), ("item", "Item"), ("detail", "Detail"), ("amount", "UGX Amount")], rows=rows,
-            totals={"section": "TOTAL", "item": "Net Sales After Expenses", "amount": summary["totals"]["net_sales_after_expenses_ugx"]},
+            totals={"section": "TOTAL", "item": "Expected Cash", "amount": summary["totals"]["expected_cash_ugx"]},
             **branding_service.export_kwargs())
         record_audit(current_user(), "export", "sales_daily_report", after={"profile_id": profile.id, "date": business_date, "format": fmt})
         db.session.commit()
@@ -578,9 +673,9 @@ def reconciliation_export(fmt):
                 rows.append({
                     "date": day_date, "salesperson": profile.display_name,
                     "sales_category": profile.sales_category.name if profile.sales_category else "",
-                    "total_sales": totals["total_sales_ugx"], "cash_receipts": totals["cash_receipts_ugx"],
-                    "mobile_receipts": totals["mobile_money_receipts_ugx"],
-                    "old_debt": totals["old_debt_collections_ugx"], "new_credit": totals["new_customer_receivables_ugx"],
+                    "total_sales": totals["total_sales_ugx"], "cash_from_sales": totals["cash_from_sales_ugx"],
+                    "mobile_from_sales": totals["mobile_money_from_sales_ugx"],
+                    "old_debt": totals["old_debt_collections_ugx"], "new_debt": totals["new_debt_ugx"],
                     "expenses": totals["total_expenses_ugx"], "net_sales": totals["net_sales_after_expenses_ugx"],
                     "expected_cash": totals["expected_cash_ugx"], "actual_cash": totals["actual_cash_ugx"],
                     "cash_variance": totals["cash_variance_ugx"],
@@ -588,11 +683,11 @@ def reconciliation_export(fmt):
                     "day_status": summary["day"]["status"] if summary["day"] else "",
                 })
         columns = [("date", "Date"), ("salesperson", "Salesperson"), ("sales_category", "Sales Channel"),
-                   ("total_sales", "Total Sales UGX"), ("cash_receipts", "Cash Receipts UGX"),
-                   ("mobile_receipts", "Mobile Money UGX"), ("old_debt", "Old Debt Collections UGX"),
-                   ("new_credit", "New Receivables UGX"), ("expenses", "Expenses UGX"),
-                   ("net_sales", "Net Sales UGX"), ("expected_cash", "Expected Cash UGX"),
-                   ("actual_cash", "Actual Cash UGX"), ("cash_variance", "Cash Variance UGX"),
+                   ("total_sales", "Sales UGX"), ("cash_from_sales", "Cash From Sales UGX"),
+                   ("mobile_from_sales", "Mobile Money UGX"), ("old_debt", "Old Debts Collected UGX"),
+                   ("new_debt", "New Debts UGX"), ("expenses", "Expenses UGX"),
+                   ("net_sales", "Sales Less Expenses UGX"), ("expected_cash", "Expected Cash UGX"),
+                   ("actual_cash", "Cash in Hand UGX"), ("cash_variance", "Difference UGX"),
                    ("stock_status", "Stock Reconciliation"), ("day_status", "Day Status")]
         content = build_export(fmt, title="Sales Reconciliation History",
             filters={"date_from": date_from, "date_to": date_to, "sales_profile_id": request.args.get("sales_profile_id")},
@@ -644,14 +739,14 @@ def debtors_export(fmt):
     try:
         as_of = request.args.get("as_of") or None
         rows = svc.debtors([p.id for p in profiles], as_of)
-        columns = [("salesperson", "Salesperson"), ("customer", "Customer"), ("reference", "Invoice"),
-                   ("business_date", "Invoice Date"), ("days_outstanding", "Days Outstanding"),
-                   ("aging_bucket", "Aging"), ("total_ugx", "Invoice Total UGX"),
+        columns = [("salesperson", "Salesperson"), ("customer", "Debtor"), ("reference", "Reference"),
+                   ("business_date", "Owing Since"), ("days_outstanding", "Days Outstanding"),
+                   ("aging_bucket", "Aging"), ("total_ugx", "Owed UGX"),
                    ("paid_ugx", "Paid UGX"), ("outstanding_ugx", "Outstanding UGX")]
         report_rows = [{**r, "salesperson": r.get("salesperson") or "", "customer": r.get("customer_name") or ""}
                        for r in rows]
         return _export_response(
-            fmt, title="Sales Customer Receivables (Debtors)",
+            fmt, title="Sales Debtors (Outstanding Debts)",
             filters={"as_of": as_of or "current", "salespeople": ", ".join(p.display_name for p in profiles) or "All"},
             columns=columns, rows=report_rows,
             totals={"customer": "TOTAL", "outstanding_ugx": sum(r["outstanding_ugx"] for r in report_rows)},
@@ -679,16 +774,29 @@ def payments_export(fmt):
         rows = [{
             "date": p.payment_date, "salesperson": names.get(p.sales_profile_id, ""),
             "invoice": p.invoice.reference if p.invoice else "",
-            "customer": p.invoice.customer.name if p.invoice and p.invoice.customer else "Walk-in",
+            "customer": p.invoice.customer.name if p.invoice and p.invoice.customer else "Paid sale",
             "method": p.payment_method, "amount_ugx": p.amount_ugx,
             "invoice_date": p.invoice.business_date if p.invoice else "",
             "reference": p.reference or "", "notes": p.notes or "",
         } for p in payments]
-        columns = [("date", "Payment Date"), ("salesperson", "Salesperson"), ("invoice", "Invoice"),
-                   ("customer", "Customer"), ("method", "Method"), ("amount_ugx", "Amount UGX"),
-                   ("invoice_date", "Invoice Date"), ("reference", "Reference"), ("notes", "Notes")]
+        # Debt collections recorded in the Debtors workspace are receipts too.
+        debt_payments = SalesDebtPayment.query.filter(
+            SalesDebtPayment.sales_profile_id.in_([p.id for p in profiles]),
+            SalesDebtPayment.status == ACTIVE,
+            SalesDebtPayment.payment_date >= date_from, SalesDebtPayment.payment_date <= date_to,
+        ).order_by(SalesDebtPayment.payment_date, SalesDebtPayment.id).all()
+        rows += [{
+            "date": p.payment_date, "salesperson": names.get(p.sales_profile_id, ""),
+            "invoice": "Unpaid amount", "customer": p.debtor.name if p.debtor else "",
+            "method": p.payment_method, "amount_ugx": p.amount_ugx,
+            "invoice_date": "", "reference": p.reference or "", "notes": p.notes or "",
+        } for p in debt_payments]
+        rows.sort(key=lambda item: (item["date"], item["invoice"]))
+        columns = [("date", "Receipt Date"), ("salesperson", "Salesperson"), ("invoice", "Sale"),
+                   ("customer", "Debtor"), ("method", "Received As"), ("amount_ugx", "Amount UGX"),
+                   ("invoice_date", "Sale Date"), ("reference", "Reference"), ("notes", "Notes")]
         return _export_response(
-            fmt, title="Sales Payment History",
+            fmt, title="Sales Money Received",
             filters={"date_from": date_from, "date_to": date_to,
                      "salespeople": ", ".join(p.display_name for p in profiles) or "All"},
             columns=columns, rows=rows,
@@ -759,9 +867,9 @@ def stock_export(fmt):
                         "variance": line["variance"]["label"] if line["variance"] else "",
                     })
         columns = [("date", "Date"), ("salesperson", "Salesperson"), ("product", "Product"),
-                   ("opening", "Opening"), ("loaded", "Loaded"), ("adjustment", "Adjustment"),
-                   ("available", "Available"), ("closing", "Closing"), ("stock_sold", "Stock Sold"),
-                   ("priced_sold", "Priced Sold"), ("variance", "Variance")]
+                   ("opening", "Previous Return"), ("loaded", "Stock Added"), ("adjustment", "Adjustment"),
+                   ("available", "Total Stock"), ("closing", "Return Today"), ("stock_sold", "Sold"),
+                   ("priced_sold", "Priced"), ("variance", "Difference")]
         return _export_response(
             fmt, title="Sales Stock-to-Sales Reconciliation",
             filters={"date_from": date_from, "date_to": date_to,

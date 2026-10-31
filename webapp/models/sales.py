@@ -21,6 +21,12 @@ VOID = "void"
 PAYMENT_METHODS = ("cash", "mobile_money", "bank", "other")
 MONEY_ACCOUNTS = ("cash", "mobile_money", "company", "bank", "other")
 SALE_UNITS = ("carton", "pack", "piece")
+# A free-text debt recorded on a selling day reduces that day's collectable
+# cash.  An opening/historical debt is collectable later but never becomes
+# current-period sales.
+DEBT_SALE = "sale"
+DEBT_OPENING = "opening"
+DEBT_KINDS = (DEBT_SALE, DEBT_OPENING)
 
 
 class SalesProfile(db.Model):
@@ -76,6 +82,10 @@ class SalesDay(db.Model):
     sales_profile_id = db.Column(db.Integer, db.ForeignKey("sales_profiles.id"), nullable=False, index=True)
     business_date = db.Column(db.String(10), nullable=False, index=True)
     status = db.Column(db.String(20), nullable=False, default=DAY_DRAFT, index=True)
+    # How much of THIS day's sales was collected through Mobile Money.  NULL
+    # means "not recorded under the simplified workflow", in which case any
+    # legacy per-sale Mobile Money receipts for this date are used instead.
+    mobile_money_from_sales_ugx = db.Column(db.Integer, nullable=True)
     actual_cash_count_ugx = db.Column(db.Integer, nullable=True)
     actual_mobile_money_ugx = db.Column(db.Integer, nullable=True)
     notes = db.Column(db.Text, nullable=True)
@@ -93,6 +103,8 @@ class SalesDay(db.Model):
         db.UniqueConstraint("sales_profile_id", "business_date", name="uq_sales_day_profile_date"),
         db.CheckConstraint("actual_cash_count_ugx IS NULL OR actual_cash_count_ugx >= 0", name="ck_sales_day_actual_cash"),
         db.CheckConstraint("actual_mobile_money_ugx IS NULL OR actual_mobile_money_ugx >= 0", name="ck_sales_day_actual_mobile"),
+        db.CheckConstraint("mobile_money_from_sales_ugx IS NULL OR mobile_money_from_sales_ugx >= 0",
+                           name="ck_sales_day_mobile_from_sales"),
     )
 
 
@@ -251,3 +263,81 @@ class SalesCashAdjustment(db.Model):
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
     __table_args__ = (db.CheckConstraint("amount_delta_ugx != 0", name="ck_sales_cash_adjustment_nonzero"),)
+
+
+class SalesDebtor(db.Model):
+    """A salesperson's own free-text debtor name.
+
+    This is deliberately NOT the Finished Goods ``customers`` table: a driver
+    may write down "Darius" without any administrator pre-creating a customer
+    record.  Names are remembered after first use so they can autocomplete
+    later, and they are never deleted when a debt is settled.
+    """
+    __tablename__ = "sales_debtors"
+    id = db.Column(db.Integer, primary_key=True)
+    sales_profile_id = db.Column(db.Integer, db.ForeignKey("sales_profiles.id"), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    # Normalized (whitespace-collapsed, case-folded) identity so "Darius",
+    # "darius" and " DARIUS " are one suggestion, never three.
+    name_key = db.Column(db.String(120), nullable=False, index=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    profile = db.relationship("SalesProfile")
+    debts = db.relationship("SalesDebt", cascade="all, delete-orphan", back_populates="debtor")
+    payments = db.relationship("SalesDebtPayment", cascade="all, delete-orphan", back_populates="debtor")
+    __table_args__ = (
+        db.UniqueConstraint("sales_profile_id", "name_key", name="uq_sales_debtor_profile_name"),
+    )
+
+
+class SalesDebt(db.Model):
+    """An amount owed by a free-text debtor.
+
+    ``kind='sale'`` is money from the sales already counted on that business
+    date (it reduces that day's collectable cash but never adds to sales a
+    second time).  ``kind='opening'`` is historical debt that is collectable
+    later and never counts as current-period sales.
+    """
+    __tablename__ = "sales_debts"
+    id = db.Column(db.Integer, primary_key=True)
+    debtor_id = db.Column(db.Integer, db.ForeignKey("sales_debtors.id"), nullable=False, index=True)
+    sales_profile_id = db.Column(db.Integer, db.ForeignKey("sales_profiles.id"), nullable=False, index=True)
+    business_date = db.Column(db.String(10), nullable=False, index=True)
+    kind = db.Column(db.String(20), nullable=False, default=DEBT_SALE, index=True)
+    amount_ugx = db.Column(db.Integer, nullable=False)
+    notes = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default=ACTIVE, index=True)
+    idempotency_key = db.Column(db.String(80), nullable=False, unique=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
+    voided_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    voided_at = db.Column(db.DateTime, nullable=True)
+    void_reason = db.Column(db.Text, nullable=True)
+    debtor = db.relationship("SalesDebtor", back_populates="debts")
+    __table_args__ = (
+        db.CheckConstraint("amount_ugx > 0", name="ck_sales_debt_positive"),
+        db.CheckConstraint("kind IN ('sale', 'opening')", name="ck_sales_debt_kind"),
+    )
+
+
+class SalesDebtPayment(db.Model):
+    """Money received against free-text debt, recorded on the receipt date."""
+    __tablename__ = "sales_debt_payments"
+    id = db.Column(db.Integer, primary_key=True)
+    debtor_id = db.Column(db.Integer, db.ForeignKey("sales_debtors.id"), nullable=False, index=True)
+    sales_profile_id = db.Column(db.Integer, db.ForeignKey("sales_profiles.id"), nullable=False, index=True)
+    payment_date = db.Column(db.String(10), nullable=False, index=True)
+    amount_ugx = db.Column(db.Integer, nullable=False)
+    payment_method = db.Column(db.String(20), nullable=False, index=True)
+    reference = db.Column(db.String(80), nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default=ACTIVE, index=True)
+    idempotency_key = db.Column(db.String(80), nullable=False, unique=True)
+    entered_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
+    voided_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    voided_at = db.Column(db.DateTime, nullable=True)
+    void_reason = db.Column(db.Text, nullable=True)
+    debtor = db.relationship("SalesDebtor", back_populates="payments")
+    __table_args__ = (db.CheckConstraint("amount_ugx > 0", name="ck_sales_debt_payment_positive"),)
