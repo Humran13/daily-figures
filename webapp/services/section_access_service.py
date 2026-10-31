@@ -8,7 +8,8 @@ Section access answers WHERE a user may log in; it never touches
 """
 from webapp.extensions import db
 from webapp.models.section import (
-    DEPARTMENT_STORE, Department, Section, SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS, SECTIONS,
+    DEPARTMENT_SALES, DEPARTMENT_STORE, Department, Section, SECTION_FINISHED_GOODS, SECTION_SALES,
+    SECTION_SPARE_PARTS, SECTIONS,
     UserSectionAccess,
 )
 from webapp.services.audit_service import record_audit
@@ -40,6 +41,13 @@ def ensure_seeded():
     ):
         if Section.query.filter_by(code=code).first() is None:
             db.session.add(Section(department_id=dept.id, code=code, name=name, active=True, sort_order=sort_order))
+    sales_dept = Department.query.filter_by(code=DEPARTMENT_SALES).first()
+    if sales_dept is None:
+        sales_dept = Department(code=DEPARTMENT_SALES, name="Sales Department", active=True, sort_order=1)
+        db.session.add(sales_dept)
+        db.session.flush()
+    if Section.query.filter_by(code=SECTION_SALES).first() is None:
+        db.session.add(Section(department_id=sales_dept.id, code=SECTION_SALES, name="Sales", active=True, sort_order=0))
     db.session.flush()
 
 

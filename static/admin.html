@@ -118,6 +118,7 @@
           <div><label>Section Access</label>
             <label class="small" style="display:block;font-weight:normal;"><input type="checkbox" id="newUserSectionFinishedGoods" checked> Finished Goods</label>
             <label class="small" style="display:block;font-weight:normal;"><input type="checkbox" id="newUserSectionSpareParts"> Spare Parts</label>
+            <label class="small" style="display:block;font-weight:normal;"><input type="checkbox" id="newUserSectionSales"> Sales</label>
           </div>
         </div>
         <button class="btn-primary" id="createUserBtn">Create user</button>
@@ -649,6 +650,7 @@ async function loadUsers(){
       <td class="small">
         <label style="display:block;font-weight:normal;"><input type="checkbox" data-section-for="${u.id}" data-section-code="finished_goods" ${(u.sections||[]).includes('finished_goods')?'checked':''}> Finished Goods</label>
         <label style="display:block;font-weight:normal;"><input type="checkbox" data-section-for="${u.id}" data-section-code="spare_parts" ${(u.sections||[]).includes('spare_parts')?'checked':''}> Spare Parts</label>
+        <label style="display:block;font-weight:normal;"><input type="checkbox" data-section-for="${u.id}" data-section-code="sales" ${(u.sections||[]).includes('sales')?'checked':''}> Sales</label>
       </td>
       <td><span class="pill ${u.active?'pill-active':'pill-inactive'}">${u.active?'Active':'Disabled'}</span></td>
       <td class="small">${u.last_login_at ? new Date(u.last_login_at + 'Z').toLocaleString(undefined, {timeZone:'Africa/Kampala', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'}) : 'never'}</td>
@@ -732,6 +734,7 @@ document.getElementById('createUserBtn').addEventListener('click', async ()=>{
   const sections = [];
   if(document.getElementById('newUserSectionFinishedGoods').checked) sections.push('finished_goods');
   if(document.getElementById('newUserSectionSpareParts').checked) sections.push('spare_parts');
+  if(document.getElementById('newUserSectionSales').checked) sections.push('sales');
   const {status, data} = await api('/api/admin/users', {method:'POST', body: JSON.stringify({username, password, role, sections})});
   const msg = document.getElementById('userMsg');
   if(status===201){
@@ -739,6 +742,7 @@ document.getElementById('createUserBtn').addEventListener('click', async ()=>{
     document.getElementById('newUserName').value=''; document.getElementById('newUserPass').value='';
     document.getElementById('newUserSectionFinishedGoods').checked = true;
     document.getElementById('newUserSectionSpareParts').checked = false;
+    document.getElementById('newUserSectionSales').checked = false;
     loadUsers();
   } else { msg.textContent = data.error || 'Failed to create user.'; msg.className='msg err'; }
 });

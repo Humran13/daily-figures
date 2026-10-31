@@ -26,3 +26,7 @@ imgz/
 # operational data and is never committed (the seed migration embeds the
 # cleaned rows).
 MV MACHINE SPARES.xlsx
+
+node_modules/
+test-results/
+playwright-report/

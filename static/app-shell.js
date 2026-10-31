@@ -24,6 +24,7 @@
   var ROLE_LABELS = {
     super_admin: 'Super Administrator',
     manager: 'Manager',
+    accountant: 'Accountant',
     operator: 'Operator',
     viewer: 'Viewer',
   };
@@ -33,6 +34,16 @@
 
   function enabled(flags, key) {
     return flags[key] !== false; // a module with no row yet defaults to enabled, same as the backend
+  }
+
+  // A login scoped to a non-default section always lands inside that
+  // section (mirrors the section branch of webapp/routes/pages.py's
+  // first_authorized_page()). Kept out of resolveLanding() so the
+  // role/flag landing chain stays a single mirrored copy.
+  function sectionLanding(activeSection) {
+    if (activeSection === 'sales') return '/sales.html';
+    if (activeSection === 'spare_parts') return '/spare-parts.html';
+    return null;
   }
 
   // Mirrors webapp/routes/pages.py's first_authorized_page() exactly —
@@ -59,6 +70,7 @@
     if (path === '/history.html') return 'history_exports';
     if (path === '/dashboard.html') return 'dashboard';
     if (path === '/admin.html') return 'admin';
+    if (path === '/sales.html') return 'sales';
     if (path === '/reset-daily-values.html') return 'reset_daily_values';
     if (path === '/requests.html') return 'requests';
     return null;
@@ -172,7 +184,14 @@
     var nav = document.createElement('nav');
     nav.className = 'ash-nav';
 
-    if (role === 'operator') {
+    if (pageKey === 'sales') {
+      [
+        { key: 'sales', label: 'Daily Sales', href: '/sales.html#daily' },
+        { key: 'sales_debtors', label: 'Debtors', href: '/sales.html#debtors' },
+        { key: 'sales_history', label: 'Reconciliation', href: '/sales.html#history' },
+      ].forEach(function (item) { nav.appendChild(navLink(item, pageKey)); });
+      if (role === 'super_admin') nav.appendChild(navLink({ key: 'admin', label: 'Admin', href: '/admin.html' }, pageKey));
+    } else if (role === 'operator') {
       // Operators get a single, unchanging navigation frame everywhere
       // they can reach: the three data-entry books, plus review-only
       // links to Daily Figures/History & Exports, visually separated
@@ -359,6 +378,7 @@
     AppShell.flags = flags;
 
     var homeHref = resolveLanding(session.user.role, flags);
+    homeHref = sectionLanding(session.active_section) || homeHref;
     var pageKey = currentPageKey();
 
     // Pending correction-request count — Manager/Super Admin only (the

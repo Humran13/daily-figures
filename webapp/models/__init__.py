@@ -26,6 +26,11 @@ from webapp.models.spare_part import SparePart, SparePartMachine, SparePartSuppl
 from webapp.models.spare_part_movement import SparePartMovement
 from webapp.models.spare_part_import_row import SparePartImportRow
 from webapp.models.spare_part_fabrication import SparePartFabrication
+from webapp.models.sales import (
+    SalesProfile, SalesBaseline, SalesOpeningStockLine, SalesDay, SalesVehicleClosingLine,
+    SalesStockAdjustment, SalesInvoice, SalesInvoiceLine, SalesPayment, SalesExpense,
+    SalesMoneyTransfer, SalesCashAdjustment,
+)
 
 __all__ = [
     "User", "ROLES", "Product", "PackagingRule", "SalesCategory", "Customer", "AuditLog",
@@ -51,4 +56,7 @@ __all__ = [
     "SparePartMovement",
     "SparePartImportRow",
     "SparePartFabrication",
+    "SalesProfile", "SalesBaseline", "SalesOpeningStockLine", "SalesDay", "SalesVehicleClosingLine",
+    "SalesStockAdjustment", "SalesInvoice", "SalesInvoiceLine", "SalesPayment", "SalesExpense",
+    "SalesMoneyTransfer", "SalesCashAdjustment",
 ]

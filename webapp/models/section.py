@@ -3,10 +3,12 @@ from datetime import datetime, timezone
 from webapp.extensions import db
 
 DEPARTMENT_STORE = "store"
+DEPARTMENT_SALES = "sales"
 
 SECTION_FINISHED_GOODS = "finished_goods"
 SECTION_SPARE_PARTS = "spare_parts"
-SECTIONS = [SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS]
+SECTION_SALES = "sales"
+SECTIONS = [SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS, SECTION_SALES]
 
 
 def _utcnow():

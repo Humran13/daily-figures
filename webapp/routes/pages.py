@@ -21,7 +21,7 @@ reachable regardless of any flag's state.
 from flask import Blueprint, Response, current_app, redirect
 
 from webapp.auth import active_section, current_user
-from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS
+from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SALES, SECTION_SPARE_PARTS
 from webapp.models.user import (
     ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER, ROLES,
 )
@@ -199,6 +199,11 @@ def requests_page():
 def spare_parts_page():
     # Dashboard — every role with Spare Parts section access may enter.
     return _guard_page("spare-parts.html", ROLES, section_code=SECTION_SPARE_PARTS)
+
+
+@pages_bp.route("/sales.html")
+def sales_page():
+    return _guard_page("sales.html", ROLES, section_code=SECTION_SALES)
 
 
 @pages_bp.route("/spare-parts-stock-in.html")

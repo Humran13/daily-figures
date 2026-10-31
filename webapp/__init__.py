@@ -80,6 +80,7 @@ def create_app():
     from webapp.routes.admin_spare_pricing import admin_spare_pricing_bp
     from webapp.routes.spare_part_planning import spare_part_planning_bp
     from webapp.routes.spare_part_fabrications import spare_part_fabrications_bp
+    from webapp.routes.sales import sales_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_products_bp)
@@ -116,6 +117,7 @@ def create_app():
     app.register_blueprint(admin_spare_pricing_bp)
     app.register_blueprint(spare_part_planning_bp)
     app.register_blueprint(spare_part_fabrications_bp)
+    app.register_blueprint(sales_bp)
 
     # Store Department / Section Access: these blueprints are each either
     # Finished-Goods or Spare-Parts operational data. A single app-level
@@ -132,7 +134,7 @@ def create_app():
     # PWA manifest) are deliberately left ungated: they are global, not
     # tied to any one section, per the architecture spec.
     from webapp.auth import enforce_section
-    from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SPARE_PARTS
+    from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SALES, SECTION_SPARE_PARTS
     _SECTION_BY_BLUEPRINT = {}
     for fg_bp in (
         legacy_bp, dispatches_bp, daily_figures_bp, reports_bp, dashboard_bp,
@@ -146,6 +148,7 @@ def create_app():
         spare_part_fabrications_bp,
     ):
         _SECTION_BY_BLUEPRINT[sp_bp.name] = SECTION_SPARE_PARTS
+    _SECTION_BY_BLUEPRINT[sales_bp.name] = SECTION_SALES
 
     @app.before_request
     def _enforce_section_by_blueprint():
