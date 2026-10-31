@@ -195,17 +195,20 @@ python -m flask run --port 5055
 SALES_TEST_BASE_URL=http://127.0.0.1:5055 npx playwright test
 ```
 
-The browser test signs in as a normal Sales Operator, opens 30/10/2026, and asserts the seven
-steps in the order a salesperson works them. It saves the salesperson's own starting stock
-(50 cartons of Compact Standard, no approval), counts the paper return in one action (50
-carried + 0 added = 50 out, 50 − 40 back = 10 sold), prices those 10 cartons on a single
-product card (10 × 79,000 = UGX 790,000) and proves that a card claiming 12 cartons is
-refused with the exact quantity to change. Mobile Money is recorded once for the day
-(UGX 200,000, Cash Expected 590,000), a 10,000 lunch expense moves Cash Expected to 580,000,
-counted cash and Mobile Money leave a zero difference, and the salesperson closes the day
-alone. It then proves a closed day is read-only, that the ownership check returns 403 for a
-foreign profile ID, that there is no horizontal overflow, that every control is at least 36px
-tall at 375×812, and that the next day carries the 40 counted back automatically with the
+The browser test signs in as a normal Sales Operator and asserts that today's Sales Day opens
+itself with no salesperson selector. It then opens 30/10/2026 and asserts the seven steps in
+the order a salesperson works them, reproducing the paper sheet: Compact 50 carried + 100
+delivered by Finished Goods = 150, return 40 → 110 sold; Napkins 10 + 20 = 30, return 5 →
+25 sold. Sold is previewed as the return is typed, one button saves every return, and the
+salesperson's own starting stock needs no approval. Each product then gets one card with two
+price rows — 100 × 79,000 + 10 × 80,000 = UGX 8,700,000 and 20 × 103,000 + 5 × 104,000 =
+UGX 2,580,000 — and a card claiming 30 napkin cartons is refused with the exact quantity to
+change. Total Sales is UGX 11,280,000, Mobile Money is 0, three expenses total 40,000, and
+Cash at Hand is UGX 11,240,000 (Total Sales − Mobile Money − Cash expenses); the salesperson
+counts their own cash and Mobile Money, sees a zero difference and closes the day alone. It
+then proves a closed day is read-only, that the ownership check returns 403 for a foreign
+profile ID, that there is no horizontal overflow, that every control is at least 36px tall at
+375×812, and that the next day carries the 40 counted back automatically with the
 starting-stock form gone.
 
 ## Operator workflow (corrected)
@@ -217,11 +220,15 @@ all seven without a Manager or Super Administrator watching:
 1. Vehicle stock. Each carried product is shown as the printed equation: Previous Return,
    Stock Added and Total Stock (read-only), a prominent RETURN TODAY entry, and Sold.
    Previous Return is filled from the last counted return, so nothing is retyped in the
-   morning. On the day a vehicle balance starts, the salesperson types their own starting
-   stock and saves it in one action (`PUT /api/sales/days/<date>/opening-stock`); there is
-   no approval step. From the next day on, starting stock is locked to the previous closing
-   count and the form is gone, so an earlier day cannot be rewritten by accident. One Save
-   Returns button sends every changed row.
+   morning. Sold is previewed in the browser the moment a return is typed, so the paper
+   arithmetic is visible before anything is saved; the saved figures always come back from
+   the server. Today's Sales Day is opened for the salesperson automatically (opening a day
+   is not a financial transaction) and any other date is opened with one tap, so nobody has
+   to ask for it. On the day a vehicle balance starts, the salesperson types their own
+   starting stock and saves it in one action (`PUT /api/sales/days/<date>/opening-stock`);
+   there is no approval step. From the next day on, starting stock is locked to the previous
+   closing count and the form is gone, so an earlier day cannot be rewritten by accident. One
+   Save Returns button sends every changed row.
 2. Sold today. A read-only roll-up per product: previous return + stock added = total stock,
    less return today = sold. Nothing is typed twice.
 3. Sales cards. One card per product that actually sold. The card already knows the counted
