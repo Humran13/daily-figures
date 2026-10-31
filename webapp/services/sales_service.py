@@ -263,6 +263,11 @@ def stock_reconciliation(profile, business_date):
             "product_name": product.name,
             "packaging_rule_id": rule.id,
             "supports_packs": rule.has_pack_tier,
+            # Display-only conversion factors so the Daily screen can preview
+            # "Sold" from the quantity the driver typed before saving.  The
+            # server still recalculates and validates the real figures.
+            "pieces_per_carton": rule.pieces_per_carton,
+            "pieces_per_pack": rule.pieces_per_pack,
             "opening_source": source,
             "opening_source_date": source_date,
             "opening": quantity_dict(opening, rule),

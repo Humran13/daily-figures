@@ -9,11 +9,13 @@
   <header class="hero"><div><p class="eyebrow">Sales Department</p><h1>Daily accountability</h1><p>Vehicle stock, today's sales and the cash you should be holding.</p></div><div id="statusPill" class="pill">Not loaded</div></header>
   <div id="message" role="alert" aria-live="polite"></div>
 
-  <div class="card controls">
+  <div class="card controls day-controls">
     <label>Date<input id="businessDate" type="date"></label>
     <label id="profileWrap">Salesperson<select id="profileSelect"></select></label>
-    <button id="loadDay" class="primary">Open day</button>
+    <button id="loadDay" class="hidden">Open day</button>
+    <button id="startDate" class="primary hidden">Start this date</button>
   </div>
+  <p class="hint" id="dayHint"></p>
 
   <nav class="tabs" aria-label="Sales views">
     <button data-view="daily" class="active">Daily</button><button data-view="debtors">Debtors</button><button data-view="history" id="historyTab">Reconciliation</button><button data-view="settings" id="settingsTab">Settings</button>
@@ -22,88 +24,93 @@
   <section id="dailyView" class="view">
     <div id="baselineWarning" class="warning hidden">Starting point required. A Manager or Super Administrator must set a trusted opening balance.</div>
 
-    <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
-      <p class="hint">Previous Return + Stock Added = Total Stock. Total Stock − Return Today = Sold. A return here is unsold stock still in the vehicle, never a warehouse return.</p>
-      <div id="stockList" class="stack empty">Open a day to begin.</div>
+    <section class="card"><h2><span class="step">1</span> Stock &amp; returns</h2>
+      <p class="hint">Previous Return + Stock Added = Total Stock. Total Stock − Return Today = Sold. Return Today is the unsold stock still in your vehicle, never a warehouse return.</p>
+      <div id="stockList" class="stack"><p class="empty">Loading today's stock…</p></div>
       <div id="stockWarnings" class="warning hidden"></div>
+      <div class="actions"><button id="saveReturns" class="primary">Save Returns</button></div>
+      <p class="hint">Type the return for each product, then tap Save Returns once.</p>
     </section>
 
     <section class="card"><h2><span class="step">2</span> Sales value</h2>
-      <p class="hint">Enter what was sold and its selling price. No customer is needed. The same product can be added again at a different price.</p>
-      <div class="form-grid">
-        <label>Product<select id="saleProduct"></select></label>
-        <label>Quantity<input id="saleQty" type="number" min="1" inputmode="numeric"></label>
-        <label>Unit<select id="saleUnit"><option value="carton">Carton</option><option value="pack">Pack</option><option value="piece">Piece</option></select></label>
-        <label>Selling Price per unit (UGX)<input id="salePrice" type="number" min="0" step="1" inputmode="numeric"></label>
-      </div>
-      <p class="hint" id="saleLineTotal">Value: —</p>
-      <button id="addSale" class="primary">Add sale</button>
-      <div id="invoiceList" class="stack"></div>
+      <p class="hint">No customer is needed. The same product can be sold at more than one price.</p>
+      <div id="saleGroups" class="stack"><p class="empty">Enter the returns above to see what you sold.</p></div>
+      <div class="total-sales"><span>Total Sales</span><strong id="totalSalesBig">UGX 0</strong></div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">3</span> Money balance</h2>
-      <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
+    <section class="card"><h2><span class="step">3</span> Debtors, Mobile Money &amp; expenses</h2>
+      <h3 class="block-title">Debtors — money still owed</h3>
+      <p class="hint">Only for people who took goods and have not paid. Total Sales is unchanged; this only reduces the money you should be holding.</p>
       <div class="form-grid">
-        <label>Mobile Money from today's sales<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
+        <label>Name<input id="debtorName" list="debtorNames" maxlength="120" autocomplete="off" placeholder="e.g. Darius"></label>
+        <label>Amount owed (UGX)<input id="debtAmount" type="number" min="1" step="1" inputmode="numeric"></label>
+        <label>Date<input id="debtDate" type="date"></label>
+      </div>
+      <datalist id="debtorNames"></datalist>
+      <button id="addDebt">Add debt</button>
+      <div id="debtList" class="stack"></div>
+
+      <h3 class="block-title">Mobile Money from today's sales</h3>
+      <div class="form-grid">
+        <label>One total amount (UGX)<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
         <button id="saveMobileSplit">Save Mobile Money</button>
       </div>
-      <p class="hint" id="tenderHint"></p>
-      <h3 class="block-title">Cash</h3>
-      <div class="cash-focus">
-        <div><span>Cash Expected</span><strong id="expectedCashBig">—</strong></div>
-        <div><span>Cash Counted</span><input id="actualCash" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your cash"></div>
-        <div><span>Difference</span><strong id="cashDifferenceBig">—</strong></div>
-      </div>
-      <h3 class="block-title">Mobile Money</h3>
-      <div class="cash-focus mobile-focus">
-        <div><span>Mobile Money Expected</span><strong id="expectedMobileBig">—</strong></div>
-        <div><span>Mobile Money Counted</span><input id="actualMobile" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your Mobile Money"></div>
-        <div><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
-      </div>
-      <div class="actions">
-        <button id="saveCounts">Save counted money</button>
-        <button id="closeDay" class="primary">Close day</button>
-        <button id="reopenDay" class="hidden">Reopen day</button>
-      </div>
-      <p class="hint">A shortage or overage is shown, never hidden. Only a Manager can change what the books expect.</p>
-    </section>
 
-    <section class="card"><h2>Expenses and money movement</h2>
-      <div class="quick-actions">
-        <button data-toggle-form="expenseForm">Add expense</button>
-        <button data-toggle-form="transferForm">Record money transfer / handover</button>
-      </div>
-      <div id="expenseForm" class="mini-form hidden">
-        <label>Description<input id="expenseDescription" maxlength="160" list="expenseSuggestions" autocomplete="off"></label><datalist id="expenseSuggestions"></datalist>
-        <label>Amount UGX<input id="expenseAmount" type="number" min="1" inputmode="numeric"></label>
-        <label>Paid from<select id="expenseMethod"><option value="cash">Cash</option><option value="mobile_money">Mobile Money</option><option value="other">Other</option></select></label>
+      <h3 class="block-title">Expenses</h3>
+      <div class="mini-form">
+        <div class="form-grid">
+          <label>Description<input id="expenseDescription" maxlength="160" list="expenseSuggestions" autocomplete="off"></label>
+          <label>Amount UGX<input id="expenseAmount" type="number" min="1" inputmode="numeric"></label>
+          <label>Paid from<select id="expenseMethod"><option value="cash">Cash</option><option value="mobile_money">Mobile Money</option><option value="other">Other</option></select></label>
+        </div>
+        <datalist id="expenseSuggestions"></datalist>
         <button id="addExpense">Record expense</button>
-        <div id="expenseList"></div>
+        <div id="expenseList" class="stack"></div>
+        <div class="paper-total"><span>Total Expenses</span><strong id="totalExpensesBig">UGX 0</strong></div>
+        <div class="paper-total net"><span>Net Sales After Expenses</span><strong id="netSalesBig">UGX 0</strong></div>
       </div>
+
+      <h3 class="block-title">Transfers / handover</h3>
+      <button data-toggle-form="transferForm">Record money transfer / handover</button>
       <div id="transferForm" class="mini-form hidden">
         <p class="hint">Moving money changes what you should physically be holding; it is not an expense.</p>
         <label>From<select id="transferFrom"><option value="cash">Cash</option><option value="mobile_money">Mobile Money</option></select></label>
         <label>To<select id="transferTo"><option value="mobile_money">Mobile Money</option><option value="cash">Cash</option><option value="company">Company cashier</option><option value="bank">Bank</option></select></label>
         <label>Amount UGX<input id="transferAmount" type="number" min="1" step="1" inputmode="numeric"></label>
         <button id="addTransfer">Record transfer</button>
-        <div id="transferList"></div>
+        <div id="transferList" class="stack"></div>
+      </div>
+    </section>
+
+    <section class="card money-card"><h2><span class="step">4</span> Balance</h2>
+      <div class="ledger">
+        <div id="cashEquation"></div>
+        <div class="ledger-row total"><span>Cash Expected</span><strong id="expectedCashBig">—</strong></div>
+        <div class="ledger-row"><span>Cash Counted (UGX)</span><input id="actualCash" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your cash"></div>
+        <div class="ledger-row"><span>Difference</span><strong id="cashDifferenceBig">—</strong></div>
+      </div>
+      <p class="hint" id="tenderHint"></p>
+      <h3 class="block-title">Mobile Money</h3>
+      <div class="ledger">
+        <div class="ledger-row total"><span>Mobile Money Expected</span><strong id="expectedMobileBig">—</strong></div>
+        <div class="ledger-row"><span>Mobile Money Counted (UGX)</span><input id="actualMobile" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your Mobile Money"></div>
+        <div class="ledger-row"><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
+      </div>
+      <div class="actions"><button id="saveCounts" class="primary">Save counted money</button></div>
+    </section>
+
+    <section class="card"><h2><span class="step">5</span> Close day</h2>
+      <p class="hint">Every return is counted and every carton sold has a price before the day can close. A shortage or overage is shown, never hidden.</p>
+      <div class="actions">
+        <button id="closeDay" class="primary">Close day</button>
+        <button id="reopenDay" class="hidden">Reopen day</button>
       </div>
     </section>
   </section>
 
   <section id="debtorsView" class="view hidden">
     <section class="card"><h2>Debtors</h2>
-      <p class="hint">Only for people who took goods and have not paid. The sale is already counted; this only says how much of the money is still owed. Type any name you use for them.</p>
-      <div class="form-grid">
-        <label>Name<input id="debtorName" list="debtorNames" maxlength="120" autocomplete="off" placeholder="e.g. Darius"></label><datalist id="debtorNames"></datalist>
-        <label>Amount owed (UGX)<input id="debtAmount" type="number" min="1" step="1" inputmode="numeric"></label>
-        <label>Date<input id="debtDate" type="date"></label>
-      </div>
-      <button id="addDebt" class="primary">Add debt</button>
-      <div id="debtList" class="stack"></div>
-    </section>
-
-    <section class="card"><h2>Debtors</h2>
+      <p class="hint">Unpaid money is added in step 3 of the Daily screen. Every name is free text and is remembered for next time. Record a payment on the date the money was actually received.</p>
       <div class="form-grid"><label>Search<input id="debtorSearch" placeholder="Type a name" autocomplete="off"></label></div>
       <button id="loadDebtors">Refresh</button>
       <div id="debtorList" class="stack"></div>

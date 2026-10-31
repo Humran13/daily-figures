@@ -160,7 +160,7 @@ Reports are available as CSV, XLSX and branded PDF for daily summaries and date-
 
 Every report and export page links to `csv`, `xlsx` and `pdf` for the currently selected salesperson and date, so nobody has to hand-write query strings.
 
-The Sales screen itself is a single mobile-first page: a daily dashboard card (receivable total, unresolved days), stock rows with closing-count entry, invoice lines with live line totals, expense entry with previously-used description suggestions, a receipts list, transfer and adjustment forms, a reopen button for closed days, and Manager/Super Admin settings for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
+The Sales screen itself is a single mobile-first page. For a driver it is five steps: stock & returns (the paper equation, one prominent Return Today entry per carried product and one Save Returns action), sales value grouped under each sold product with its price lines and TOTAL SALES, debtors / Mobile Money / expenses with TOTAL EXPENSES and NET SALES AFTER EXPENSES, a vertical balance from Total Sales to Cash Expected, Cash Counted and Difference, and Close day. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
 
 ## Corrections, idempotency and audit
 
@@ -195,34 +195,60 @@ python -m flask run --port 5055
 SALES_TEST_BASE_URL=http://127.0.0.1:5055 npx playwright test
 ```
 
-The browser test signs in as an Operator, loads the day, counts every product's
-return, records a sale (no customer), records the day's Mobile Money once,
-records a cash expense, counts Cash and Mobile Money (both differences must be
-zero), closes the day, confirms the ownership check returns 403 for a foreign
-profile ID, and asserts no horizontal overflow and touch-friendly controls at
-375×812.
-
+The browser test signs in as a normal Sales Operator and asserts the driver's
+first-load experience: no salesperson selector, today selected and opened
+automatically, Return Today inputs visible without pressing anything, stock
+figures read-only, no customer or Walk-in field, no horizontal overflow, and no
+product that carries nothing. It then switches to 30/10/2026 (shown, not
+silently created, until "Start this date" is tapped) and reproduces the paper
+sheet: Compact 50 + 100 = 150 − 40 = 110 sold and Napkins 10 + 20 = 30 − 5 = 25
+sold, one Save Returns action for both, four price lines (100 × 79,000;
+10 × 80,000; 20 × 103,000; 5 × 104,000) giving TOTAL SALES 11,280,000, three
+cash expenses giving TOTAL EXPENSES 40,000, NET SALES AFTER EXPENSES and CASH
+EXPECTED 11,240,000, counted cash leaving a zero difference, then Close day.
+Finally it confirms the ownership check returns 403 for a foreign profile ID and
+that every visible control is touch-sized at 375×812.
 
 ## Operator workflow (corrected)
 
 The person using the Daily Sales screen is a driver / field salesperson, not an
-accountant. The screen follows the real-world order of the day:
+accountant. The screen follows the real-world order of the day and mirrors the
+handwritten sheet:
 
-1. Open the salesperson / day.
-2. Vehicle stock: Previous Return + Stock Added = Total Stock; Total Stock −
-   Return Today = Sold. Previous Return is filled from the last counted return,
-   so nothing is retyped in the morning.
-3. Sales value: quantity, unit and Selling Price per line. Add the same product
-   again for each different price.
-4. Money balance: Total Sales, Mobile Money, Debtors, Expenses, Cash from
-   sales, then Cash Expected / Cash Counted / Difference and Mobile Money
-   Expected / Counted / Difference.
-5. Expenses and money movements stay collapsed until they are actually needed.
+1. Date. A driver has no salesperson selector and no "Open day" step: today is
+   selected and opened automatically and the stock rows render immediately,
+   because opening a Sales Day is not a financial transaction. Choosing another
+   date loads it; a date with no day shows a single "Start this date" action, so
+   scrolling the calendar never creates empty historical days.
+2. Stock & returns. Each carried product is shown as the paper equation:
+   Previous Return, Stock Added and Total Stock (read-only), a prominent
+   RETURN TODAY entry, and Sold, which previews as soon as the driver types.
+   One Save Returns button sends every changed row. Previous Return is filled
+   from the last counted return, so nothing is retyped in the morning.
+3. Sales value. Price entries are grouped beneath the product the stock already
+   proved was sold ("Sold from stock: 110 cartons"), each line being
+   quantity × price, with "Add price" for another selling price of the same
+   product. Every group shows Sold from stock, Priced and the difference
+   ("✓ Balanced" or "5 cartons still need a selling price"). TOTAL SALES is one
+   prominent figure.
+4. Debtors, Mobile Money and expenses. Debtor names stay free text and are
+   remembered; Mobile Money is one amount for the day; expenses are
+   description, amount and paid-from, followed by TOTAL EXPENSES and NET SALES
+   AFTER EXPENSES. Money transfers/handover stay collapsed.
+5. Balance. Total Sales, less Debtors, less Mobile Money, cash from today's
+   sales, plus old debts collected, less cash expenses, less cash handed over,
+   plus cash brought forward, then CASH EXPECTED, Cash Counted and Difference.
+   Mobile Money has its own expected/counted/difference.
+6. Close day.
 
 An ordinary paid sale never asks for a customer, invoice, per-sale payment
 method or amount received. The same product can be sold at several prices on
 the same day and every price line stays its own sale line. Unpaid amounts are
-recorded separately in the Debtors tab as a name and an amount.
+recorded separately as a name and an amount.
+
+Browser arithmetic is a preview only. Every saved return, sales price, expense
+and count is recalculated and validated by the Python services, and a Manager
+still needs a recorded reason to change an already-saved return.
 
 The daily stock list only shows products that belong to that salesperson's
 vehicle balance: a positive opening count, stock loaded today, a recorded
