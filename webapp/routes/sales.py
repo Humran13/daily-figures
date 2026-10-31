@@ -66,6 +66,25 @@ def _operational_writer():
     return current_user().role in (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN)
 
 
+def _product_meta(product, business_date):
+    """Product plus the packaging rule in force, for the daily entry forms."""
+    try:
+        rule = svc._rule_for(product.id, business_date)
+    except svc.SalesError:
+        rule = None
+    item = {"id": product.id, "name": product.name}
+    if rule is not None:
+        item["rule"] = {
+            "pieces_per_carton": rule.pieces_per_carton,
+            "pieces_per_pack": rule.pieces_per_pack,
+            "has_pack_tier": rule.has_pack_tier,
+            "cartons_to_packs": rule.cartons_to_packs,
+            "packs_to_pieces": rule.packs_to_pieces,
+        }
+        item["units"] = (["carton", "pack", "piece"] if rule.has_pack_tier else ["carton", "piece"])
+    return item
+
+
 def _require_editable_day(profile, business_date):
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(business_date)).first()
     if day is None:
@@ -87,7 +106,7 @@ def metadata():
     categories = SalesCategory.query.filter_by(active=True).order_by(SalesCategory.display_order, SalesCategory.name).all()
     return jsonify({
         "profiles": [svc.profile_dict(p) for p in profiles],
-        "products": [{"id": p.id, "name": p.name} for p in products],
+        "products": [_product_meta(p, business_today()) for p in products],
         "customers": [{"id": c.id, "name": c.name, "category": c.category} for c in customers],
         "sales_categories": [c.to_dict() for c in categories],
         "payment_methods": PAYMENT_METHODS, "money_accounts": MONEY_ACCOUNTS,
@@ -284,6 +303,74 @@ def closing_stock(date_str):
         db.session.rollback(); return _error(exc)
 
 
+@sales_bp.route("/days/<date_str>/opening-stock", methods=["PUT"])
+@login_required
+def opening_stock(date_str):
+    """The salesperson declares the stock they are starting the vehicle with.
+
+    This is the one thing a Manager used to have to open the day for.  It is
+    ordinary data entry: whoever is holding the stock says what is on the
+    vehicle, and every later day carries it forward automatically.
+    """
+    if not _operational_writer(): return _error("This role cannot declare starting stock", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(date_str)).first()
+    if day is None: return _error("Create the Sales Day first")
+    lines = data.get("lines")
+    if lines is None and data.get("product_id") is not None:
+        lines = [data]
+    if not isinstance(lines, list) or not lines:
+        return _error("Enter the starting stock for at least one product")
+    try:
+        for item in lines:
+            if not isinstance(item, dict):
+                raise svc.SalesError("Each starting stock line needs a product and a quantity")
+            svc.set_opening_return(profile, date_str, item.get("product_id"), item.get("quantity"),
+                                   item.get("unit"), current_user())
+        db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/days/<date_str>/returns", methods=["PUT"])
+@login_required
+def returns_today(date_str):
+    """Count every product's return today in a single save."""
+    if not _operational_writer(): return _error("This role cannot edit vehicle stock", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(date_str)).first()
+    if day is None: return _error("Create the Sales Day first")
+    try:
+        svc.save_returns_today(day, data.get("lines"), current_user(), elevated=_elevated())
+        db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/days/<date_str>/products/<int:product_id>/sales", methods=["PUT"])
+@login_required
+def product_sales(date_str, product_id):
+    """Save one product's sales card (several price rows) in one action."""
+    if not _operational_writer(): return _error("This role cannot record sales", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    try:
+        _require_editable_day(profile, date_str)
+        invoice, action = svc.save_product_sales(profile, date_str, product_id, data.get("rows"), current_user())
+        db.session.commit()
+        summary = svc.daily_summary(profile, date_str)
+        summary["card"] = {"action": action, "invoice_id": invoice.id if invoice else None,
+                           "product_id": product_id}
+        return jsonify(summary)
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
 @sales_bp.route("/days/<date_str>/closing-stock/preview", methods=["POST"])
 @login_required
 def closing_stock_preview(date_str):
@@ -296,7 +383,7 @@ def closing_stock_preview(date_str):
         rule = svc._rule_for(product.id, date_str)
         new_closing = 0 if data.get("quantity") == 0 else svc.unit_to_base(data.get("quantity"), data.get("unit"), rule)
         row = next(r for r in svc.stock_reconciliation(profile, date_str) if r["product_id"] == product.id)
-        if row["available"] is None: raise svc.SalesError("A starting point is required for this salesperson before this date. Ask a Manager to set the opening returns.")
+        if row["available"] is None: raise svc.SalesError("The starting stock has not been declared for this salesperson on or before this date.")
         available = row["available"]["base_unit_qty"]
         if new_closing > available: raise svc.SalesError("Return today cannot exceed total stock.")
         old_derived = row["derived_sold"]["base_unit_qty"] if row["derived_sold"] else None
@@ -556,7 +643,8 @@ def cash_adjustment():
 @sales_bp.route("/void/<entity>/<int:record_id>", methods=["POST"])
 @login_required
 def void_entity(entity, record_id):
-    if not _elevated(): return _error("Manager or Super Administrator authority is required", 403)
+    if not (_elevated() or _operational_writer()):
+        return _error("This role cannot void Sales records", 403)
     mapping = {"invoice": SalesInvoice, "payment": SalesPayment, "expense": SalesExpense,
                "transfer": SalesMoneyTransfer, "stock-adjustment": SalesStockAdjustment,
                "debt": SalesDebt, "debt-payment": SalesDebtPayment}
@@ -565,8 +653,16 @@ def void_entity(entity, record_id):
     row = db.session.get(model, record_id)
     if row is None: return _error("not found", 404)
     profile_id = row.sales_profile_id if hasattr(row, "sales_profile_id") else row.invoice.sales_profile_id
-    _, err = _profile_response(profile_id, write=True)
+    profile, err = _profile_response(profile_id, write=True)
     if err: return err
+    if not _elevated():
+        # A salesperson fixes their own mistakes before the day is closed; a
+        # closed day still needs a Manager, because it has already been
+        # reconciled and reported.
+        day_date = getattr(row, "business_date", None) or getattr(row, "payment_date", None)
+        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=day_date).first() if day_date else None
+        if day is not None and day.status == DAY_CLOSED:
+            return _error("A closed Sales Day must be reopened by a Manager or Super Administrator before it can be edited", 403)
     try:
         svc.void_record(row, current_user(), (request.get_json(silent=True) or {}).get("reason"))
         db.session.commit(); return jsonify({"ok": True})

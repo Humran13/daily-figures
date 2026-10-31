@@ -9,59 +9,11 @@ const ACCOUNT_LABEL={cash:'Cash',mobile_money:'Mobile Money',company:'Company ca
 function msg(text,ok=false){const e=$('message');e.textContent=text||'';e.className=text?(ok?'ok':'error'):'';if(text)e.scrollIntoView({behavior:'smooth',block:'nearest'});}
 async function api(path,options={}){options.headers={...(options.headers||{}),'Content-Type':'application/json'};const r=await fetch(path,options);const d=await r.json().catch(()=>({error:'Unexpected server response'}));if(!r.ok)throw new Error(d.error||'Request failed');return d;}
 async function withBusy(button,work){if(button)button.disabled=true;try{return await work();}finally{if(button)button.disabled=false;}}
-function profileId(){
-  const el=$('profileSelect');
-  const chosen=el?Number(el.value)||0:0;
-  if(chosen)return chosen;
-  // A normal salesperson has exactly one profile and no selector, so the page
-  // uses the profile the server already linked to the signed-in user.
-  if(session&&session.user&&session.user.role==='operator'&&meta&&meta.profiles&&meta.profiles.length===1)return meta.profiles[0].id;
-  return null;
-}
-
+function profileId(){return Number($('profileSelect').value)||null;}
 function dateVal(){return $('businessDate').value;}
 function fillSelect(el,rows,label,blank){if(!el)return;el.innerHTML=(blank?`<option value="">${esc(blank)}</option>`:'')+rows.map(r=>`<option value="${r.id}">${esc(label(r))}</option>`).join('');}
 function profileParam(){return profileId()?`sales_profile_id=${profileId()}`:'';}
 function renderDebtorNames(names){const list=[...new Set((names||[]).map(n=>String(n||'').trim()).filter(Boolean))];$('debtorNames').innerHTML=list.map(n=>`<option value="${esc(n)}"></option>`).join('');}
-function isOperator(){return !!session&&!!session.user&&session.user.role==='operator';}
-function piecesPerCarton(row){return row&&row.pieces_per_carton?row.pieces_per_carton:1;}
-function piecesPerPack(row){return row&&row.pieces_per_pack?row.pieces_per_pack:0;}
-// Display-only mirror of the server's cartons/packs/pieces notation so the
-// driver sees "110 cartons" the instant a return is typed.  The server
-// recalculates and validates every saved figure.
-function quantityLabel(base,row){
-  const value=Math.round(Number(base)||0),negative=value<0,abs=Math.abs(value);
-  const perCarton=piecesPerCarton(row),perPack=piecesPerPack(row);
-  let cartons,packs,pieces;
-  if(perPack){const totalPacks=Math.floor(abs/perPack);pieces=abs%perPack;const perCartonPacks=Math.max(1,Math.round(perCarton/perPack));cartons=Math.floor(totalPacks/perCartonPacks);packs=totalPacks%perCartonPacks;}
-  else{cartons=Math.floor(abs/perCarton);packs=0;pieces=abs%perCarton;}
-  const parts=[];
-  if(cartons)parts.push(`${cartons} carton${cartons===1?'':'s'}`);
-  if(packs)parts.push(`${packs} pack${packs===1?'':'s'}`);
-  if(pieces||!parts)parts.push(`${pieces} piece${pieces===1?'':'s'}`);
-  return (negative?'-':'')+parts.join(' ');
-}
-function baseFromEntry(quantity,unit,row){
-  const value=Math.floor(Number(quantity)||0);
-  if(!Number.isFinite(value)||value<=0)return 0;
-  if(unit==='carton')return value*piecesPerCarton(row);
-  if(unit==='pack'){const perPack=piecesPerPack(row);return perPack?value*perPack:value*piecesPerCarton(row);}
-  return value;
-}
-function unitChoices(row,selected){
-  return ['carton',...(row&&row.supports_packs?['pack']:[]),'piece']
-    .map(u=>`<option value="${u}"${u===selected?' selected':''}>${u==='carton'?'Cartons':u==='pack'?'Packs':'Pieces'}</option>`).join('');
-}
-function unitWord(unit,quantity){
-  const label=unit==='carton'?'carton':unit==='pack'?'pack':'piece';
-  return Number(quantity)===1?label:label+'s';
-}
-function closingEntry(row){
-  if(!row.closing)return{value:'',unit:'carton'};
-  const base=row.closing.base_unit_qty||0,perCarton=piecesPerCarton(row);
-  if(perCarton>1&&base%perCarton===0)return{value:String(base/perCarton),unit:'carton'};
-  return{value:String(base),unit:'piece'};
-}
 
 async function boot(){
   try{
@@ -70,12 +22,9 @@ async function boot(){
     meta=await api('/api/sales/metadata');
     const today=session.business_today;
     ['businessDate','historyTo','baselineDate','openingDate','adjDate','cashAdjDate','debtDate'].forEach(id=>{if($(id)&&!$(id).value)$(id).value=today;});
-    $('businessDate').value=today;
     $('historyFrom').value=today.slice(0,8)+'01';
     fillSelect($('profileSelect'),meta.profiles,p=>p.display_name);
-    // A driver never chooses who they are: the server already knows.
-    $('profileWrap').classList.toggle('hidden',isOperator());
-    if(!isOperator()&&meta.profiles.length)$('profileSelect').value=String(meta.profiles[0].id);
+    $('profileWrap').classList.toggle('hidden',session.user.role==='operator');
     fillSelect($('adjProduct'),meta.products,p=>p.name);
     fillSelect($('profileCategory'),meta.sales_categories,c=>c.name,'None');
     fillSelect($('profileRecipient'),meta.customers.filter(c=>c.category==='salesperson'),c=>c.name,'None');
@@ -86,27 +35,12 @@ async function boot(){
     await loadAdminUsers();
     if(session.user.role==='super_admin')await loadProfiles();
     if(!meta.profiles.length){
-      if(isOperator())msg('Your Sales account has not been set up. Please contact a Manager.');
-      $('stockList').innerHTML='<p class="empty">No Sales person is linked to this account yet.</p>';
-      $('statusPill').textContent='NOT OPENED';
+      if(session.user.role==='operator')msg('Your Sales account has not been set up. Please contact a Manager.');
       renderReportLinks();return;
     }
-    await openDefaultDay();
+    await loadDay(false);
     renderReportLinks();
   }catch(e){msg(e.message);}
-}
-// Opening a Sales Day is not a financial transaction, so today's day is
-// created automatically for a driver.  Any other date is only created when
-// the driver explicitly taps "Start this date".
-async function openDefaultDay(){
-  const today=session.business_today;
-  const target=dateVal()||today;
-  $('businessDate').value=target;
-  await loadDay(isOperator()&&target===today);
-}
-async function selectDate(){
-  if(!dateVal())return;
-  await loadDay(isOperator()&&dateVal()===session.business_today);
 }
 async function loadAdminUsers(){if(!meta.can_manage)return;try{const users=await api('/api/admin/users');fillSelect($('profileUser'),users.filter(u=>u.role==='operator'&&!meta.profiles.some(p=>p.user_id===u.id)),u=>u.username);}catch(e){/* profile creation is super-admin only */}}
 async function loadDay(create=false){
@@ -122,171 +56,214 @@ async function loadDay(create=false){
 }
 function render(){
   if(!current)return;
-  const day=current.day;
-  const started=!!day,closed=started&&day.status==='closed';
-  $('statusPill').textContent=started?day.status.toUpperCase():'NOT OPENED';
-  $('baselineWarning').classList.toggle('hidden',!current.baseline_required);
-  $('startDate').classList.toggle('hidden',!isOperator()||started);
-  $('loadDay').classList.toggle('hidden',isOperator());
-  $('dayHint').textContent=started?'':'This date is not started yet. Tap "Start this date" to enter its stock.';
-  $('saveReturns').disabled=!started||closed;
+  syncDrafts();
+  const closed=current.day&&current.day.status==='closed';
+  $('statusPill').textContent=current.day?current.day.status.toUpperCase():'NOT OPENED';
+  renderOpeningNotice();
   $('reopenDay').classList.toggle('hidden',!closed||!meta.can_manage);
-  $('closeDay').classList.toggle('hidden',closed||!started);
-  ['saveCounts','addExpense','addTransfer','saveMobileSplit','addDebt','actualCash','actualMobile','mobileFromSales'].forEach(id=>{const el=$(id);if(el)el.disabled=!started||closed;});
+  $('closeDay').classList.toggle('hidden',closed);
+  ['saveCounts','saveReturns','saveOpening','saveMobileSplit','addExpense','addTransfer'].forEach(id=>{if($(id))$(id).disabled=closed;});
+  // Starting stock can only be typed on the day the vehicle balance starts, so
+  // the button is inert (not an error message) on every later day.
+  if($('saveOpening'))$('saveOpening').disabled=!!closed||!(current.stock||[]).some(r=>r.can_set_opening);
   renderDebtorNames(current.debtor_names||meta.debtor_names||[]);
   renderStock();
+  renderDeclarePicker();
   renderStockWarnings();
-  renderSalesGroups();
+  renderSoldList();
+  renderCards();
+  renderInvoices();
   renderMoney();
   renderExpenseList();
   renderTransferList();
   renderDayDebts();
   renderSuggestions();
 }
-function renderStock(){
-  const list=$('stockList');
-  if(!current.day){
-    list.innerHTML='<p class="empty">This date is not started yet. Tap "Start this date" to enter its stock.</p>';
-    return;
-  }
-  if(!current.stock.length){
-    list.innerHTML='<p class="empty">No stock belongs to this vehicle yet. A Manager can load stock or set the opening return.</p>';
-    return;
-  }
-  list.innerHTML=current.stock.map(r=>{
-    const entry=closingEntry(r);
-    const mismatch=r.variance&&r.variance.base_unit_qty!==0;
-    const tag=r.closing
-      ?(mismatch?'<span class="tag bad">Check the prices</span>':'<span class="tag">Return counted</span>')
-      :'<span class="tag">Return not entered</span>';
-    return `<article class="stock-row" data-stock-row="${r.product_id}">
-      <div class="stock-head"><strong>${esc(r.product_name)}</strong>${tag}</div>
-      <div class="paper-stock">
-        <div class="paper-line"><span>Previous Return</span><b>${r.opening?esc(r.opening.label):'Starting point required'}</b></div>
-        <div class="paper-line"><span>Stock Added</span><b>${esc(r.added.label)}</b></div>
-        <div class="paper-line total"><span>Total Stock</span><b>${r.available?esc(r.available.label):'—'}</b></div>
-        <label class="return-line"><span>Return Today</span><span class="return-entry"><input data-return-qty="${r.product_id}" type="number" min="0" step="1" inputmode="numeric" value="${esc(entry.value)}" placeholder="0" aria-label="${esc(r.product_name)} return today"><select data-return-unit="${r.product_id}" aria-label="${esc(r.product_name)} return unit">${unitChoices(r,entry.unit)}</select></span></label>
-        <div class="paper-line sold"><span>Sold</span><b data-sold-label="${r.product_id}">${r.derived_sold?esc(r.derived_sold.label):'—'}</b></div>
-      </div>
-    </article>`;
-  }).join('');
-  current.stock.forEach(r=>{
-    const input=list.querySelector(`[data-return-qty="${r.product_id}"]`);
-    const unit=list.querySelector(`[data-return-unit="${r.product_id}"]`);
-    if(!input)return;
-    input.addEventListener('input',()=>previewSold(r.product_id));
-    if(unit)unit.addEventListener('change',()=>previewSold(r.product_id));
-  });
+function canVoid(){
+  const closed=current&&current.day&&current.day.status==='closed';
+  return !closed||!!(meta&&meta.can_manage);
 }
-function previewSold(pid){
-  const row=current.stock.find(r=>r.product_id===pid);
-  const input=document.querySelector(`[data-return-qty="${pid}"]`);
-  const unit=document.querySelector(`[data-return-unit="${pid}"]`);
-  const label=document.querySelector(`[data-sold-label="${pid}"]`);
-  if(!row||!input||!label)return;
-  if(!row.available){label.textContent='—';return;}
-  const raw=String(input.value||'').trim();
-  if(raw===''){label.textContent='—';input.classList.remove('short');return;}
-  const returned=baseFromEntry(raw,unit?unit.value:'carton',row);
-  const sold=(row.available.base_unit_qty||0)-returned;
-  if(sold<0){label.textContent='More than total stock';input.classList.add('short');return;}
-  input.classList.remove('short');
-  label.textContent=quantityLabel(sold,row);
+function unitOptions(rule,selected){
+  const units=['carton',...(rule&&rule.has_pack_tier?['pack']:[]),'piece'];
+  return units.map(u=>`<option value="${u}"${u===(selected||'carton')?' selected':''}>${u==='carton'?'Cartons':u==='pack'?'Packs':'Pieces'}</option>`).join('');
+}
+function renderOpeningNotice(){
+  const el=$('openingNotice');if(!el)return;
+  const opening=current.opening||{},unset=opening.unset_products||[];
+  if(!unset.length){el.classList.add('hidden');el.textContent='';return;}
+  el.classList.remove('hidden');
+  el.textContent=opening.can_declare
+    ? `Starting stock still to declare: ${unset.join(', ')}. Type what is on the vehicle under Vehicle stock and press “Save starting stock” — no Manager approval is needed.`
+    : `No starting stock is recorded on or before this date for: ${unset.join(', ')}.`;
+}
+function renderStock(){
+  const rows=current.stock||[];
+  const closed=!!(current.day&&current.day.status==='closed');
+  $('stockList').classList.toggle('empty',!rows.length);
+  $('stockList').innerHTML=rows.map(r=>{
+    const rule=ruleFor(r);
+    const mismatch=!!(r.variance&&r.variance.base_unit_qty!==0);
+    const started=r.opening?`Started with ${esc(r.opening.label)}${r.added&&r.added.base_unit_qty?` + ${esc(r.added.label)} added`:''}`:'No starting stock yet';
+    const soldLine=r.available&&r.closing?`${esc(r.available.label)} − ${esc(r.closing.label)} = ${esc(r.derived_sold.label)} sold`:'';
+    const tag=mismatch?['bad','Check count']:(r.opening===null?(r.can_set_opening?['warn','Starting stock needed']:['bad','Starting stock missing']):(r.closing?['','Return counted']:['','Return not counted']));
+    const canStart=!!r.can_set_opening&&!closed;
+    const starting=canStart
+      ?`<div class="starting-form"><span class="start-label">${r.opening?'Correct starting stock':'Starting stock — what you are carrying today'}</span><input data-open-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.opening?esc(r.opening.label):'Qty'}" aria-label="${esc(r.product_name)} starting stock"><select data-open-unit="${r.product_id}" aria-label="${esc(r.product_name)} starting stock unit">${unitOptions(rule,'carton')}</select></div>`
+      :(r.opening===null?'<small class="warn-text">Starting stock for this product has to be recorded on the day the vehicle balance started.</small>':'');
+    return `<article class="stock-row"><div class="stock-head"><strong>${esc(r.product_name)}</strong><span class="tag ${tag[0]}">${tag[1]}</span></div><div class="stock-grid"><div class="datum"><span>Previous Return</span><strong>${r.opening?esc(r.opening.label):'—'}</strong></div><div class="datum"><span>Stock Added</span><strong>${esc(r.added.label)}</strong></div><div class="datum"><span>Total Stock</span><strong>${r.available?esc(r.available.label):'—'}</strong></div><div class="datum"><span>Return Today</span><strong>${r.closing?esc(r.closing.label):'—'}</strong></div><div class="datum"><span>Sold</span><strong>${r.derived_sold?esc(r.derived_sold.label):'—'}</strong></div></div><small class="stock-equation">${started}${soldLine?' · '+soldLine:''}</small>${mismatch?`<small class="warn-text">Stock count says ${esc(r.derived_sold.label)} sold, sales cards say ${esc(r.recorded_sold.label)} (difference ${esc(r.variance.label)}).</small>`:''}${starting}${closed?'':`<div class="closing-form"><input data-close-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.closing?esc(r.closing.label):'Return today'}" aria-label="${esc(r.product_name)} return today"><select data-close-unit="${r.product_id}" aria-label="${esc(r.product_name)} return today unit">${unitOptions(rule,'carton')}</select></div>`}</article>`;
+  }).join('')||'<p class="empty">No products belong to this vehicle balance yet. Add what you are carrying below.</p>';
+}
+function renderDeclarePicker(){
+  const form=$('declareForm');if(!form)return;
+  const closed=!!(current.day&&current.day.status==='closed');
+  const inStock=new Set((current.stock||[]).map(r=>r.product_id));
+  const rows=(meta.products||[]).filter(p=>!inStock.has(p.id));
+  const show=!closed&&!!(current.opening||{}).can_declare&&rows.length>0;
+  form.classList.toggle('hidden',!show);
+  if(!show)return;
+  const select=$('declareProduct'),keep=select.value;
+  select.innerHTML=rows.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  if(rows.some(p=>String(p.id)===String(keep)))select.value=keep;
+  const chosen=rows.find(p=>String(p.id)===String(select.value))||rows[0];
+  $('declareUnit').innerHTML=unitOptions(chosen.rule,'carton');
+}
+function renderSoldList(){
+  const rows=current.stock||[];
+  $('soldList').classList.toggle('empty',!rows.length);
+  $('soldList').innerHTML=rows.map(r=>{
+    let state;
+    if(!r.derived_sold)state=['warn','Count the return today'];
+    else if(r.derived_sold.base_unit_qty===0)state=['ok','Nothing sold'];
+    else if(r.variance&&r.variance.base_unit_qty===0)state=['ok','Fully priced'];
+    else if(!r.recorded_sold||r.recorded_sold.base_unit_qty===0)state=['bad','Not priced yet'];
+    else state=['bad','Partly priced'];
+    const equation=r.available?`${esc(r.available.label)} available${r.closing?` − ${esc(r.closing.label)} returned`:''}`:'Waiting for starting stock';
+    return `<div class="sold-row"><div><strong>${esc(r.product_name)}</strong><small class="stock-equation">${equation}</small></div><span class="sold-qty">${r.derived_sold?esc(r.derived_sold.label):'—'}</span><span class="tag ${state[0]}">${state[1]}</span></div>`;
+  }).join('')||'<p class="empty">No products in this vehicle balance yet.</p>';
+}
+let drafts={},draftsKey='';
+function syncDrafts(){
+  const key=`${profileId()}|${dateVal()}`;
+  if(key!==draftsKey){drafts={};draftsKey=key;}
+}
+function ruleFor(row){
+  const rule=row&&row.rule?row.rule:null;
+  return rule||{pieces_per_carton:1,pieces_per_pack:0,has_pack_tier:false};
+}
+function toBase(qty,unit,rule){
+  const value=Number(qty)||0;
+  if(unit==='carton')return value*(rule.pieces_per_carton||1);
+  if(unit==='pack')return value*(rule.pieces_per_pack||0);
+  return value;
+}
+function qtyLabel(base,rule){
+  const pieces=Math.abs(Number(base)||0),perCarton=rule.pieces_per_carton||1,perPack=rule.has_pack_tier?(rule.pieces_per_pack||0):0;
+  const parts=[];let rest=pieces;
+  const cartons=Math.floor(rest/perCarton);rest-=cartons*perCarton;
+  if(cartons)parts.push(`${cartons} carton${cartons===1?'':'s'}`);
+  if(perPack){
+    const packs=Math.floor(rest/perPack);rest-=packs*perPack;
+    if(packs)parts.push(`${packs} pack${packs===1?'':'s'}`);
+  }
+  if(rest||!parts.length)parts.push(`${rest} piece${rest===1?'':'s'}`);
+  return parts.join(' ');
+}
+function stockRow(productId){return (current.stock||[]).find(r=>r.product_id===productId)||null;}
+function savedCard(productId){return (current.product_cards||[]).find(c=>c.product_id===productId)||null;}
+function blankRow(){return {quantity:'',unit:'carton',unit_price_ugx:''};}
+function draftFor(productId){
+  if(!drafts[productId]){
+    const card=savedCard(productId);
+    drafts[productId]=card&&card.rows.length
+      ? card.rows.map(r=>({quantity:r.quantity,unit:r.unit,unit_price_ugx:r.unit_price_ugx}))
+      : [blankRow()];
+  }
+  return drafts[productId];
+}
+function priceRow(row,rule,line,index){
+  const value=(Number(line.quantity)||0)*(Number(line.unit_price_ugx)||0);
+  const qty=line.quantity===''||line.quantity==null?'':esc(line.quantity);
+  const price=line.unit_price_ugx===''||line.unit_price_ugx==null?'':esc(line.unit_price_ugx);
+  return `<div class="price-row"><label class="price-qty">Quantity<input data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="quantity" type="number" min="1" step="1" inputmode="numeric" value="${qty}" placeholder="Qty"></label><label class="price-unit">Unit<select data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="unit">${unitOptions(rule,line.unit)}</select></label><label class="price-amount">Price per unit (UGX)<input data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="unit_price_ugx" type="number" min="1" step="1" inputmode="numeric" value="${price}" placeholder="Selling price"></label><strong class="row-value" id="rowValue-${row.product_id}-${index}">${value>0?ugx(value):'—'}</strong><button data-card-remove="${row.product_id}" data-card-index="${index}" aria-label="Remove this price row">×</button></div>`;
 }
 function renderStockWarnings(){
-  const rows=(current.stock||[]).filter(r=>r.variance&&r.variance.base_unit_qty!==0);
-  const box=$('stockWarnings');
-  box.classList.toggle('hidden',!rows.length);
-  box.innerHTML=rows.map(r=>{
-    const shortLabel=String((r.variance||{}).label||'').replace(/^-/,'');
-    return `<div>${esc(r.product_name)}: ${r.variance.base_unit_qty>0
-      ?`${esc(shortLabel)} still need a selling price`
-      :`prices cover ${esc(shortLabel)} more than the stock says were sold`}.</div>`;
-  }).join('');
+  const warnings=current.stock_warnings||[];
+  $('stockWarnings').classList.toggle('hidden',!warnings.length);
+  $('stockWarnings').innerHTML=warnings.map(w=>`<div>${esc(w)}</div>`).join('');
 }
-function renderSalesGroups(){
-  const container=$('saleGroups');
-  const groups=(current.stock||[]).filter(r=>(r.derived_sold&&r.derived_sold.base_unit_qty>0)||(r.recorded_sold&&r.recorded_sold.base_unit_qty>0));
-  if(!groups.length){
-    container.innerHTML=`<p class="empty">${current.day?'Enter Return Today in step 1 to see what you sold.':'Start this date to record its sales.'}</p>`;
+function renderCards(){
+  const rows=current.stock||[];
+  $('cardList').classList.toggle('empty',!rows.length);
+  $('cardList').innerHTML=rows.map(r=>{
+    const rule=ruleFor(r),draft=draftFor(r.product_id),card=savedCard(r.product_id),sold=!!r.derived_sold;
+    const open=sold&&!(current.day&&current.day.status==='closed');
+    const hint=sold?`${esc(r.derived_sold.label)} sold today`:'Sold quantity appears after you save the return today';
+    const saved=card&&card.rows.length?` · ${ugx(card.card_total_ugx)} saved`:'';
+    return `<article class="sales-card" data-card-product="${r.product_id}"><div class="card-head"><div><strong>${esc(r.product_name)}</strong><small>${hint}${saved}</small></div><span class="tag" id="cardTag-${r.product_id}"></span></div><div class="price-rows">${draft.map((line,index)=>priceRow(r,rule,line,index)).join('')}</div><p class="card-status off" id="cardStatus-${r.product_id}"></p><div class="card-actions"><button data-card-add="${r.product_id}"${open?'':' disabled'}>Add another price</button><button data-card-save="${r.product_id}" class="primary"${open?'':' disabled'}>Save ${esc(r.product_name)} sales</button></div></article>`;
+  }).join('')||'<p class="empty">No products in this vehicle balance yet.</p>';
+  rows.forEach(r=>updateCard(r.product_id));
+}
+function updateCard(productId){
+  const r=stockRow(productId);
+  if(!r)return;
+  const rule=ruleFor(r),draft=drafts[productId]||[];
+  let priced=0,total=0;
+  draft.forEach((line,index)=>{
+    priced+=toBase(line.quantity,line.unit||'carton',rule);
+    const value=(Number(line.quantity)||0)*(Number(line.unit_price_ugx)||0);
+    total+=value;
+    const cell=$(`rowValue-${productId}-${index}`);
+    if(cell)cell.textContent=value>0?ugx(value):'—';
+  });
+  const status=$(`cardStatus-${productId}`),tag=$(`cardTag-${productId}`);
+  if(!status)return;
+  const sold=r.derived_sold?r.derived_sold.base_unit_qty:null;
+  if(sold===null){
+    status.className='card-status off';
+    status.textContent='Save the return today and the sold quantity appears here.';
+    if(tag){tag.className='tag warn';tag.textContent='Waiting';}
     return;
   }
-  const linesByProduct={};
-  (current.invoices||[]).filter(i=>!i.is_opening_receivable).forEach(invoice=>{
-    (invoice.lines||[]).forEach(line=>{
-      if(line.product_id==null)return;
-      (linesByProduct[line.product_id]=linesByProduct[line.product_id]||[]).push({invoice,line});
-    });
-  });
-  container.innerHTML=groups.map(r=>{
-    const recorded=linesByProduct[r.product_id]||[];
-    const soldLabel=r.derived_sold?esc(r.derived_sold.label):'not counted yet';
-    const pricedLabel=r.recorded_sold?esc(r.recorded_sold.label):'0 pieces';
-    const priceLines=recorded.map(({invoice,line})=>`<div class="price-line"><span>${line.quantity} ${esc(unitWord(line.unit,line.quantity))} × ${ugx(line.unit_price_ugx)}</span><b>${ugx(line.line_total_ugx!=null?line.line_total_ugx:line.quantity*line.unit_price_ugx)}</b>${meta.can_manage&&invoice.status==='active'?`<button class="link-btn" data-void="invoice" data-id="${invoice.id}">Void</button>`:''}</div>`).join('');
-    let check;
-    if(!r.closing)check='<span class="price-check warn">Enter Return Today in step 1 to compare what you sold.</span>';
-    else if(r.variance&&r.variance.base_unit_qty===0)check='<span class="price-check ok">✓ Balanced</span>';
-    else if(r.variance&&r.variance.base_unit_qty>0)check=`<span class="price-check warn">${esc(r.variance.label)} still need a selling price.</span>`;
-    else check=`<span class="price-check warn">Prices cover ${esc(String((r.variance||{}).label||'').replace(/^-/,''))} more than the stock says were sold.</span>`;
-    return `<article class="sale-group" data-sale-group="${r.product_id}">
-      <div class="stock-head"><strong>${esc(r.product_name)}</strong><span class="sold-chip">Sold from stock: <b>${soldLabel}</b></span></div>
-      ${priceLines}
-      <div class="price-add">
-        <input data-price-qty type="number" min="1" step="1" inputmode="numeric" placeholder="Qty" aria-label="${esc(r.product_name)} quantity">
-        <select data-price-unit aria-label="${esc(r.product_name)} unit">${unitChoices(r,'carton')}</select>
-        <span class="times">×</span>
-        <input data-price-price type="number" min="0" step="1" inputmode="numeric" placeholder="Price UGX" aria-label="${esc(r.product_name)} selling price">
-        <b class="price-preview" data-price-preview>UGX 0</b>
-        <button data-add-price="${r.product_id}">Add price</button>
-      </div>
-      <p class="price-check-row">Priced ${pricedLabel} of ${soldLabel} sold. ${check}</p>
-    </article>`;
-  }).join('');
-  groups.forEach(r=>{
-    const group=container.querySelector(`[data-sale-group="${r.product_id}"]`);
-    if(!group)return;
-    group.querySelectorAll('[data-price-qty],[data-price-price]').forEach(input=>input.addEventListener('input',()=>renderPricePreview(group)));
-    const button=group.querySelector('[data-add-price]');
-    if(button)button.onclick=()=>addPrice(r.product_id,button);
-  });
+  if(sold===0){
+    status.className='card-status ok';
+    status.textContent='Nothing was sold, so nothing needs pricing. Saving an empty card records zero sales.';
+    if(tag){tag.className='tag ok';tag.textContent='No sales';}
+    return;
+  }
+  if(priced===sold){
+    status.className='card-status ok';
+    status.textContent=`The rows add up to ${qtyLabel(sold,rule)} — matches the stock count.${total>0?` Card total ${ugx(total)}.`:''}`;
+    if(tag){tag.className='tag ok';tag.textContent='Complete';}
+    return;
+  }
+  if(priced<sold){
+    status.className='card-status warn';
+    status.textContent=`Priced ${qtyLabel(priced,rule)} of ${qtyLabel(sold,rule)} sold — ${qtyLabel(sold-priced,rule)} still to price.`;
+    if(tag){tag.className='tag warn';tag.textContent='Incomplete';}
+    return;
+  }
+  status.className='card-status bad';
+  status.textContent=`Priced ${qtyLabel(priced,rule)} but only ${qtyLabel(sold,rule)} were sold — remove ${qtyLabel(priced-sold,rule)}.`;
+  if(tag){tag.className='tag bad';tag.textContent='Too much';}
+}
+function renderInvoices(){
+  const rows=current.invoices.filter(i=>!i.is_opening_receivable);
+  $('invoiceList').innerHTML=rows.map(i=>`<div class="list-row"><div class="row-head"><strong>${i.lines.map(l=>`${l.quantity} ${esc(l.unit)} × ${ugx(l.unit_price_ugx)} ${esc(l.product_name)}`).join(' · ')}</strong><strong class="money">${ugx(i.total_ugx)}</strong></div><small>${esc(i.status)}${i.customer_name?' · '+esc(i.customer_name):''}</small>${canVoid()&&i.status==='active'?`<div class="closing-form"><button data-void="invoice" data-id="${i.id}">Void sale</button></div>`:''}</div>`).join('')||'<p class="empty">No sales recorded for this date yet.</p>';
   bindVoidButtons();
 }
-function renderPricePreview(group){
-  const qty=Number((group.querySelector('[data-price-qty]')||{}).value||0);
-  const price=Number((group.querySelector('[data-price-price]')||{}).value||0);
-  const out=group.querySelector('[data-price-preview]');
-  if(out)out.textContent=ugx(qty>0&&price>0?qty*price:0);
-}
-function moneyRow(label,value,cls){
-  return `<div class="ledger-row${cls?' '+cls:''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
-}
+
 function renderMoney(){
-  const t=current.totals||{};
-  const expenses=(current.expenses||[]).filter(e=>e.status!=='void');
-  const transfers=(current.transfers||[]).filter(x=>x.status!=='void');
-  const cashExpenses=expenses.filter(e=>e.payment_method==='cash').reduce((n,e)=>n+(e.amount_ugx||0),0);
-  const cashOut=transfers.filter(x=>x.from_account==='cash').reduce((n,x)=>n+(x.amount_ugx||0),0);
-  const cashIn=transfers.filter(x=>x.to_account==='cash').reduce((n,x)=>n+(x.amount_ugx||0),0);
-  const handedOver=cashOut-cashIn;
-  const expected=t.expected_cash_ugx;
-  const rows=[moneyRow('Total Sales',ugx(t.total_sales_ugx))];
-  if(t.new_debt_ugx)rows.push(moneyRow('Less: Debtors',`− ${ugx(t.new_debt_ugx)}`));
-  if(t.mobile_money_from_sales_ugx)rows.push(moneyRow('Less: Mobile Money',`− ${ugx(t.mobile_money_from_sales_ugx)}`));
-  rows.push(moneyRow('Cash from today\'s sales',ugx(t.cash_from_sales_ugx),'subtotal'));
-  if(t.old_debt_cash_ugx)rows.push(moneyRow('Plus: Old debts collected',`+ ${ugx(t.old_debt_cash_ugx)}`));
-  if(cashExpenses)rows.push(moneyRow('Less: Cash expenses',`− ${ugx(cashExpenses)}`));
-  if(handedOver>0)rows.push(moneyRow('Less: Cash handed over',`− ${ugx(handedOver)}`));
-  if(handedOver<0)rows.push(moneyRow('Plus: Cash received into cash',`+ ${ugx(-handedOver)}`));
-  // Everything the ledger carries from opening cash and earlier days is shown
-  // as one honest line so the visible arithmetic always lands exactly on the
-  // authoritative expected figure.
-  const broughtForward=expected==null?null:expected-(t.cash_from_sales_ugx||0)-(t.old_debt_cash_ugx||0)+cashExpenses+handedOver;
-  if(broughtForward)rows.push(moneyRow(broughtForward>0?'Plus: Cash brought forward':'Less: Cash carried out earlier',`${broughtForward>0?'+ ':'− '}${ugx(Math.abs(broughtForward))}`));
-  $('cashEquation').innerHTML=rows.join('');
-  $('totalSalesBig').textContent=ugx(t.total_sales_ugx);
-  $('totalExpensesBig').textContent=ugx(t.total_expenses_ugx);
-  $('netSalesBig').textContent=ugx(t.net_sales_after_expenses_ugx);
-  $('expectedCashBig').textContent=ugx(expected);
+  const t=current.totals;
+  const cards=[
+    ['Total Sales',ugx(t.total_sales_ugx)],
+    ['Cash from sales',ugx(t.cash_from_sales_ugx)],
+    ['Mobile Money',ugx(t.mobile_money_from_sales_ugx)],
+    ['Cash expenses',ugx(t.cash_expenses_ugx)],
+    ['Debtors',ugx(t.new_debt_ugx)],
+    ['Cash at Hand',ugx(t.cash_at_hand_ugx)],
+  ];
+  $('summaryCards').innerHTML=cards.map(c=>`<div class="metric"><span>${c[0]}</span><strong>${c[1]}</strong></div>`).join('');
+  $('expectedCashBig').textContent=ugx(t.cash_at_hand_ugx);
   $('actualCash').value=t.actual_cash_ugx??'';
   $('cashDifferenceBig').textContent=ugx(t.cash_variance_ugx);
   $('cashDifferenceBig').className=t.cash_variance_ugx?'short':'ok';
@@ -295,21 +272,21 @@ function renderMoney(){
   $('mobileDifferenceBig').textContent=ugx(t.mobile_variance_ugx);
   $('mobileDifferenceBig').className=t.mobile_variance_ugx?'short':'ok';
   $('mobileFromSales').value=current.day&&current.day.mobile_money_from_sales_ugx!=null?current.day.mobile_money_from_sales_ugx:'';
-  $('tenderHint').textContent=`Cash from today's sales ${ugx(t.cash_from_sales_ugx)} = Total Sales ${ugx(t.total_sales_ugx)} − Debtors ${ugx(t.new_debt_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)}.`;
+  $('cashEquation').textContent=`Total Sales ${ugx(t.total_sales_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)} − Cash expenses ${ugx(t.cash_expenses_ugx)} = Cash at Hand ${ugx(t.cash_at_hand_ugx)}.`;
+  $('tenderHint').textContent=`Cash from today's sales: ${ugx(t.cash_from_sales_ugx)} = Total Sales ${ugx(t.total_sales_ugx)} − Debtors ${ugx(t.new_debt_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)}.`;
 }
-
 function renderExpenseList(){
-  $('expenseList').innerHTML=current.expenses.map(e=>`<div class="list-row"><div class="row-head"><strong>${esc(e.description)}</strong><strong>${ugx(e.amount_ugx)}</strong></div><small>${esc(METHOD_LABEL[e.payment_method]||e.payment_method)} · ${esc(e.status)}</small>${meta.can_manage&&e.status==='active'?`<div class="closing-form"><button data-void="expense" data-id="${e.id}">Void expense</button></div>`:''}</div>`).join('')||'<p class="empty">No expenses recorded for this date.</p>';
+  $('expenseList').innerHTML=current.expenses.map(e=>`<div class="list-row"><div class="row-head"><strong>${esc(e.description)}</strong><strong>${ugx(e.amount_ugx)}</strong></div><small>${esc(METHOD_LABEL[e.payment_method]||e.payment_method)} · ${esc(e.status)}</small>${canVoid()&&e.status==='active'?`<div class="closing-form"><button data-void="expense" data-id="${e.id}">Void expense</button></div>`:''}</div>`).join('')||'<p class="empty">No expenses recorded for this date.</p>';
   bindVoidButtons();
 }
 function renderTransferList(){
-  $('transferList').innerHTML=(current.transfers||[]).map(t=>`<div class="list-row"><div class="row-head"><strong>${esc(ACCOUNT_LABEL[t.from_account]||t.from_account)} → ${esc(ACCOUNT_LABEL[t.to_account]||t.to_account)}</strong><strong>${ugx(t.amount_ugx)}</strong></div><small>${esc(t.reference||'No reference')} · ${esc(t.status)}</small>${meta.can_manage&&t.status==='active'?`<div class="closing-form"><button data-void="transfer" data-id="${t.id}">Void transfer</button></div>`:''}</div>`).join('')||'<p class="empty">No money transfers for this date.</p>';
+  $('transferList').innerHTML=(current.transfers||[]).map(t=>`<div class="list-row"><div class="row-head"><strong>${esc(ACCOUNT_LABEL[t.from_account]||t.from_account)} → ${esc(ACCOUNT_LABEL[t.to_account]||t.to_account)}</strong><strong>${ugx(t.amount_ugx)}</strong></div><small>${esc(t.reference||'No reference')} · ${esc(t.status)}</small>${canVoid()&&t.status==='active'?`<div class="closing-form"><button data-void="transfer" data-id="${t.id}">Void transfer</button></div>`:''}</div>`).join('')||'<p class="empty">No money transfers for this date.</p>';
   bindVoidButtons();
 }
 function renderDayDebts(){
   const debts=current.debts||[],payments=current.debt_payments||[];
-  const rows=[...debts.map(d=>`<div class="list-row"><div class="row-head"><strong>${esc(d.name)}</strong><strong>${ugx(d.amount_ugx)}</strong></div><small>Unpaid${d.kind==='opening'?' (historical)':''}${meta.can_manage&&d.status==='active'?` · <button data-void="debt" data-id="${d.id}">Void</button>`:''}</small></div>`),
-    ...payments.map(p=>`<div class="list-row"><div class="row-head"><strong>${esc(p.name)} paid</strong><strong>${ugx(p.amount_ugx)}</strong></div><small>${esc(METHOD_LABEL[p.payment_method]||p.payment_method)}${meta.can_manage?` · <button data-void="debt-payment" data-id="${p.id}">Void</button>`:''}</small></div>`)];
+  const rows=[...debts.map(d=>`<div class="list-row"><div class="row-head"><strong>${esc(d.name)}</strong><strong>${ugx(d.amount_ugx)}</strong></div><small>Unpaid${d.kind==='opening'?' (historical)':''}${canVoid()&&d.status==='active'?` · <button data-void="debt" data-id="${d.id}">Void</button>`:''}</small></div>`),
+    ...payments.map(p=>`<div class="list-row"><div class="row-head"><strong>${esc(p.name)} paid</strong><strong>${ugx(p.amount_ugx)}</strong></div><small>${esc(METHOD_LABEL[p.payment_method]||p.payment_method)}${canVoid()?` · <button data-void="debt-payment" data-id="${p.id}">Void</button>`:''}</small></div>`)];
   $('debtList').innerHTML=rows.join('')||'<p class="empty">No unpaid amounts recorded for this date.</p>';
   bindVoidButtons();
 }
@@ -318,64 +295,139 @@ function renderSuggestions(){
   $('expenseSuggestions').innerHTML=rows.map(v=>`<option value="${esc(v)}"></option>`).join('');
 }
 function bindVoidButtons(){document.querySelectorAll('[data-void]').forEach(b=>b.onclick=()=>voidRecord(b.dataset.void,Number(b.dataset.id)));}
+function bindCardEvents(){
+  const list=$('cardList');if(!list)return;
+  list.addEventListener('input',e=>{
+    const field=e.target.dataset.cardField;
+    if(!field)return;
+    const productId=Number(e.target.dataset.cardProduct),index=Number(e.target.dataset.cardIndex);
+    const draft=draftFor(productId);
+    if(!draft[index])return;
+    draft[index][field]=e.target.value;
+    updateCard(productId);
+  });
+  list.addEventListener('change',e=>{
+    const field=e.target.dataset.cardField;
+    if(!field)return;
+    const productId=Number(e.target.dataset.cardProduct),index=Number(e.target.dataset.cardIndex);
+    const draft=draftFor(productId);
+    if(!draft[index])return;
+    draft[index][field]=e.target.value;
+    updateCard(productId);
+  });
+  list.addEventListener('click',e=>{
+    const add=e.target.closest('[data-card-add]');
+    if(add){
+      if(add.disabled)return;
+      const productId=Number(add.dataset.cardAdd);
+      draftFor(productId).push(blankRow());
+      renderCards();
+      return;
+    }
+    const remove=e.target.closest('[data-card-remove]');
+    if(remove){
+      if(remove.disabled)return;
+      const productId=Number(remove.dataset.cardRemove),index=Number(remove.dataset.cardIndex);
+      const draft=draftFor(productId);
+      draft.splice(index,1);
+      if(!draft.length)draft.push(blankRow());
+      renderCards();
+      return;
+    }
+    const save=e.target.closest('[data-card-save]');
+    if(save){
+      if(save.disabled)return;
+      saveCard(Number(save.dataset.cardSave),save);
+    }
+  });
+}
 
 
-function collectReturnChanges(){
-  const changes=[];let invalid=false;
-  (current.stock||[]).forEach(r=>{
-    const input=document.querySelector(`[data-return-qty="${r.product_id}"]`);
-    if(!input)return;
-    const raw=String(input.value||'').trim();
-    if(raw===''&&!r.closing)return;
-    const unitEl=document.querySelector(`[data-return-unit="${r.product_id}"]`);
-    const quantity=raw===''?0:Number(raw);
-    if(!Number.isFinite(quantity)||quantity<0||Math.floor(quantity)!==quantity){invalid=true;return;}
-    const base=baseFromEntry(quantity,unitEl?unitEl.value:'carton',r);
-    const previous=r.closing?r.closing.base_unit_qty:null;
-    if(previous===base)return;
-    changes.push({row:r,quantity,unit:unitEl?unitEl.value:'carton',correcting:previous!==null});
-  });
-  return {changes,invalid};
+async function declareOpeningProduct(){
+  const productId=Number($('declareProduct').value);
+  const raw=$('declareQty').value;
+  if(!productId){msg('Choose a product.');return;}
+  if(String(raw).trim()===''){msg('Type the quantity you are carrying. Zero is a valid answer.');return;}
+  const quantity=Number(raw);
+  if(!Number.isFinite(quantity)||quantity<0){msg('Starting stock must be zero or more.');return;}
+  try{
+    current=await api(`/api/sales/days/${dateVal()}/opening-stock`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),lines:[{product_id:productId,quantity,unit:$('declareUnit').value}]})});
+    $('declareQty').value='';
+    render();msg('Added to your vehicle stock.',true);
+  }catch(e){msg(e.message);}
 }
-async function saveReturns(button){
+async function saveOpening(){
+  const lines=[];let invalid=false;
+  for(const row of current.stock||[]){
+    if(!row.can_set_opening)continue;
+    const qtyInput=document.querySelector(`[data-open-qty="${row.product_id}"]`);
+    if(!qtyInput||qtyInput.value.trim()==='')continue;
+    const quantity=Number(qtyInput.value);
+    if(!Number.isFinite(quantity)||quantity<0){invalid=true;break;}
+    const unitInput=document.querySelector(`[data-open-unit="${row.product_id}"]`);
+    lines.push({product_id:row.product_id,quantity,unit:unitInput?unitInput.value:'carton'});
+  }
+  if(invalid){msg('Starting stock must be zero or more.');return;}
+  if(!lines.length){msg('Type the starting stock for at least one product. Zero is a valid answer.');return;}
+  try{
+    current=await api(`/api/sales/days/${dateVal()}/opening-stock`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),lines})});
+    render();msg('Starting stock saved. Later days carry it forward automatically.',true);
+  }catch(e){msg(e.message);}
+}
+async function saveReturns(){
+  const lines=[];let invalid=false;
+  for(const row of current.stock||[]){
+    const qtyInput=document.querySelector(`[data-close-qty="${row.product_id}"]`);
+    if(!qtyInput||qtyInput.value.trim()==='')continue;
+    const quantity=Number(qtyInput.value);
+    if(!Number.isFinite(quantity)||quantity<0){invalid=true;break;}
+    const unitInput=document.querySelector(`[data-close-unit="${row.product_id}"]`);
+    lines.push({product_id:row.product_id,quantity,unit:unitInput?unitInput.value:'carton'});
+  }
+  if(invalid){msg('Returns must be zero or more.');return;}
+  if(!lines.length){msg('Type the return today for at least one product.');return;}
+  let reason=null;
+  if(meta.can_manage){
+    const changed=[];
+    for(const line of lines){
+      const row=stockRow(line.product_id);
+      if(!row||!row.closing)continue;
+      try{
+        const preview=await api(`/api/sales/days/${dateVal()}/closing-stock/preview`,{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),product_id:line.product_id,quantity:line.quantity,unit:line.unit})});
+        if(!preview.new_closing||!row.closing||preview.new_closing.label!==row.closing.label)changed.push(`${preview.product_name}: sold becomes ${preview.new_derived_sold.label}`);
+      }catch(e){msg(e.message);return;}
+    }
+    if(changed.length){
+      if(!confirm(`This changes counts that were already saved.\n\n${changed.join('\n')}\n\nContinue?`))return;
+      const answer=prompt('Reason for correcting these counts (required, audited):');
+      if(answer===null)return;
+      if(!answer.trim()){msg('A reason is required to correct an existing count.');return;}
+      reason=answer.trim();
+    }
+  }
+  try{
+    current=await api(`/api/sales/days/${dateVal()}/returns`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),lines:lines.map(line=>({...line,reason}))})});
+    render();msg('Returns today saved.',true);
+  }catch(e){msg(e.message);}
+}
+async function saveCard(productId,button){
   await withBusy(button,async()=>{
-    if(!current||!current.day){msg('Start this date before saving returns.');return;}
-    if(current.day.status==='closed'){msg('This day is closed. Ask a Manager to reopen it.');return;}
-    const {changes,invalid}=collectReturnChanges();
-    if(invalid){msg('Return Today must be a whole number of units.');return;}
-    if(!changes.length){msg('Nothing to save — these returns already match what is saved.',true);return;}
-    const corrections=changes.filter(c=>c.correcting);
-    let reason=null;
-    if(corrections.length&&meta.can_manage){
-      if(!confirm(`Correct the saved return for ${corrections.map(c=>c.row.product_name).join(', ')}? The audit trail records why.`))return;
-      reason=prompt('Reason for correcting a saved return (required, audited):');
-      if(reason===null)return;
-      if(!reason.trim()){msg('A reason is required to correct a saved return.');return;}
+    const row=stockRow(productId);
+    const name=row?row.product_name:'Sales card';
+    const draft=drafts[productId]||[];
+    const rows=[];
+    for(const line of draft){
+      if(line.quantity===''||line.quantity==null)continue;
+      const quantity=Number(line.quantity),price=Number(line.unit_price_ugx);
+      if(!Number.isFinite(quantity)||quantity<=0){msg(`${name}: every row needs a quantity greater than zero.`);return;}
+      if(!Number.isFinite(price)||price<=0){msg(`${name}: every row needs a selling price greater than zero.`);return;}
+      rows.push({quantity,unit:line.unit||'carton',unit_price_ugx:price});
     }
     try{
-      for(const change of changes){
-        await api(`/api/sales/days/${dateVal()}/closing-stock`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),product_id:change.row.product_id,quantity:change.quantity,unit:change.unit,reason:reason?reason.trim():null})});
-      }
-      await loadDay(false);
-      msg(`Returns saved for ${changes.length} product${changes.length===1?'':'s'}.`,true);
-    }catch(e){
-      await loadDay(false);
-      msg(e.message);
-    }
-  });
-}
-async function addPrice(pid,button){
-  await withBusy(button,async()=>{
-    const group=document.querySelector(`[data-sale-group="${pid}"]`);
-    if(!group)return;
-    const qtyInput=group.querySelector('[data-price-qty]'),unitInput=group.querySelector('[data-price-unit]'),priceInput=group.querySelector('[data-price-price]');
-    const quantity=Number(qtyInput.value),price=Number(priceInput.value);
-    if(!Number.isFinite(quantity)||quantity<=0||Math.floor(quantity)!==quantity){msg('Enter how many units were sold at this price.');return;}
-    if(String(priceInput.value||'').trim()===''||!Number.isFinite(price)||price<0){msg('Enter the selling price.');return;}
-    try{
-      await api('/api/sales/invoices',{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),business_date:dateVal(),idempotency_key:token(),lines:[{product_id:pid,quantity,unit:unitInput.value,unit_price_ugx:price}]})});
-      await loadDay(false);
-      msg('Selling price saved.',true);
+      current=await api(`/api/sales/days/${dateVal()}/products/${productId}/sales`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),rows})});
+      delete drafts[productId];
+      render();
+      msg(rows.length?`${name} sales card saved.`:`${name} sales card cleared.`,true);
     }catch(e){msg(e.message);}
   });
 }
@@ -633,10 +685,11 @@ document.addEventListener('click',e=>{
   renderReportLinks();
 });
 document.addEventListener('DOMContentLoaded',()=>{
-  $('businessDate').onchange=selectDate;
   $('loadDay').onclick=()=>loadDay(true);
-  $('startDate').onclick=()=>loadDay(true);
-  $('saveReturns').onclick=e=>saveReturns(e.currentTarget);
+  $('saveOpening').onclick=saveOpening;
+  $('saveReturns').onclick=saveReturns;
+  $('declareOpening').onclick=declareOpeningProduct;
+  $('declareProduct').onchange=renderDeclarePicker;
   $('addExpense').onclick=e=>addExpense(e.currentTarget);
   $('addTransfer').onclick=e=>addTransfer(e.currentTarget);
   $('saveMobileSplit').onclick=saveMobileSplit;
@@ -653,7 +706,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   $('addOpeningDebt').onclick=e=>addOpeningDebt(e.currentTarget);
   $('addStockAdj').onclick=e=>addStockAdj(e.currentTarget);
   $('addCashAdj').onclick=e=>addCashAdj(e.currentTarget);
-  $('profileSelect').onchange=selectDate;
+  $('profileSelect').onchange=()=>loadDay(false);
+  bindCardEvents();
   ['historyFrom','historyTo'].forEach(id=>$(id).addEventListener('change',renderReportLinks));
   boot();
 });
