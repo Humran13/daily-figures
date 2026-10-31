@@ -712,4 +712,3 @@ document.addEventListener('DOMContentLoaded',()=>{
   boot();
 });
 })();
-

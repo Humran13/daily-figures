@@ -1174,4 +1174,3 @@ def test_mobile_money_and_debt_split_cannot_exceed_sales(client, sales_setup):
     assert exactly.status_code == 200
     assert exactly.get_json()["totals"]["cash_from_sales_ugx"] == 0
     assert exactly.get_json()["totals"]["cash_at_hand_ugx"] == 0
-
