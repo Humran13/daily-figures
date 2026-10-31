@@ -9,7 +9,15 @@ const ACCOUNT_LABEL={cash:'Cash',mobile_money:'Mobile Money',company:'Company ca
 function msg(text,ok=false){const e=$('message');e.textContent=text||'';e.className=text?(ok?'ok':'error'):'';if(text)e.scrollIntoView({behavior:'smooth',block:'nearest'});}
 async function api(path,options={}){options.headers={...(options.headers||{}),'Content-Type':'application/json'};const r=await fetch(path,options);const d=await r.json().catch(()=>({error:'Unexpected server response'}));if(!r.ok)throw new Error(d.error||'Request failed');return d;}
 async function withBusy(button,work){if(button)button.disabled=true;try{return await work();}finally{if(button)button.disabled=false;}}
-function profileId(){return Number($('profileSelect').value)||null;}
+function profileId(){
+  const el=$('profileSelect');
+  const chosen=el?Number(el.value)||0:0;
+  if(chosen)return chosen;
+  // A normal salesperson has exactly one profile and no selector, so the page
+  // uses the profile the server already linked to the signed-in user.
+  if(session&&session.user&&session.user.role==='operator'&&meta&&meta.profiles&&meta.profiles.length===1)return meta.profiles[0].id;
+  return null;
+}
 function dateVal(){return $('businessDate').value;}
 function fillSelect(el,rows,label,blank){if(!el)return;el.innerHTML=(blank?`<option value="">${esc(blank)}</option>`:'')+rows.map(r=>`<option value="${r.id}">${esc(label(r))}</option>`).join('');}
 function profileParam(){return profileId()?`sales_profile_id=${profileId()}`:'';}
@@ -38,9 +46,18 @@ async function boot(){
       if(session.user.role==='operator')msg('Your Sales account has not been set up. Please contact a Manager.');
       renderReportLinks();return;
     }
-    await loadDay(false);
+    await openDefaultDay();
     renderReportLinks();
   }catch(e){msg(e.message);}
+}
+// Opening a Sales Day is not a financial transaction, so a salesperson's own day
+// for today is opened for them: they only think about returns, prices and cash.
+// Any other date is opened explicitly with "Open day".
+async function openDefaultDay(){
+  const today=session.business_today;
+  const target=dateVal()||today;
+  $('businessDate').value=target;
+  await loadDay(today===target&&session.user.role==='operator');
 }
 async function loadAdminUsers(){if(!meta.can_manage)return;try{const users=await api('/api/admin/users');fillSelect($('profileUser'),users.filter(u=>u.role==='operator'&&!meta.profiles.some(p=>p.user_id===u.id)),u=>u.username);}catch(e){/* profile creation is super-admin only */}}
 async function loadDay(create=false){
@@ -110,8 +127,33 @@ function renderStock(){
     const starting=canStart
       ?`<div class="starting-form"><span class="start-label">${r.opening?'Correct starting stock':'Starting stock — what you are carrying today'}</span><input data-open-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.opening?esc(r.opening.label):'Qty'}" aria-label="${esc(r.product_name)} starting stock"><select data-open-unit="${r.product_id}" aria-label="${esc(r.product_name)} starting stock unit">${unitOptions(rule,'carton')}</select></div>`
       :(r.opening===null?'<small class="warn-text">Starting stock for this product has to be recorded on the day the vehicle balance started.</small>':'');
-    return `<article class="stock-row"><div class="stock-head"><strong>${esc(r.product_name)}</strong><span class="tag ${tag[0]}">${tag[1]}</span></div><div class="stock-grid"><div class="datum"><span>Previous Return</span><strong>${r.opening?esc(r.opening.label):'—'}</strong></div><div class="datum"><span>Stock Added</span><strong>${esc(r.added.label)}</strong></div><div class="datum"><span>Total Stock</span><strong>${r.available?esc(r.available.label):'—'}</strong></div><div class="datum"><span>Return Today</span><strong>${r.closing?esc(r.closing.label):'—'}</strong></div><div class="datum"><span>Sold</span><strong>${r.derived_sold?esc(r.derived_sold.label):'—'}</strong></div></div><small class="stock-equation">${started}${soldLine?' · '+soldLine:''}</small>${mismatch?`<small class="warn-text">Stock count says ${esc(r.derived_sold.label)} sold, sales cards say ${esc(r.recorded_sold.label)} (difference ${esc(r.variance.label)}).</small>`:''}${starting}${closed?'':`<div class="closing-form"><input data-close-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.closing?esc(r.closing.label):'Return today'}" aria-label="${esc(r.product_name)} return today"><select data-close-unit="${r.product_id}" aria-label="${esc(r.product_name)} return today unit">${unitOptions(rule,'carton')}</select></div>`}</article>`;
+    return `<article class="stock-row"><div class="stock-head"><strong>${esc(r.product_name)}</strong><span class="tag ${tag[0]}">${tag[1]}</span></div><div class="stock-grid"><div class="datum"><span>Previous Return</span><strong>${r.opening?esc(r.opening.label):'—'}</strong></div><div class="datum"><span>Stock Added</span><strong>${esc(r.added.label)}</strong></div><div class="datum"><span>Total Stock</span><strong>${r.available?esc(r.available.label):'—'}</strong></div><div class="datum"><span>Return Today</span><strong>${r.closing?esc(r.closing.label):'—'}</strong></div><div class="datum"><span>Sold</span><strong data-sold-datum="${r.product_id}">${r.derived_sold?esc(r.derived_sold.label):'—'}</strong></div></div><small class="stock-equation">${started}${soldLine?' · '+soldLine:''}</small>${mismatch?`<small class="warn-text">Stock count says ${esc(r.derived_sold.label)} sold, sales cards say ${esc(r.recorded_sold.label)} (difference ${esc(r.variance.label)}).</small>`:''}${starting}${closed?'':`<div class="closing-form"><input data-close-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.closing?esc(r.closing.label):'Return today'}" aria-label="${esc(r.product_name)} return today"><select data-close-unit="${r.product_id}" aria-label="${esc(r.product_name)} return today unit">${unitOptions(rule,'carton')}</select></div>`}</article>`;
   }).join('')||'<p class="empty">No products belong to this vehicle balance yet. Add what you are carrying below.</p>';
+  rows.forEach(r=>{
+    const input=document.querySelector(`[data-close-qty="${r.product_id}"]`);
+    const unit=document.querySelector(`[data-close-unit="${r.product_id}"]`);
+    if(!input)return;
+    const preview=()=>previewSold(r.product_id);
+    input.addEventListener('input',preview);
+    if(unit)unit.addEventListener('change',preview);
+  });
+}
+// Display-only mirror of the paper sheet: Sold updates the instant a return is
+// typed, before anything is saved. The server still recalculates every figure.
+function previewSold(productId){
+  const row=stockRow(productId),cell=document.querySelector(`[data-sold-datum="${productId}"]`);
+  const input=document.querySelector(`[data-close-qty="${productId}"]`);
+  if(!row||!cell||!input||!row.available)return;
+  const rule=ruleFor(row);
+  if(String(input.value).trim()===''){
+    cell.textContent=row.derived_sold?row.derived_sold.label:'—';
+    cell.classList.remove('short');
+    return;
+  }
+  const unit=document.querySelector(`[data-close-unit="${productId}"]`);
+  const sold=row.available.base_unit_qty-toBase(input.value,unit?unit.value:'carton',rule);
+  cell.textContent=(sold<0?'-':'')+qtyLabel(sold,rule)+(sold<0?' — check the count':'');
+  cell.classList.toggle('short',sold<0);
 }
 function renderDeclarePicker(){
   const form=$('declareForm');if(!form)return;
@@ -259,6 +301,8 @@ function renderMoney(){
     ['Cash from sales',ugx(t.cash_from_sales_ugx)],
     ['Mobile Money',ugx(t.mobile_money_from_sales_ugx)],
     ['Cash expenses',ugx(t.cash_expenses_ugx)],
+    ['Total expenses',ugx(t.total_expenses_ugx)],
+    ['Sales less expenses',ugx(t.net_sales_after_expenses_ugx)],
     ['Debtors',ugx(t.new_debt_ugx)],
     ['Cash at Hand',ugx(t.cash_at_hand_ugx)],
   ];

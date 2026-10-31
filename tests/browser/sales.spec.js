@@ -1,6 +1,8 @@
 const { test, expect } = require('@playwright/test');
 
-test('Sales operator balances a day alone with one card per product', async ({ page }) => {
+const BUSINESS_DATE = '2026-10-30';
+
+async function loginAsSalesOperator(page) {
   await page.goto('/');
   await page.locator('[data-section="sales"]').click();
   await page.locator('#usernameInput').fill('browser-sales');
@@ -8,15 +10,17 @@ test('Sales operator balances a day alone with one card per product', async ({ p
   await page.locator('#loginBtn').click();
   await expect(page).toHaveURL(/\/sales\.html/);
   await expect(page.getByRole('heading', { name: 'Daily accountability' })).toBeVisible();
-  // Wait for the page's own first load so the controls are wired before use.
   await expect(page.locator('#statusPill')).not.toHaveText('Not loaded');
+}
 
-  await page.locator('#businessDate').fill('2026-10-30');
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/api/sales/days') && r.request().method() === 'POST'),
-    page.locator('#loadDay').click(),
-  ]);
-  await expect(page.locator('#statusPill')).toHaveText('DRAFT');
+test('Salesperson reproduces the 30/10/2026 paper sheet alone', async ({ page }) => {
+  await loginAsSalesOperator(page);
+
+  // Today's day is opened for the salesperson automatically and there is no
+  // "who am I" selector: a driver only thinks about their own day.
+  await expect(page.locator('#profileWrap')).toBeHidden();
+  const today = await page.evaluate(async () => (await (await fetch('/api/session')).json()).business_today);
+  await expect(page.locator('#businessDate')).toHaveValue(today);
 
   // The seven steps read in the order a salesperson actually works.
   const headings = await page.locator('#dailyView .card h2').allTextContents();
@@ -30,109 +34,133 @@ test('Sales operator balances a day alone with one card per product', async ({ p
     'Cash at hand',
   ]);
 
-  // Step 1 — starting stock is the salesperson's own entry: on the day the
-  // vehicle balance starts they correct it in place, with no approval.
-  await expect(page.locator('#stockList')).toContainText('Previous Return');
-  await expect(page.locator('#stockList')).toContainText('Return Today');
-  await expect(page.locator('#openingNotice')).toBeHidden();
-  const startInput = page.locator('.stock-row')
-    .filter({ hasText: 'Compact Standard' }).locator('[data-open-qty]');
-  await expect(startInput).toHaveAttribute('placeholder', '50 cartons');
-  await startInput.fill('50');
+  // ---- 30/10/2026: Compact 50 + 100 = 150, Napkins 10 + 20 = 30 ----
+  await page.locator('#businessDate').fill(BUSINESS_DATE);
   await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/opening-stock') && r.request().method() === 'PUT'),
-    page.locator('#saveOpening').click(),
+    page.waitForResponse(r => r.url().endsWith('/api/sales/days') && r.request().method() === 'POST'),
+    page.locator('#loadDay').click(),
   ]);
-  await expect(page.locator('#message')).toContainText('Starting stock saved');
-  await expect(page.locator('#stockList')).toContainText('50 cartons');
+  await expect(page.locator('#statusPill')).toHaveText('DRAFT');
+
+  const stockRows = page.locator('.stock-row');
+  await expect(stockRows).toHaveCount(2);
+  const compactStock = stockRows.filter({ hasText: 'Compact Standard' });
+  const napkinStock = stockRows.filter({ hasText: 'Napkins Standard' });
+  for (const label of ['Previous Return', 'Stock Added', 'Total Stock', 'Return Today', 'Sold']) {
+    await expect(compactStock).toContainText(label);
+  }
+  // Previous Return and Stock Added are read-only facts: 50 carried, 100 loaded.
+  await expect(compactStock).toContainText('50 cartons');
+  await expect(compactStock).toContainText('100 cartons');
+  await expect(compactStock).toContainText('150 cartons');
+  await expect(napkinStock).toContainText('10 cartons');
+  await expect(napkinStock).toContainText('20 cartons');
+  await expect(napkinStock).toContainText('30 cartons');
+  // Starting stock is the salesperson's own figure and needs no approval.
+  await expect(compactStock.locator('[data-open-qty]')).toHaveAttribute('placeholder', '50 cartons');
+  await expect(page.locator('#openingNotice')).toBeHidden();
   // A normal sale needs no customer and no per-line payment method.
   await expect(page.getByText('No customer is needed', { exact: false })).toBeVisible();
   await expect(page.locator('#saleCustomer')).toHaveCount(0);
   await expect(page.getByText('Walk-in', { exact: false })).toHaveCount(0);
 
-  // Step 1 — count today's return in one action: 40 cartons of Compact come
-  // back, everything else is explicitly zero. That is the whole stock entry.
-  const stockRowCount = await page.locator('.stock-row').count();
-  for (let index = 0; index < stockRowCount; index += 1) {
-    const row = page.locator('.stock-row').nth(index);
-    const name = (await row.locator('.stock-head strong').first().textContent()).trim();
-    await row.locator('[data-close-qty]').fill(name === 'Compact Standard' ? '40' : '0');
-  }
+  // Sold is previewed as the return is typed: 150 − 40 = 110, 30 − 5 = 25.
+  await compactStock.locator('[data-close-qty]').fill('40');
+  await expect(compactStock.locator('[data-sold-datum]')).toHaveText('110 cartons');
+  await napkinStock.locator('[data-close-qty]').fill('5');
+  await expect(napkinStock.locator('[data-sold-datum]')).toHaveText('25 cartons');
+
   await Promise.all([
     page.waitForResponse(r => r.url().endsWith('/returns') && r.request().method() === 'PUT'),
     page.locator('#saveReturns').click(),
   ]);
   await expect(page.locator('#message')).toContainText('Returns today saved');
+  await expect(compactStock.locator('[data-sold-datum]')).toHaveText('110 cartons');
+  await expect(napkinStock.locator('[data-sold-datum]')).toHaveText('25 cartons');
+  await expect(compactStock).toContainText('= 110 cartons sold');
 
-  // The equation itself is on screen: 50 carried + 0 added = 50 out,
-  // 50 − 40 back = 10 sold. The sold quantity is never typed twice.
-  const compactRow = page.locator('.stock-row').filter({ hasText: 'Compact Standard' });
-  await expect(compactRow).toContainText('= 10 cartons sold');
-  await expect(compactRow).toContainText('Previous Return');
-  const soldRow = page.locator('.sold-row').filter({ hasText: 'Compact Standard' });
-  await expect(soldRow).toContainText('10 cartons');
-  await expect(soldRow).toContainText('Not priced yet');
+  // Step 2 takes the sold quantity straight from the stock count.
+  const soldRows = page.locator('.sold-row');
+  await expect(soldRows.filter({ hasText: 'Compact Standard' })).toContainText('110 cartons');
+  await expect(soldRows.filter({ hasText: 'Napkins Standard' })).toContainText('25 cartons');
 
-  // Step 3 — one card per product. The card already knows 10 cartons were
-  // sold, so a single row at the real price completes it.
-  const card = page.locator('.sales-card').filter({ hasText: 'Compact Standard' });
-  await expect(card).toContainText('10 cartons sold today');
-  const cardStatus = page.locator(`#cardStatus-${await card.getAttribute('data-card-product')}`);
-  await expect(cardStatus).toContainText('of 10 cartons sold');
-  await card.locator('[data-card-field="quantity"]').fill('10');
-  await card.locator('[data-card-field="unit_price_ugx"]').fill('79000');
-  await expect(cardStatus).toContainText('matches the stock count');
-  await expect(card.locator('.row-value').first()).toHaveText('UGX 790,000');
-  await Promise.all([
-    page.waitForResponse(r => r.url().includes('/products/') && r.url().endsWith('/sales') && r.request().method() === 'PUT'),
-    card.locator('[data-card-save]').click(),
-  ]);
-  await expect(page.locator('#message')).toContainText('sales card saved');
-  await expect(soldRow).toContainText('Fully priced');
-  await expect(page.locator('#summaryCards')).toContainText('UGX 790,000');
+  // Step 3 — one card per product; every price row adds up to Sold.
+  const cards = page.locator('.sales-card');
+  await expect(cards).toHaveCount(2);
+  const compactCard = cards.filter({ hasText: 'Compact Standard' });
+  const napkinCard = cards.filter({ hasText: 'Napkins Standard' });
 
-  // A card whose rows do not add up to the counted sales is refused, and the
-  // refusal names the quantity that has to change.
-  await card.locator('[data-card-field="quantity"]').fill('12');
-  await expect(cardStatus).toContainText('but only 10 cartons were sold');
-  await Promise.all([
-    page.waitForResponse(r => r.url().includes('/products/') && r.url().endsWith('/sales') && r.request().method() === 'PUT'),
-    card.locator('[data-card-save]').click(),
-  ]);
-  await expect(page.locator('#message')).toContainText('but only 10 cartons were sold');
-  await card.locator('[data-card-field="quantity"]').fill('10');
+  async function fillPriceRow(card, index, quantity, price) {
+    const row = card.locator('.price-row').nth(index);
+    await row.locator('[data-card-field="quantity"]').fill(String(quantity));
+    await row.locator('[data-card-field="unit"]').selectOption('carton');
+    await row.locator('[data-card-field="unit_price_ugx"]').fill(String(price));
+  }
+  async function saveCard(card) {
+    await Promise.all([
+      page.waitForResponse(r => r.url().includes('/products/') && r.url().endsWith('/sales') && r.request().method() === 'PUT'),
+      card.locator('[data-card-save]').click(),
+    ]);
+  }
 
-  // Step 5 — Mobile Money is recorded once for the whole day, never per row.
-  await page.locator('#mobileFromSales').fill('200000');
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/api/sales/days/2026-10-30') && r.request().method() === 'PATCH'),
-    page.locator('#saveMobileSplit').click(),
-  ]);
-  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 590,000');
-  await expect(page.locator('#expectedMobileBig')).toHaveText('UGX 200,000');
+  // Compact: 100 × 79,000 and 10 × 80,000 = UGX 8,700,000 for 110 cartons.
+  await fillPriceRow(compactCard, 0, 100, 79000);
+  await compactCard.locator('[data-card-add]').click();
+  await fillPriceRow(compactCard, 1, 10, 80000);
+  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
+  await expect(compactCard.locator('.card-status')).toContainText('UGX 8,700,000');
+  await saveCard(compactCard);
+  await expect(page.locator('#message')).toContainText('Compact Standard sales card saved');
+  await expect(compactCard).toContainText('UGX 8,700,000 saved');
+  await expect(compactCard.locator('.price-row')).toHaveCount(2);
 
-  // Step 6 — expenses are a normal daily action but the form stays out of the
-  // way until it is needed.
+  // Napkins: 20 × 103,000 and 5 × 104,000 = UGX 2,580,000 for 25 cartons.
+  await fillPriceRow(napkinCard, 0, 20, 103000);
+  await napkinCard.locator('[data-card-add]').click();
+  await fillPriceRow(napkinCard, 1, 10, 104000);
+  // A card that does not add up to Sold is refused with the exact difference.
+  await saveCard(napkinCard);
+  await expect(page.locator('#message')).toContainText('but only 25 cartons were sold');
+  await fillPriceRow(napkinCard, 1, 5, 104000);
+  await saveCard(napkinCard);
+  await expect(page.locator('#message')).toContainText('Napkins Standard sales card saved');
+  await expect(napkinCard).toContainText('UGX 2,580,000 saved');
+
+  // Step 4 — Total Sales is the sum of both cards, never a retyped figure.
+  await expect(page.locator('#summaryCards')).toContainText('UGX 11,280,000');
+  await expect(page.locator('#tenderHint')).toContainText('UGX 11,280,000');
+  // Mobile Money is nothing today, so it changes no figure.
+  await expect(page.locator('#expectedMobileBig')).toHaveText('UGX 0');
+
+  // Step 6 — expenses 10,000 + 20,000 + 10,000 = 40,000.
   await page.locator('[data-toggle-form="expenseForm"]').click();
-  await page.locator('#expenseDescription').fill('Lunch');
-  await page.locator('#expenseAmount').fill('10000');
-  await Promise.all([
-    page.waitForResponse(r => r.url().includes('/expenses') && r.request().method() === 'POST'),
-    page.locator('#addExpense').click(),
-  ]);
-  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 580,000');
+  for (const [description, amount] of [['Lunch', 10000], ['Fahad', 20000], ['Breakfast', 10000]]) {
+    await page.locator('#expenseDescription').fill(description);
+    await page.locator('#expenseAmount').fill(String(amount));
+    await Promise.all([
+      page.waitForResponse(r => r.url().includes('/expenses') && r.request().method() === 'POST'),
+      page.locator('#addExpense').click(),
+    ]);
+  }
+  await expect(page.locator('#summaryCards')).toContainText('UGX 40,000');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 11,240,000');
 
-  // Step 7 — the salesperson counts their own money and closes the day with
-  // no Manager and no Super Administrator involved.
-  await page.locator('#actualCash').fill('580000');
-  await page.locator('#actualMobile').fill('200000');
+  // Step 7 — Total Sales − Mobile Money − expenses = Cash at Hand.
+  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 11,240,000');
+  await expect(page.locator('#cashEquation')).toHaveText(
+    'Total Sales UGX 11,280,000 − Mobile Money UGX 0 − Cash expenses UGX 40,000 = Cash at Hand UGX 11,240,000.');
+
+  await page.locator('#actualCash').fill('11240000');
+  await page.locator('#actualMobile').fill('0');
   await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/api/sales/days/2026-10-30') && r.request().method() === 'PATCH'),
+    page.waitForResponse(r => r.url().endsWith(`/api/sales/days/${BUSINESS_DATE}`) && r.request().method() === 'PATCH'),
     page.locator('#saveCounts').click(),
   ]);
   await expect(page.locator('#message')).toContainText('Counted money saved');
   await expect(page.locator('#cashDifferenceBig')).toHaveText('UGX 0');
   await expect(page.locator('#mobileDifferenceBig')).toHaveText('UGX 0');
+
+  // The salesperson completes the reconciliation alone: no Manager, no approval.
   await Promise.all([
     page.waitForResponse(r => r.url().endsWith('/close') && r.request().method() === 'POST'),
     page.locator('#closeDay').click(),
@@ -140,17 +168,15 @@ test('Sales operator balances a day alone with one card per product', async ({ p
   await expect(page.locator('#statusPill')).toHaveText('CLOSED');
   await expect(page.locator('#reopenDay')).toBeHidden();
 
-  // A closed day is read-only: the counts and every entry form disappear.
+  // A closed day is read-only: no counts and no entry forms.
   await expect(page.locator('[data-close-qty]')).toHaveCount(0);
   await expect(page.locator('#saveReturns')).toBeDisabled();
   await expect(page.locator('#saveOpening')).toBeDisabled();
   await expect(page.locator('#declareForm')).toBeHidden();
   await expect(page.locator('[data-card-save]').first()).toBeDisabled();
 
-  const tamperStatus = await page.evaluate(async () => {
-    const response = await fetch('/api/sales/days/2026-10-30?sales_profile_id=999999');
-    return response.status;
-  });
+  const tamperStatus = await page.evaluate(
+    async (date) => (await fetch(`/api/sales/days/${date}?sales_profile_id=999999`)).status, BUSINESS_DATE);
   expect(tamperStatus).toBe(403);
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -167,7 +193,7 @@ test('Sales operator balances a day alone with one card per product', async ({ p
   expect(tooShort).toEqual([]);
 
   // The next day starts from the counted return automatically — nothing is
-  // re-declared, nothing is approved and the salesperson owns it alone.
+  // re-declared and no Manager is involved.
   await page.locator('#businessDate').fill('2026-10-31');
   await Promise.all([
     page.waitForResponse(r => r.url().endsWith('/api/sales/days') && r.request().method() === 'POST'),
