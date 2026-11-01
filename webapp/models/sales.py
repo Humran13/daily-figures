@@ -140,6 +140,13 @@ class SalesVehicleClosingLine(db.Model):
     return_counted = db.Column(db.Boolean, nullable=False, default=True)
     corrected_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     correction_reason = db.Column(db.Text, nullable=True)
+    # A Manager taking this product off a CLOSED day: the counted row is kept
+    # exactly as it was recorded and only marked, with who, when and why.  A
+    # removed line stops counting for its day and never carries forward, so the
+    # history of the correction survives while the day recalculates.
+    removed_at = db.Column(db.DateTime, nullable=True)
+    removed_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    removal_reason = db.Column(db.Text, nullable=True)
     updated_at = db.Column(db.DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
     sales_day = db.relationship("SalesDay", back_populates="closing_lines")
     product = db.relationship("Product")
