@@ -79,13 +79,9 @@ function render(){
   renderOpeningNotice();
   $('reopenDay').classList.toggle('hidden',!closed||!meta.can_manage);
   $('closeDay').classList.toggle('hidden',closed);
-  ['saveCounts','saveReturns','saveOpening','saveMobileSplit','addExpense','addTransfer'].forEach(id=>{if($(id))$(id).disabled=closed;});
-  // Starting stock can only be typed on the day the vehicle balance starts, so
-  // the button is inert (not an error message) on every later day.
-  if($('saveOpening'))$('saveOpening').disabled=!!closed||!(current.stock||[]).some(r=>r.can_set_opening);
+  ['saveCounts','saveVehicleStock','addStockProduct','saveMobileSplit','addExpense','addTransfer'].forEach(id=>{if($(id))$(id).disabled=closed;});
   renderDebtorNames(current.debtor_names||meta.debtor_names||[]);
   renderStock();
-  renderDeclarePicker();
   renderStockWarnings();
   renderSoldList();
   renderCards();
@@ -108,66 +104,116 @@ function renderOpeningNotice(){
   const el=$('openingNotice');if(!el)return;
   const opening=current.opening||{},unset=opening.unset_products||[];
   if(!unset.length){el.classList.add('hidden');el.textContent='';return;}
-  el.classList.remove('hidden');
-  el.textContent=opening.can_declare
-    ? `Starting stock still to declare: ${unset.join(', ')}. Type what is on the vehicle under Vehicle stock and press “Save starting stock” — no Manager approval is needed.`
-    : `No starting stock is recorded on or before this date for: ${unset.join(', ')}.`;
-}
-function renderStock(){
-  const rows=current.stock||[];
   const closed=!!(current.day&&current.day.status==='closed');
-  $('stockList').classList.toggle('empty',!rows.length);
-  $('stockList').innerHTML=rows.map(r=>{
-    const rule=ruleFor(r);
-    const mismatch=!!(r.variance&&r.variance.base_unit_qty!==0);
-    const started=r.opening?`Started with ${esc(r.opening.label)}${r.added&&r.added.base_unit_qty?` + ${esc(r.added.label)} added`:''}`:'No starting stock yet';
-    const soldLine=r.available&&r.closing?`${esc(r.available.label)} − ${esc(r.closing.label)} = ${esc(r.derived_sold.label)} sold`:'';
-    const tag=mismatch?['bad','Check count']:(r.opening===null?(r.can_set_opening?['warn','Starting stock needed']:['bad','Starting stock missing']):(r.closing?['','Return counted']:['','Return not counted']));
-    const canStart=!!r.can_set_opening&&!closed;
-    const starting=canStart
-      ?`<div class="starting-form"><span class="start-label">${r.opening?'Correct starting stock':'Starting stock — what you are carrying today'}</span><input data-open-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.opening?esc(r.opening.label):'Qty'}" aria-label="${esc(r.product_name)} starting stock"><select data-open-unit="${r.product_id}" aria-label="${esc(r.product_name)} starting stock unit">${unitOptions(rule,'carton')}</select></div>`
-      :(r.opening===null?'<small class="warn-text">Starting stock for this product has to be recorded on the day the vehicle balance started.</small>':'');
-    return `<article class="stock-row"><div class="stock-head"><strong>${esc(r.product_name)}</strong><span class="tag ${tag[0]}">${tag[1]}</span></div><div class="stock-grid"><div class="datum"><span>Previous Return</span><strong>${r.opening?esc(r.opening.label):'—'}</strong></div><div class="datum"><span>Stock Added</span><strong>${esc(r.added.label)}</strong></div><div class="datum"><span>Total Stock</span><strong>${r.available?esc(r.available.label):'—'}</strong></div><div class="datum"><span>Return Today</span><strong>${r.closing?esc(r.closing.label):'—'}</strong></div><div class="datum"><span>Sold</span><strong data-sold-datum="${r.product_id}">${r.derived_sold?esc(r.derived_sold.label):'—'}</strong></div></div><small class="stock-equation">${started}${soldLine?' · '+soldLine:''}</small>${mismatch?`<small class="warn-text">Stock count says ${esc(r.derived_sold.label)} sold, sales cards say ${esc(r.recorded_sold.label)} (difference ${esc(r.variance.label)}).</small>`:''}${starting}${closed?'':`<div class="closing-form"><input data-close-qty="${r.product_id}" type="number" min="0" inputmode="numeric" placeholder="${r.closing?esc(r.closing.label):'Return today'}" aria-label="${esc(r.product_name)} return today"><select data-close-unit="${r.product_id}" aria-label="${esc(r.product_name)} return today unit">${unitOptions(rule,'carton')}</select></div>`}</article>`;
-  }).join('')||'<p class="empty">No products belong to this vehicle balance yet. Add what you are carrying below.</p>';
-  rows.forEach(r=>{
-    const input=document.querySelector(`[data-close-qty="${r.product_id}"]`);
-    const unit=document.querySelector(`[data-close-unit="${r.product_id}"]`);
-    if(!input)return;
-    const preview=()=>previewSold(r.product_id);
-    input.addEventListener('input',preview);
-    if(unit)unit.addEventListener('change',preview);
+  el.classList.remove('hidden');
+  el.textContent=closed
+    ? `No Previous Return was counted before this date for: ${unset.join(', ')}.`
+    : `Previous Return still to enter for: ${unset.join(', ')}. Open the product's Vehicle Stock card and type what the vehicle actually holds — no Manager approval is needed.`;
+}
+// ---- Step 1: Vehicle stock -------------------------------------------------
+// One card per product the salesperson put on the vehicle. Previous Return,
+// Given Stock, Total Stock and Return Today are all editable: they are the
+// driver's own physical figures. Sold Today is the only calculated value.
+// Nothing here is hard-coded - the products come from the database.
+let stockCards=[],stockKey='',stockOptions=null;
+const NO_RULE={pieces_per_carton:1,pieces_per_pack:0,has_pack_tier:false};
+function stockRule(card){return (card&&card.rule)||NO_RULE;}
+function unitFactor(unit,rule){
+  if(unit==='carton')return rule.pieces_per_carton||1;
+  if(unit==='pack')return rule.pieces_per_pack||0;
+  return 1;
+}
+// Show a prefilled figure in the largest unit that holds it exactly, so the
+// salesperson always sees a whole number they can correct.
+function bestUnit(values,rule){
+  const units=['carton',...(rule.has_pack_tier?['pack']:[]),'piece'];
+  return units.find(u=>values.every(v=>v==null||v%unitFactor(u,rule)===0))||'piece';
+}
+function baseValue(card,field){
+  if(card[field]===''||card[field]==null)return null;
+  const value=Number(card[field]);
+  return Number.isFinite(value)?value*unitFactor(card.unit,stockRule(card)):null;
+}
+function autoTotal(card){
+  const previous=card.previous===''?null:Number(card.previous);
+  const issued=card.issued===''?null:Number(card.issued);
+  if(previous===null&&issued===null)return '';
+  return String((previous||0)+(issued||0));
+}
+function syncStockDrafts(){
+  const key=`${profileId()}|${dateVal()}`;
+  if(key===stockKey)return;
+  stockKey=key;stockOptions=null;
+  stockCards=((current&&current.stock)||[]).map(row=>{
+    const rule=row.rule||NO_RULE;
+    const previous=(row.previous_return||{}).base_unit_qty;
+    const issued=(row.issued_today||{}).base_unit_qty;
+    const total=(row.total_stock||{}).base_unit_qty;
+    const returned=(row.closing||{}).base_unit_qty;
+    const unit=bestUnit([previous,issued,total,returned],rule);
+    const card={productId:row.product_id,name:row.product_name,rule,unit,
+      totalTouched:!!row.total_overridden,saved:!!row.return_counted,invalid:false};
+    card.previous=previous==null?'':String(previous/unitFactor(unit,rule));
+    card.issued=issued==null?'':String(issued/unitFactor(unit,rule));
+    card.total=total==null?'':String(total/unitFactor(unit,rule));
+    card.returned=returned==null?'':String(returned/unitFactor(unit,rule));
+    return card;
   });
 }
-// Display-only mirror of the paper sheet: Sold updates the instant a return is
-// typed, before anything is saved. The server still recalculates every figure.
-function previewSold(productId){
-  const row=stockRow(productId),cell=document.querySelector(`[data-sold-datum="${productId}"]`);
-  const input=document.querySelector(`[data-close-qty="${productId}"]`);
-  if(!row||!cell||!input||!row.available)return;
-  const rule=ruleFor(row);
-  if(String(input.value).trim()===''){
-    cell.textContent=row.derived_sold?row.derived_sold.label:'—';
-    cell.classList.remove('short');
-    return;
-  }
-  const unit=document.querySelector(`[data-close-unit="${productId}"]`);
-  const sold=row.available.base_unit_qty-toBase(input.value,unit?unit.value:'carton',rule);
-  cell.textContent=(sold<0?'-':'')+qtyLabel(sold,rule)+(sold<0?' — check the count':'');
-  cell.classList.toggle('short',sold<0);
+function stockProductOptions(index){
+  const used=new Set(stockCards.filter((card,i)=>i!==index&&card.productId).map(card=>card.productId));
+  return ((stockOptions&&stockOptions.products)||[]).filter(p=>!p.on_vehicle&&!used.has(p.id))
+    .map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
 }
-function renderDeclarePicker(){
-  const form=$('declareForm');if(!form)return;
+
+function stockCardHtml(card,index,closed){
+  const rule=stockRule(card),disabled=closed?' disabled':'';
+  const tag=card.invalid?['bad','Check count']:(card.productId?(card.saved?['ok','Saved']:['warn','Not saved']):['warn','Choose a product']);
+  const product=card.productId
+    ? `<strong class="stock-name">${esc(card.name)}</strong>`
+    : `<select data-stock-pick="${index}" aria-label="Product"${disabled}><option value="">Select Product</option>${stockProductOptions(index)}</select>`;
+  const field=(name,label,value)=>`<label>${label}<input data-stock-index="${index}" data-stock-field="${name}" type="number" min="0" step="1" inputmode="numeric" value="${esc(value)}"${disabled}></label>`;
+  return `<article class="vstock-row" data-stock-row="${index}">
+    <div class="vstock-head"><div class="vstock-product"><span>Product</span>${product}</div>
+      <label class="vstock-unit">Counted in<select data-stock-unit="${index}" aria-label="Unit"${disabled}>${unitOptions(rule,card.unit)}</select></label>
+      <span class="tag ${tag[0]}">${tag[1]}</span></div>
+    <div class="vstock-grid">${field('previous','Previous Return',card.previous)}${field('issued','Given Stock / Issued Today',card.issued)}${field('total','Total Stock',card.total)}${field('returned','Return Today',card.returned)}<div class="datum"><span>Sold Today</span><strong data-stock-sold="${index}">—</strong></div></div>
+    <p class="vstock-error hidden" data-stock-error="${index}"></p></article>`;
+}
+function renderStock(){
+  if(!current)return;
   const closed=!!(current.day&&current.day.status==='closed');
-  const inStock=new Set((current.stock||[]).map(r=>r.product_id));
-  const rows=(meta.products||[]).filter(p=>!inStock.has(p.id));
-  const show=!closed&&!!(current.opening||{}).can_declare&&rows.length>0;
-  form.classList.toggle('hidden',!show);
-  if(!show)return;
-  const select=$('declareProduct'),keep=select.value;
-  select.innerHTML=rows.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
-  if(rows.some(p=>String(p.id)===String(keep)))select.value=keep;
-  const chosen=rows.find(p=>String(p.id)===String(select.value))||rows[0];
-  $('declareUnit').innerHTML=unitOptions(chosen.rule,'carton');
+  syncStockDrafts();
+  $('stockList').classList.toggle('empty',!stockCards.length);
+  $('stockList').innerHTML=stockCards.map((card,index)=>stockCardHtml(card,index,closed)).join('')
+    ||'<p class="empty">No products on the vehicle yet. Press “Add Product” and choose from the product list.</p>';
+  $('addStockProduct').textContent=stockCards.some(card=>card.productId)?'Add Another Product':'Add Product';
+  $('addStockProduct').disabled=closed;
+  $('saveVehicleStock').disabled=closed||!stockCards.some(card=>card.productId);
+  stockCards.forEach((card,index)=>refreshStockCard(index));
+}
+// Sold Today = Total Stock − Return Today, live, from what is in the boxes.
+function refreshStockCard(index){
+  const card=stockCards[index];if(!card)return;
+  const rule=stockRule(card),total=baseValue(card,'total'),returned=baseValue(card,'returned');
+  let sold=null,problem='';
+  if(total!==null&&returned!==null){
+    sold=total-returned;
+    if(sold<0)problem='Return Today cannot be greater than Total Stock.';
+  }
+  card.invalid=!!problem;
+  const cell=document.querySelector(`[data-stock-sold="${index}"]`);
+  if(cell){
+    cell.textContent=sold===null?'—':(sold<0?'−'+qtyLabel(-sold,rule):qtyLabel(sold,rule));
+    cell.classList.toggle('short',sold!==null&&sold<0);
+  }
+  const error=document.querySelector(`[data-stock-error="${index}"]`);
+  if(error){error.textContent=problem;error.classList.toggle('hidden',!problem);}
+  const tag=document.querySelector(`[data-stock-row="${index}"] .tag`);
+  if(tag&&card.productId){
+    tag.className='tag '+(problem?'bad':(card.saved?'ok':'warn'));
+    tag.textContent=problem?'Check count':(card.saved?'Saved':'Not saved');
+  }
 }
 function renderSoldList(){
   const rows=current.stock||[];
@@ -387,72 +433,122 @@ function bindCardEvents(){
 }
 
 
-async function declareOpeningProduct(){
-  const productId=Number($('declareProduct').value);
-  const raw=$('declareQty').value;
-  if(!productId){msg('Choose a product.');return;}
-  if(String(raw).trim()===''){msg('Type the quantity you are carrying. Zero is a valid answer.');return;}
-  const quantity=Number(raw);
-  if(!Number.isFinite(quantity)||quantity<0){msg('Starting stock must be zero or more.');return;}
-  try{
-    current=await api(`/api/sales/days/${dateVal()}/opening-stock`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),lines:[{product_id:productId,quantity,unit:$('declareUnit').value}]})});
-    $('declareQty').value='';
-    render();msg('Added to your vehicle stock.',true);
-  }catch(e){msg(e.message);}
+function bindStockEvents(){
+  const list=$('stockList');if(!list)return;
+  list.addEventListener('input',e=>{
+    const field=e.target.dataset.stockField;
+    if(!field)return;
+    const index=Number(e.target.dataset.stockIndex),card=stockCards[index];
+    if(!card)return;
+    card[field]=e.target.value;
+    // Total Stock follows Previous Return + Given Stock until the salesperson
+    // corrects it themselves; after that their own figure is kept.
+    if((field==='previous'||field==='issued')&&!card.totalTouched){
+      card.total=autoTotal(card);
+      const box=list.querySelector(`[data-stock-index="${index}"][data-stock-field="total"]`);
+      if(box)box.value=card.total;
+    }
+    if(field==='total')card.totalTouched=true;
+    if(card.saved)card.saved=false;
+    refreshStockCard(index);
+  });
+  list.addEventListener('change',e=>{
+    if(e.target.dataset.stockPick!=null){chooseStockProduct(Number(e.target.dataset.stockPick),e.target.value);return;}
+    if(e.target.dataset.stockUnit!=null)changeStockUnit(Number(e.target.dataset.stockUnit),e.target.value);
+  });
 }
-async function saveOpening(){
-  const lines=[];let invalid=false;
-  for(const row of current.stock||[]){
-    if(!row.can_set_opening)continue;
-    const qtyInput=document.querySelector(`[data-open-qty="${row.product_id}"]`);
-    if(!qtyInput||qtyInput.value.trim()==='')continue;
-    const quantity=Number(qtyInput.value);
-    if(!Number.isFinite(quantity)||quantity<0){invalid=true;break;}
-    const unitInput=document.querySelector(`[data-open-unit="${row.product_id}"]`);
-    lines.push({product_id:row.product_id,quantity,unit:unitInput?unitInput.value:'carton'});
-  }
-  if(invalid){msg('Starting stock must be zero or more.');return;}
-  if(!lines.length){msg('Type the starting stock for at least one product. Zero is a valid answer.');return;}
-  try{
-    current=await api(`/api/sales/days/${dateVal()}/opening-stock`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),lines})});
-    render();msg('Starting stock saved. Later days carry it forward automatically.',true);
-  }catch(e){msg(e.message);}
+async function openStockOptions(){
+  if(stockOptions)return stockOptions;
+  stockOptions=await api(`/api/sales/days/${dateVal()}/vehicle-stock/options?${profileParam()}`);
+  return stockOptions;
 }
-async function saveReturns(){
-  const lines=[];let invalid=false;
-  for(const row of current.stock||[]){
-    const qtyInput=document.querySelector(`[data-close-qty="${row.product_id}"]`);
-    if(!qtyInput||qtyInput.value.trim()==='')continue;
-    const quantity=Number(qtyInput.value);
-    if(!Number.isFinite(quantity)||quantity<0){invalid=true;break;}
-    const unitInput=document.querySelector(`[data-close-unit="${row.product_id}"]`);
-    lines.push({product_id:row.product_id,quantity,unit:unitInput?unitInput.value:'carton'});
+async function addStockProductCard(){
+  if(!current||!current.day){msg('Open the day first.');return;}
+  if(current.day.status==='closed'){msg('A closed Sales Day must be reopened before it can be edited.');return;}
+  try{
+    await openStockOptions();
+  }catch(e){msg(e.message);return;}
+  const used=new Set(stockCards.filter(card=>card.productId).map(card=>card.productId));
+  const free=(stockOptions.products||[]).filter(p=>!p.on_vehicle&&!used.has(p.id));
+  if(!free.length){msg('Every product in the catalogue is already on this vehicle.');return;}
+  stockCards.push({productId:null,name:'',rule:null,unit:'carton',previous:'',issued:'',total:'',
+    returned:'',totalTouched:false,saved:false,invalid:false});
+  renderStock();
+  const select=document.querySelector(`[data-stock-pick="${stockCards.length-1}"]`);
+  if(select)select.focus();
+}
+function chooseStockProduct(index,value){
+  const card=stockCards[index];if(!card)return;
+  const id=Number(value);
+  if(!id){card.productId=null;card.name='';card.rule=null;renderStock();return;}
+  const option=((stockOptions&&stockOptions.products)||[]).find(p=>p.id===id);
+  if(!option){renderStock();return;}
+  if(stockCards.some((other,i)=>i!==index&&other.productId===id)){
+    // One card per product: the same product can never be counted twice.
+    msg(`${option.name} is already on the vehicle stock. Keep one card per product.`);
+    renderStock();return;
   }
-  if(invalid){msg('Returns must be zero or more.');return;}
-  if(!lines.length){msg('Type the return today for at least one product.');return;}
+  const rule=option.rule||NO_RULE;
+  card.productId=option.id;card.name=option.name;card.rule=rule;
+  const previous=(option.previous_return||{}).base_unit_qty;
+  const issued=(option.issued_today||{}).base_unit_qty;
+  card.unit=bestUnit([previous,issued],rule);
+  card.previous=previous==null?'':String(previous/unitFactor(card.unit,rule));
+  card.issued=issued==null?'':String(issued/unitFactor(card.unit,rule));
+  card.total=autoTotal(card);card.totalTouched=false;card.returned='';card.saved=false;
+  renderStock();
+  const input=document.querySelector(`[data-stock-index="${index}"][data-stock-field="previous"]`);
+  if(input&&card.previous==='')input.focus();
+}
+function changeStockUnit(index,unit){
+  const card=stockCards[index];if(!card||card.unit===unit)return;
+  const rule=stockRule(card),from=unitFactor(card.unit,rule),to=unitFactor(unit,rule);
+  card.unit=unit;
+  ['previous','issued','total','returned'].forEach(field=>{
+    if(card[field]==='')return;
+    const base=Number(card[field])*from;
+    card[field]=to&&base%to===0?String(base/to):'';
+  });
+  renderStock();
+}
+
+async function saveVehicleStock(button){
+  if(!current||!current.day){msg('Open the day first.');return;}
+  let problem='';
+  const lines=[];
+  stockCards.forEach(card=>{
+    if(!card.productId){problem=problem||'Choose a product for every card before saving.';return;}
+    const numbers={};
+    ['previous','issued','total','returned'].forEach(field=>{
+      if(card[field]===''){numbers[field]=null;return;}
+      const value=Number(card[field]);
+      if(!Number.isFinite(value)||!Number.isInteger(value)||value<0){
+        problem=problem||`${card.name}: every quantity must be a whole number of zero or more.`;return;
+      }
+      numbers[field]=value;
+    });
+    lines.push({product_id:card.productId,unit:card.unit,previous_qty:numbers.previous,
+      issued_qty:numbers.issued,total_qty:numbers.total,return_qty:numbers.returned});
+  });
+  if(!problem&&stockCards.some(card=>card.invalid))problem='Return Today cannot be greater than Total Stock.';
+  if(problem){msg(problem);return;}
+  if(!lines.length){msg('Add at least one product to the vehicle stock.');return;}
   let reason=null;
-  if(meta.can_manage){
-    const changed=[];
-    for(const line of lines){
-      const row=stockRow(line.product_id);
-      if(!row||!row.closing)continue;
-      try{
-        const preview=await api(`/api/sales/days/${dateVal()}/closing-stock/preview`,{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),product_id:line.product_id,quantity:line.quantity,unit:line.unit})});
-        if(!preview.new_closing||!row.closing||preview.new_closing.label!==row.closing.label)changed.push(`${preview.product_name}: sold becomes ${preview.new_derived_sold.label}`);
-      }catch(e){msg(e.message);return;}
-    }
-    if(changed.length){
-      if(!confirm(`This changes counts that were already saved.\n\n${changed.join('\n')}\n\nContinue?`))return;
-      const answer=prompt('Reason for correcting these counts (required, audited):');
-      if(answer===null)return;
-      if(!answer.trim()){msg('A reason is required to correct an existing count.');return;}
-      reason=answer.trim();
-    }
+  if(meta.can_manage&&current.day.status!=='draft'){
+    const answer=prompt('Reason for correcting a day that was already saved (required, audited):');
+    if(answer===null)return;
+    if(!answer.trim()){msg('A reason is required to correct an existing count.');return;}
+    reason=answer.trim();
   }
-  try{
-    current=await api(`/api/sales/days/${dateVal()}/returns`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),lines:lines.map(line=>({...line,reason}))})});
-    render();msg('Returns today saved.',true);
-  }catch(e){msg(e.message);}
+  await withBusy(button||$('saveVehicleStock'),async()=>{
+    try{
+      const body={sales_profile_id:profileId(),lines:reason?lines.map(line=>({...line,reason})):lines};
+      current=await api(`/api/sales/days/${dateVal()}/vehicle-stock`,{method:'PUT',body:JSON.stringify(body)});
+      stockKey='';
+      render();
+      msg('Vehicle stock saved. Sold Today now feeds the sales cards.',true);
+    }catch(e){msg(e.message);}
+  });
 }
 async function saveCard(productId,button){
   await withBusy(button,async()=>{
@@ -730,10 +826,9 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('DOMContentLoaded',()=>{
   $('loadDay').onclick=()=>loadDay(true);
-  $('saveOpening').onclick=saveOpening;
-  $('saveReturns').onclick=saveReturns;
-  $('declareOpening').onclick=declareOpeningProduct;
-  $('declareProduct').onchange=renderDeclarePicker;
+  $('addStockProduct').onclick=addStockProductCard;
+  $('saveVehicleStock').onclick=e=>saveVehicleStock(e.currentTarget);
+  bindStockEvents();
   $('addExpense').onclick=e=>addExpense(e.currentTarget);
   $('addTransfer').onclick=e=>addTransfer(e.currentTarget);
   $('saveMobileSplit').onclick=saveMobileSplit;

@@ -11,6 +11,7 @@ from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
 from webapp.models.sales import (
     SalesBaseline, SalesDay, SalesDebtor, SalesInvoice, SalesOpeningStockLine, SalesProfile,
+    SalesVehicleClosingLine,
 )
 from webapp.models.section import SECTION_SALES, Section
 from webapp.models.user import ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER
@@ -1174,3 +1175,214 @@ def test_mobile_money_and_debt_split_cannot_exceed_sales(client, sales_setup):
     assert exactly.status_code == 200
     assert exactly.get_json()["totals"]["cash_from_sales_ugx"] == 0
     assert exactly.get_json()["totals"]["cash_at_hand_ugx"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — Vehicle Stock: the salesperson's own editable sheet
+# ---------------------------------------------------------------------------
+
+def _save_vehicle_stock(client, profile_id, lines, date="2026-10-30"):
+    return client.put(f"/api/sales/days/{date}/vehicle-stock",
+                      json={"sales_profile_id": profile_id, "lines": lines})
+
+
+def _vehicle_options(client, profile_id, date="2026-10-30"):
+    return client.get(f"/api/sales/days/{date}/vehicle-stock/options?sales_profile_id={profile_id}")
+
+
+def _stock_row(summary, product_id):
+    return next(row for row in summary["stock"] if row["product_id"] == product_id)
+
+
+def _add_straws(s, name="Straws"):
+    """A product that nothing has carried yet: it can only be chosen by hand."""
+    product = Product(name=name, display_order=3, active=True)
+    db.session.add(product); db.session.flush()
+    db.session.add(PackagingRule(product_id=product.id, cartons_to_packs=10, packs_to_pieces=10,
+                                 effective_from=datetime(2026, 1, 1), created_by=s["manager"].id))
+    db.session.commit()
+    return product
+
+
+def test_vehicle_stock_product_picker_is_the_product_catalogue(client, sales_setup):
+    """The Product dropdown is the product table, not a list written in JavaScript."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    straws = _add_straws(s)
+    retired = Product(name="Retired Widget", display_order=8, active=False)
+    no_rule = Product(name="No Packaging Rule", display_order=9, active=True)
+    db.session.add_all([retired, no_rule]); db.session.flush()
+    db.session.add(PackagingRule(product_id=retired.id, cartons_to_packs=10, packs_to_pieces=10,
+                                 effective_from=datetime(2026, 1, 1), created_by=s["manager"].id))
+    db.session.commit()
+
+    body = _vehicle_options(client, s["profile"].id).get_json()
+    assert [row["name"] for row in body["products"]] == ["Compact Standard", "Napkin Standard", "Straws"]
+    straw = next(row for row in body["products"] if row["id"] == straws.id)
+    assert straw["on_vehicle"] is False
+    # A trusted opening exists, so nothing carried is an explicit zero, not a blank.
+    assert straw["previous_return"]["cartons"] == 0
+    assert straw["issued_today"]["cartons"] == 0
+    compact = next(row for row in body["products"] if row["id"] == s["compact"].id)
+    assert compact["on_vehicle"] is True
+    assert compact["previous_return"]["cartons"] == 50
+    assert compact["issued_today"]["cartons"] == 100
+
+
+def test_vehicle_stock_adds_a_product_from_the_catalogue(client, sales_setup):
+    """A product with no history at all can still be put on the vehicle."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    straws = _add_straws(s)
+
+    saved = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": straws.id, "unit": "carton", "previous_qty": 0,
+         "issued_qty": 20, "return_qty": 5},
+    ])
+    assert saved.status_code == 200, saved.get_json()
+    row = _stock_row(saved.get_json(), straws.id)
+    assert (row["previous_return"]["cartons"], row["issued_today"]["cartons"],
+            row["total_stock"]["cartons"], row["closing"]["cartons"],
+            row["derived_sold"]["cartons"]) == (0, 20, 20, 5, 15)
+
+    # Saved means saved: the next read shows the same card.
+    reloaded = _stock_row(_day_summary(client, s["profile"].id), straws.id)
+    assert (reloaded["total_stock"]["cartons"], reloaded["closing"]["cartons"],
+            reloaded["return_counted"]) == (20, 5, True)
+    # And the picker no longer offers a second card for it.
+    assert next(item for item in _vehicle_options(client, s["profile"].id).get_json()["products"]
+                if item["id"] == straws.id)["on_vehicle"] is True
+
+
+
+def test_vehicle_stock_figures_are_all_editable_without_a_manager(client, sales_setup):
+    """Previous Return, Given Stock, Total Stock and Return Today are all the driver's."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    # 52 carried + 100 given = 152, corrected by hand to 150, less 40 back = 110 sold.
+    saved = _save_vehicle_stock(client, s["profile"].id, [{
+        "product_id": s["compact"].id, "unit": "carton",
+        "previous_qty": 52, "issued_qty": 100, "total_qty": 150, "return_qty": 40}])
+    assert saved.status_code == 200, saved.get_json()
+    row = _stock_row(saved.get_json(), s["compact"].id)
+    assert (row["previous_return"]["cartons"], row["issued_today"]["cartons"],
+            row["total_stock"]["cartons"], row["closing"]["cartons"],
+            row["derived_sold"]["cartons"]) == (52, 100, 150, 40, 110)
+    assert row["previous_overridden"] is True and row["total_overridden"] is True
+    # Given Stock still equals the dispatch, so it is not copied into Sales.
+    assert row["issued_overridden"] is False
+    assert DispatchLine.query.filter_by(product_id=s["compact"].id).one().base_unit_qty == 100 * 100
+    assert SalesOpeningStockLine.query.filter_by(product_id=s["compact"].id).one().base_unit_qty == 50 * 100
+    assert AuditLog.query.filter_by(entity_type="sales_vehicle_closing").count() == 1
+
+    # Total Stock is not locked to Previous Return + Given Stock: correcting
+    # Given Stock does not fight a Total Stock the salesperson typed earlier.
+    again = _save_vehicle_stock(client, s["profile"].id, [{
+        "product_id": s["compact"].id, "unit": "carton",
+        "previous_qty": 52, "issued_qty": 90, "total_qty": 150, "return_qty": 40}])
+    row = _stock_row(again.get_json(), s["compact"].id)
+    assert (row["issued_today"]["cartons"], row["total_stock"]["cartons"],
+            row["derived_sold"]["cartons"]) == (90, 150, 110)
+
+
+def test_vehicle_stock_refuses_impossible_and_duplicate_cards(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    too_much = _save_vehicle_stock(client, s["profile"].id, [{
+        "product_id": s["compact"].id, "unit": "carton",
+        "previous_qty": 50, "issued_qty": 100, "return_qty": 151}])
+    assert too_much.status_code == 400
+    assert "cannot exceed" in too_much.get_json()["error"].lower()
+    negative = _save_vehicle_stock(client, s["profile"].id, [{
+        "product_id": s["compact"].id, "unit": "carton", "previous_qty": -5}])
+    assert negative.status_code == 400
+    assert "cannot be negative" in negative.get_json()["error"].lower()
+    duplicate = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 50},
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 50}])
+    assert duplicate.status_code == 400
+    assert "already on the vehicle stock" in duplicate.get_json()["error"]
+    # A refused save writes nothing at all.
+    assert SalesVehicleClosingLine.query.count() == 0
+
+
+def test_vehicle_stock_carry_forward_is_editable_and_never_rewrites_yesterday(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    first = _save_vehicle_stock(client, s["profile"].id, [{
+        "product_id": s["compact"].id, "unit": "carton",
+        "previous_qty": 50, "issued_qty": 100, "return_qty": 40}])
+    assert first.status_code == 200, first.get_json()
+
+    _open_day(client, s["profile"].id, date="2026-10-31")
+    tomorrow = _stock_row(_day_summary(client, s["profile"].id, date="2026-10-31"), s["compact"].id)
+    assert tomorrow["previous_return"]["cartons"] == 40      # carried forward
+    assert tomorrow["closing"] is None and tomorrow["return_counted"] is False
+
+    # The salesperson physically counts 42 today and corrects the carry-forward.
+    corrected = _save_vehicle_stock(client, s["profile"].id, [{
+        "product_id": s["compact"].id, "unit": "carton", "previous_qty": 42}], date="2026-10-31")
+    assert corrected.status_code == 200, corrected.get_json()
+    row = _stock_row(corrected.get_json(), s["compact"].id)
+    assert row["previous_return"]["cartons"] == 42
+    assert row["previous_overridden"] is True
+
+    # Yesterday is exactly as it was: previous 50, return 40, untouched row.
+    yesterday = _stock_row(_day_summary(client, s["profile"].id), s["compact"].id)
+    assert (yesterday["previous_return"]["cartons"], yesterday["closing"]["cartons"]) == (50, 40)
+    stored = (SalesVehicleClosingLine.query.join(SalesDay)
+              .filter(SalesDay.business_date == "2026-10-30",
+                      SalesVehicleClosingLine.product_id == s["compact"].id).one())
+    assert stored.base_unit_qty == 40 * 100
+    assert stored.previous_return_base_qty is None
+
+
+
+def test_vehicle_stock_cards_are_independent_and_feed_the_sales_cards(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    straws = _add_straws(s)
+    saved = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 40},
+        {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+         "issued_qty": 20, "return_qty": 5},
+        {"product_id": straws.id, "unit": "carton", "previous_qty": 0,
+         "issued_qty": 10, "return_qty": 10},
+    ])
+    assert saved.status_code == 200, saved.get_json()
+    body = saved.get_json()
+    # Each card computes its own Sold Today; nothing leaks between products.
+    assert [_stock_row(body, product.id)["derived_sold"]["cartons"]
+            for product in (s["compact"], s["napkin"], straws)] == [110, 25, 0]
+    assert _stock_row(body, s["compact"].id)["total_stock"]["cartons"] == 150
+    assert _stock_row(body, s["napkin"].id)["total_stock"]["cartons"] == 30
+    assert _stock_row(body, straws.id)["total_stock"]["cartons"] == 10
+
+    # Step 3 still prices exactly the Sold Today each card produced.
+    assert _save_card(client, s["profile"].id, s["compact"].id,
+                      [{"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}]).status_code == 200
+    assert _save_card(client, s["profile"].id, s["napkin"].id,
+                      [{"quantity": 25, "unit": "carton", "unit_price_ugx": 103_000}]).status_code == 200
+    totals = _day_summary(client, s["profile"].id)["totals"]
+    assert totals["total_sales_ugx"] == 110 * 79_000 + 25 * 103_000
+
+
+def test_vehicle_stock_is_read_only_on_a_closed_day(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    # Nothing sold, so the day can be closed on the counted cash alone.
+    assert _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 50,
+         "issued_qty": 100, "return_qty": 150},
+        {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+         "issued_qty": 20, "return_qty": 30},
+    ]).status_code == 200
+    base = {"sales_profile_id": s["profile"].id}
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={**base, "actual_cash_count_ugx": 0}).status_code == 200
+    assert client.post("/api/sales/days/2026-10-30/close", json=base).status_code == 200
+    blocked = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 51}])
+    assert blocked.status_code == 400
+    assert "closed Sales Day" in blocked.get_json()["error"]
