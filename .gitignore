@@ -13,6 +13,9 @@ data/uploads/
 *.sqlite3
 *.sha256
 *.partial
+# Verified copies taken by scripts/reset_sales_data.py (and any other backup
+# tooling) live beside the database; they are recovery material, never source.
+*.bak-*
 backups/
 .env
 .env.*
