@@ -45,9 +45,8 @@
     <section class="card money-card"><h2><span class="step">4</span> Mobile Money</h2>
       <div class="form-grid">
         <label>Received on Mobile Money today (UGX)<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
-        <button id="saveMobileSplit">Save Mobile Money</button>
       </div>
-      <p class="hint">Saved once for the whole day, never per sale row. Cash at Hand is Total Sales minus this Mobile Money minus cash expenses.</p>
+      <p class="hint">Recorded once for the whole day, never per sale row, and saved with the rest of the day at Close day. Mobile Money explains how today's sales were paid — it is never added on top of Total Sales. Cash at Hand is Total Sales minus this Mobile Money minus the unpaid sales below minus cash expenses.</p>
     </section>
 
     <section class="card"><h2><span class="step">5</span> Expenses and money movement</h2>
@@ -73,7 +72,24 @@
       </div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">6</span> Cash at hand</h2>
+    <section class="card"><h2><span class="step">6</span> Debtors — unpaid sales and collections</h2>
+      <p class="hint">A customer who took goods without paying in full still bought them: the stock is sold, the sale is part of Total Sales and the money owed is a debtor. Record the unpaid part here. Money collected today on an older debt is money received today — it reduces that debt and never becomes a second sale. Everything here is saved by Close day.</p>
+      <div class="form-grid">
+        <label>Customer<input id="debtorName" list="debtorNames" maxlength="120" autocomplete="off" placeholder="e.g. Darius"></label><datalist id="debtorNames"></datalist>
+        <label>Amount owed today (UGX)<input id="debtAmount" type="number" min="1" step="1" inputmode="numeric" placeholder="Unpaid part of today's sale"></label>
+        <button id="addDebt">Add unpaid sale</button>
+      </div>
+      <h3 class="block-title">Money collected today for an older debt</h3>
+      <div class="form-grid">
+        <label>Debtor<select id="collectionDebtor" aria-label="Debtor to collect from"></select></label>
+        <label>Amount received (UGX)<input id="collectionAmount" type="number" min="1" step="1" inputmode="numeric"></label>
+        <label>Received by<select id="collectionMethod"><option value="cash">Cash</option><option value="mobile_money">Mobile Money</option></select></label>
+        <button id="addCollection">Add collection</button>
+      </div>
+      <div id="debtList" class="stack"></div>
+    </section>
+
+    <section class="card money-card"><h2><span class="step">7</span> Cash at hand</h2>
       <p class="hint">What you should physically be holding once today's money is settled.</p>
       <div class="cash-focus">
         <div><span>Cash at Hand</span><strong id="expectedCashBig">—</strong></div>
@@ -88,32 +104,22 @@
         <div><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
       </div>
       <div class="actions">
-        <button id="saveCounts">Save counted money</button>
         <button id="closeDay" class="primary">Close day</button>
         <button id="reopenDay" class="hidden">Reopen day</button>
       </div>
-      <p class="hint">A shortage or overage is shown, never hidden. Only a Manager can change what the books expect.</p>
+      <p class="hint">Nothing on this page is saved until Close day. Close day stores the vehicle stock, every sales card, the expenses, the money movements, Mobile Money, these counted figures, today's unpaid sales and today's collections in one transaction — if anything is wrong, none of it is stored and your figures stay on screen to correct.</p>
     </section>
   </section>
 
   <section id="debtorsView" class="view hidden">
     <section class="card"><h2>Debtors</h2>
-      <p class="hint">Only for people who took goods and have not paid. The sale is already counted; this only says how much of the money is still owed. Type any name you use for them.</p>
-      <div class="form-grid">
-        <label>Name<input id="debtorName" list="debtorNames" maxlength="120" autocomplete="off" placeholder="e.g. Darius"></label><datalist id="debtorNames"></datalist>
-        <label>Amount owed (UGX)<input id="debtAmount" type="number" min="1" step="1" inputmode="numeric"></label>
-        <label>Date<input id="debtDate" type="date"></label>
-      </div>
-      <button id="addDebt" class="primary">Add debt</button>
-      <div id="debtList" class="stack"></div>
-    </section>
-
-    <section class="card"><h2>Debtors</h2>
+      <p class="hint">Everyone who still owes money, oldest first. The sale that created the debt is already in that day's Total Sales; this list only says how much of the money is still outstanding. Money received today is recorded on the Daily page's Debtors card and saved by Close day.</p>
       <div class="form-grid"><label>Search<input id="debtorSearch" placeholder="Type a name" autocomplete="off"></label></div>
       <button id="loadDebtors">Refresh</button>
       <div id="debtorList" class="stack"></div>
     </section>
   </section>
+
 
   <section id="historyView" class="view hidden"><div class="card controls"><label>From<input id="historyFrom" type="date"></label><label>To<input id="historyTo" type="date"></label><button id="loadHistory">Load history</button><button id="findDivergence">First unresolved difference</button></div><div id="historyList" class="stack"></div><div class="card"><h2>Reports &amp; exports</h2><p class="hint">CSV, XLSX and branded PDF use the range above. Sales exports are audited.</p><div id="reportLinks" class="report-links"></div></div></section>
 
