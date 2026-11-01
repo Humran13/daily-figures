@@ -245,6 +245,9 @@ function updateLive(){
   stockCards.forEach((card,index)=>refreshStockCard(index));
   stockCards.forEach(card=>{if(card.productId)updateCard(card.productId);});
   paintMoney();
+  // The mismatch warning is part of the same live picture: it is recomputed
+  // from the figures on screen, never re-read from an earlier saved state.
+  renderStockWarnings();
 }
 let drafts={},draftsKey='';
 function syncDrafts(){
@@ -318,10 +321,34 @@ function priceRow(row,rule,line,index,closed){
   const disabled=closed?' disabled':'';
   return `<div class="price-row"><label class="price-qty">Quantity (${esc(unitText(line.unit))})<input data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="quantity" type="number" min="0" step="any" inputmode="decimal" value="${qty}" placeholder="Qty"${disabled}></label><label class="price-amount">Price per ${esc(line.unit||'unit')} (UGX)<input data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="unit_price_ugx" type="number" min="1" step="1" inputmode="numeric" value="${price}" placeholder="Selling price"${disabled}></label><strong class="row-value" id="rowValue-${row.product_id}-${index}">${value>0?ugx(value):'—'}</strong><button data-card-remove="${row.product_id}" data-card-index="${index}" aria-label="Remove this price row"${disabled}>×</button></div>`;
 }
+// The stock-vs-sales warning has to describe the figures the salesperson can
+// actually see.  A saved day's warning was being shown unchanged while the
+// Vehicle Stock boxes were edited or reset on screen, which is how a blank sheet
+// ended up "warning" that 144 cartons had been sold.  An open day is therefore
+// worked out here from the working sheet and the price rows on screen on every
+// repaint; only a closed day (where nothing is being typed) uses what was
+// stored when it was closed.
+function liveStockWarnings(){
+  const out=[];
+  stockCards.forEach(card=>{
+    if(!card.productId)return;
+    const figures=cardFigures(card);
+    if(!figures.valid)return;
+    const rule=figures.rule,draft=drafts[card.productId]||[];
+    const priced=draft.reduce((sum,line)=>sum+toBase(line.quantity,line.unit||CARD_UNIT,rule),0);
+    if(qtyMilli(priced)===qtyMilli(figures.sold))return;
+    // Same wording and the same sign as the server: sold minus priced.
+    const difference=figures.sold-priced;
+    out.push(`${card.name}: stock count says ${qtyLabel(figures.sold,rule)} sold, cards price ${qtyLabel(priced,rule)} (difference ${difference<0?'-':''}${qtyLabel(difference,rule)}).`);
+  });
+  return out;
+}
 function renderStockWarnings(){
-  const warnings=current.stock_warnings||[];
-  $('stockWarnings').classList.toggle('hidden',!warnings.length);
-  $('stockWarnings').innerHTML=warnings.map(w=>`<div>${esc(w)}</div>`).join('');
+  const closed=!!(current&&current.day&&current.day.status==='closed');
+  const warnings=closed?(current.stock_warnings||[]):liveStockWarnings();
+  const box=$('stockWarnings');if(!box)return;
+  box.classList.toggle('hidden',!warnings.length);
+  box.innerHTML=warnings.map(w=>`<div>${esc(w)}</div>`).join('');
 }
 function renderCards(){
   const rows=stockCards.filter(card=>card.productId);
@@ -461,6 +488,10 @@ function paintMoney(totals){
   $('mobileDifferenceBig').className=t.mobile_variance_ugx?'short':'ok';
   $('cashEquation').textContent=`Total Sales ${ugx(t.total_sales_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)} − Cash expenses ${ugx(t.cash_expenses_ugx)} = Cash at Hand ${ugx(t.cash_at_hand_ugx)}.`;
   $('tenderHint').textContent=`Cash from today's sales: ${ugx(t.cash_from_sales_ugx)} = Total Sales ${ugx(t.total_sales_ugx)} − Debtors ${ugx(t.new_debt_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)}.`;
+  // Any repaint of the money is also a repaint of the stock-vs-sales warning:
+  // both read the same working figures, so a card row edited just now can never
+  // leave yesterday's warning (or a saved day's) on screen.
+  renderStockWarnings();
 }
 function renderMoney(){
   const t=liveTotals();

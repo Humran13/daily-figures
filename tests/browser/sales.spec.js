@@ -287,6 +287,10 @@ test('Salesperson works live during the day and saves everything at Close Day', 
   await compactQtys.nth(1).fill('');
   await expect(compactCard.locator('.card-status')).toContainText('Priced 5 packs of 1 carton sold');
   await expect(compactCard.locator('.card-status')).toContainText('5 packs still to price');
+  // The stock-vs-sales warning is worked out from the figures on screen, not
+  // from a saved day: 1 carton counted out, 5 packs priced.
+  await expect(page.locator('#stockWarnings')).toContainText(
+    'Compact Standard: stock count says 1 carton sold, cards price 5 packs (difference 5 packs).');
 
   // Counted in pieces instead: the same 0.5 is still half a carton = 5 packs.
   await compactStock.locator('[data-stock-unit]').selectOption('piece');
@@ -296,6 +300,10 @@ test('Salesperson works live during the day and saves everything at Close Day', 
   await expect(compactQtys.nth(0)).toHaveValue('0.5');
   await expect(compactCard.locator('.card-status')).toContainText('Priced 5 packs of 1 carton sold');
   await expect(compactCard.locator('.card-status')).toContainText('5 packs still to price');
+  // Switching Counted in to pieces re-expresses the sheet, never the warning:
+  // the same 50 pieces are still 5 packs unpriced against 1 carton sold.
+  await expect(page.locator('#stockWarnings')).toContainText(
+    'Compact Standard: stock count says 1 carton sold, cards price 5 packs (difference 5 packs).');
 
   // Straws is 12 packs per carton, so the same 0.5 is 6 packs.
   await strawsStock.locator('[data-stock-unit]').selectOption('pack');
@@ -318,6 +326,9 @@ test('Salesperson works live during the day and saves everything at Close Day', 
   await expect(strawsStock.locator('[data-stock-field="returned"]')).toHaveValue('1');
   await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
   await expect(strawCard.locator('.card-status')).toContainText('matches the stock count');
+  // Nothing is unpriced now, so the mismatch warning must be gone rather than
+  // lingering with an earlier session's figures.
+  await expect(page.locator('#stockWarnings')).toBeHidden();
   expect(stockWrites).toEqual([]);
 
   // ---- TEST B: the expense X must not reset the page ---------------------

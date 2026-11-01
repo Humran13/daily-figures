@@ -177,6 +177,27 @@ The Sales screen itself is a single mobile-first page with six numbered steps: v
 
 A salesperson completes all six alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
 
+**Warnings describe the screen.** The stock-vs-sales warning ("stock count says 1 carton sold, cards price 5 packs (difference 5 packs)") is worked out on every repaint from the figures in the Vehicle Stock boxes and the price rows on screen, so it can never quote a saved day's figures while a different count is being typed; a closed day, where nothing is being typed, shows the warning stored when it was closed.
+
+## Resetting Sales transactional data
+
+Testing the workflow leaves Sales rows that afterwards read like real accounting history. `scripts/reset_sales_data.py` removes that transaction layer and nothing else:
+
+```bash
+# read-only: prints exactly what would be removed and changes nothing
+python scripts/reset_sales_data.py --database data/production.db
+
+# take a verified backup, then reset
+python scripts/reset_sales_data.py --database data/production.db \
+    --apply --confirm RESET-SALES-DATA
+```
+
+It clears `sales_debt_payments`, `sales_debts`, `sales_debtors`, `sales_payments`, `sales_invoice_lines`, `sales_invoices`, `sales_expenses`, `sales_money_transfers`, `sales_cash_adjustments`, `sales_stock_adjustments`, `sales_vehicle_closing_lines`, `sales_days`, `sales_opening_stock_lines` and `sales_baselines` — child rows first, in one transaction that is rolled back on any error.
+
+It never touches products, packaging rules, sales categories, customers, users, sales profiles, sections and permissions, feature flags, company settings, the audit trail, any other department's rows, the database schema or the Alembic history, and it never drops or recreates a table. Finished Goods dispatches are not Sales data: they are the evidence that stock reached the vehicle, so a load already made still appears as Given Stock after a reset, with no counted return and no sold figure of its own.
+
+`--apply` refuses to run without `--confirm RESET-SALES-DATA`, and before deleting anything it writes a transactionally consistent `<db>.bak-<timestamp>` next to the database and verifies it with `PRAGMA integrity_check`. The command prints the rows removed, the master data that stayed, and re-reads the database to prove the Sales tables are empty. `tests/test_sales_reset.py` covers the zero state, the preserved master data, the clean day that follows, and the CLI's confirmation and backup behaviour.
+
 ## Corrections, idempotency and audit
 
 Closed days require Manager/Super Admin reopening, with the reason recorded. Correcting the four Vehicle Stock figures on an open day (Previous Return, Given Stock, Total Stock, Return Today) is the salesperson's own ordinary work and asks for no approval; a reason supplied with a correction is still stored and audited. Manual stock and cash adjustments require reasons. Invoices, payments, expenses, transfers and stock adjustments are soft-voided with actor, timestamp and reason. The compact × on an expense cancels it without a prompt and without reloading the page: the row is soft-voided with the recorded reason "Removed from the Sales screen", it leaves the active list, the expense totals and Cash at Hand follow, and the browser-only Vehicle stock, Sales Card, Mobile Money and counted-cash values on screen are left exactly as typed. Expense descriptions are remembered from the expenses already recorded (newest first, de-duplicated case-insensitively) so the form can suggest them while typing; no separate table is needed, and a description stays remembered even after its expense was cancelled. Audit records capture before/after values without secrets. Unique idempotency keys prevent duplicate sale, payment, expense and transfer creation after double-clicks or network retries.
