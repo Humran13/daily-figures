@@ -23,32 +23,26 @@
     <div id="openingNotice" class="warning hidden"></div>
 
     <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
-      <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today. Every quantity is yours to correct — no approval needed.</p>
+      <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today, and that sold quantity feeds the product's sales card straight away. Every quantity is yours to correct — no approval needed, and nothing to save here: closing the day stores the sheet with the rest of the day.</p>
       <div id="stockList" class="stack empty">Open a day to begin.</div>
       <div id="stockWarnings" class="warning hidden"></div>
       <div class="stock-actions">
         <button id="addStockProduct">Add Product</button>
-        <button id="saveVehicleStock" class="primary">Save vehicle stock</button>
       </div>
     </section>
 
-    <section class="card"><h2><span class="step">2</span> Sold today</h2>
-      <p class="hint">Your stock count decides how much was sold. You never type it twice.</p>
-      <div id="soldList" class="stack empty">Open a day to see what was sold.</div>
-    </section>
-
-    <section class="card"><h2><span class="step">3</span> Sales cards</h2>
-      <p class="hint">One card per product. Add a row for every price you sold at — the rows must add up to what was sold. No customer is needed.</p>
+    <section class="card"><h2><span class="step">2</span> Sales cards</h2>
+      <p class="hint">One card per product. Each card already knows how many were sold from Vehicle stock — add a row for every price you sold at and the rows must add up to that sold quantity. No customer is needed.</p>
       <div id="cardList" class="stack empty">Open a day to price today's sales.</div>
       <div id="invoiceList" class="stack"></div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">4</span> Total sales today</h2>
+    <section class="card money-card"><h2><span class="step">3</span> Total sales today</h2>
       <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
       <p class="hint" id="tenderHint"></p>
     </section>
 
-    <section class="card money-card"><h2><span class="step">5</span> Mobile Money</h2>
+    <section class="card money-card"><h2><span class="step">4</span> Mobile Money</h2>
       <div class="form-grid">
         <label>Received on Mobile Money today (UGX)<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
         <button id="saveMobileSplit">Save Mobile Money</button>
@@ -56,7 +50,7 @@
       <p class="hint">Saved once for the whole day, never per sale row. Cash at Hand is Total Sales minus this Mobile Money minus cash expenses.</p>
     </section>
 
-    <section class="card"><h2><span class="step">6</span> Expenses and money movement</h2>
+    <section class="card"><h2><span class="step">5</span> Expenses and money movement</h2>
       <div class="quick-actions">
         <button data-toggle-form="expenseForm">Add expense</button>
         <button data-toggle-form="transferForm">Record money transfer / handover</button>
@@ -78,7 +72,7 @@
       </div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">7</span> Cash at hand</h2>
+    <section class="card money-card"><h2><span class="step">6</span> Cash at hand</h2>
       <p class="hint">What you should physically be holding once today's money is settled.</p>
       <div class="cash-focus">
         <div><span>Cash at Hand</span><strong id="expectedCashBig">—</strong></div>

@@ -171,11 +171,15 @@ Reports are available as CSV, XLSX and branded PDF for daily summaries and date-
 
 Every report and export page links to `csv`, `xlsx` and `pdf` for the currently selected salesperson and date, so nobody has to hand-write query strings.
 
-The Sales screen itself is a single mobile-first page with seven numbered steps: vehicle stock (one editable card per product the salesperson put on the vehicle — Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today and a calculated Sold Today, with Add Product and one Save vehicle stock action), sold today, one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. A salesperson completes all seven alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
+The Sales screen itself is a single mobile-first page with six numbered steps: vehicle stock (one editable card per product the salesperson put on the vehicle — Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today and a calculated Sold Today, with Add Product), one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. Sold Today is calculated once, inside its Vehicle stock card, and the same figure drives that product's sales card and the page totals as the salesperson types; there is no separate Sold today section and no separate Vehicle stock save.
+
+**Save everything at once.** Until Close day the Vehicle stock sheet exists only in the browser: a keystroke writes nothing, there is no autosave, no stock-only save button and no hidden save step. A sales card sends the sheet with its own request as *validation context* — the server derives Sold Today from those submitted figures, refuses rows that do not price exactly that quantity, and stores neither the sheet nor any derived stock figure while doing so (`vehicle_stock` on `PUT /api/sales/days/<date>/products/<id>/sales` is read and discarded). Close day (`POST /api/sales/days/<date>/close`) is the one write: it validates the submitted sheet, stores it through `save_vehicle_stock()`, derives Sold Today from the figures it just stored, re-checks every sales card against those figures, validates the cash/money side and closes the day — all in a single transaction. If any check fails nothing from that attempt is committed (no partial sheet, no partial close), the day stays open and the typed figures stay on screen to correct.
+
+A salesperson completes all six alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
 
 ## Corrections, idempotency and audit
 
-Closed days require Manager/Super Admin reopening. Historical stock-count corrections and all manual stock/cash adjustments require reasons. Invoices, payments, expenses, transfers and stock adjustments are soft-voided with actor, timestamp and reason. Audit records capture before/after values without secrets. Unique idempotency keys prevent duplicate sale, payment, expense and transfer creation after double-clicks or network retries.
+Closed days require Manager/Super Admin reopening, with the reason recorded. Correcting the four Vehicle Stock figures on an open day (Previous Return, Given Stock, Total Stock, Return Today) is the salesperson's own ordinary work and asks for no approval; a reason supplied with a correction is still stored and audited. Manual stock and cash adjustments require reasons. Invoices, payments, expenses, transfers and stock adjustments are soft-voided with actor, timestamp and reason. Audit records capture before/after values without secrets. Unique idempotency keys prevent duplicate sale, payment, expense and transfer creation after double-clicks or network retries.
 
 The server validates dates, whole nonnegative values, account/method codes, packaging units, customer-credit identity, ownership, available stock and outstanding balances. Browser totals are display previews only; Python services are authoritative.
 
@@ -209,26 +213,33 @@ SALES_TEST_BASE_URL=http://127.0.0.1:5055 npx playwright test
 ```
 
 The browser test signs in as a normal Sales Operator and asserts that today's Sales Day opens
-itself with no salesperson selector. It then opens 30/10/2026 and asserts the seven steps in
+itself with no salesperson selector. It then opens 30/10/2026 and asserts the six steps in
 the order a salesperson works them, reproducing the paper sheet: Compact 50 carried + 100
 delivered by Finished Goods = 150, return 40 → 110 sold; Napkins 10 + 20 = 30, return 5 →
-25 sold. Sold is previewed as the return is typed, one button saves every return, and the
-salesperson's own starting stock needs no approval. Each product then gets one card with two
-price rows — 100 × 79,000 + 10 × 80,000 = UGX 8,700,000 and 20 × 103,000 + 5 × 104,000 =
-UGX 2,580,000 — and a card claiming 30 napkin cartons is refused with the exact quantity to
-change. Total Sales is UGX 11,280,000, Mobile Money is 0, three expenses total 40,000, and
-Cash at Hand is UGX 11,240,000 (Total Sales − Mobile Money − Cash expenses); the salesperson
-counts their own cash and Mobile Money, sees a zero difference and closes the day alone. It
-then proves a closed day is read-only, that the ownership check returns 403 for a foreign
-profile ID, that there is no horizontal overflow, that every control is at least 36px tall at
-375×812, and that the next day carries the 40 counted back automatically with the
-starting-stock form gone.
+25 sold. Sold Today is calculated live inside its Vehicle stock card and repaints that
+product's sales card while the return is typed — changing Compact's return to 45 shows 105
+cartons in both places with no save and no reload, and Napkins is untouched. Each product then
+gets one card with two price rows — 100 × 79,000 + 10 × 80,000 = UGX 8,700,000 and
+20 × 103,000 + 5 × 104,000 = UGX 2,580,000 — and a card claiming 30 napkin cartons is refused
+with the exact quantity to change. Total Sales follows the rows on screen before they are
+saved (UGX 8,700,000) and is UGX 11,280,000 once both cards are stored, Mobile Money is 0,
+three expenses total 40,000, and Cash at Hand is UGX 11,240,000 (Total Sales − Mobile Money −
+Cash expenses); the salesperson counts their own cash and Mobile Money, sees a zero difference
+and closes the day alone. That close is the day's only write: the test reads the day back from
+the server after each card save and finds the Vehicle stock figures untouched (Previous Return
+still the system's 50, no counted return) with no Vehicle stock request made at all, so the
+sheet it stores — typed figures included — comes with the close request. It then proves a
+refused close writes nothing and leaves the typed figures on screen, a closed day is
+read-only, that the ownership check returns 403 for a foreign profile
+ID, that there is no horizontal overflow, that every control is at least 36px tall at
+375×812, and that the next day carries the 40 counted back automatically, keeps today's own
+correction to 42, and leaves yesterday's closed record at 52 / 40 untouched.
 
 ## Operator workflow (corrected)
 
 The person using the Daily Sales screen is a salesperson, not an accountant. The screen is
-seven numbered steps that follow the real-world order of the day, and one person can complete
-all seven without a Manager or Super Administrator watching:
+six numbered steps that follow the real-world order of the day, and one person can complete
+all six without a Manager or Super Administrator watching:
 
 1. Vehicle stock. The salesperson chooses the products that are physically on the
    vehicle today with Add Product, which lists the live product catalogue
@@ -241,28 +252,28 @@ all seven without a Manager or Super Administrator watching:
    Previous Return + Given Stock and Sold Today is Total Stock − Return Today,
    recalculated live. All four stock figures stay editable — the salesperson is
    reconciling their own vehicle, so no Manager, unlock or approval is involved. A
-   return greater than total stock is refused with a plain-language warning. One
-   Save vehicle stock action (`PUT /api/sales/days/<date>/vehicle-stock`) stores the
-   whole sheet in one transaction, auditing each changed card.
-2. Sold today. A read-only roll-up per product: previous return + given stock = total stock,
-   less return today = sold. Nothing is typed twice.
-3. Sales cards. One card per product that actually sold. The card already knows the counted
-   quantity ("10 cartons sold today"), so the salesperson just adds one or more price rows
-   and the card says whether they add up. Saving is atomic per product: a card that under- or
-   over-prices the counted quantity is refused with the exact quantity that has to change
-   ("... but only 10 cartons were sold"), and re-saving replaces that product's lines in one
-   transaction instead of duplicating them.
-4. Total sales today. One prominent figure for the day.
-5. Mobile Money. One amount for the whole day, never one per row.
-6. Expenses and money movement. Description, amount and paid-from, plus money
+   return greater than total stock is refused with a plain-language warning.
+2. Sales cards. One card per product. The card already knows the counted quantity
+   ("133 cartons sold today, from Vehicle stock"), so the salesperson just adds one or more
+   price rows and the card says whether they add up. Saving is atomic per product: a card
+   that under- or over-prices the counted quantity is refused with the exact quantity that
+   has to change ("... but only 10 cartons were sold"), and re-saving replaces that product's
+   lines in one transaction instead of duplicating them. Saving a card never writes Vehicle
+   stock: the sheet on screen travels with that request only so the server can price against
+   the quantity on screen, and the sheet itself is stored once, by Close day.
+3. Total sales today. One prominent figure for the day; it follows the cards on screen, so
+   unsaved price rows move it immediately and saving them never counts the same sale twice.
+4. Mobile Money. One amount for the whole day, never one per row.
+5. Expenses and money movement. Description, amount and paid-from, plus money
    transfers/handover, which stay collapsed until they are needed.
-7. Cash at hand. Opening cash (a declared baseline, or nothing from the salesperson's first
+6. Cash at hand. Opening cash (a declared baseline, or nothing from the salesperson's first
    Sales Day when no baseline has been declared), plus cash received on today's sales, plus
    old debts collected in cash, plus money transferred in, less cash expenses, less money
    handed over, plus audited cash adjustments gives Cash Expected; then Cash Counted and
    Difference. Mobile Money has its own expected/counted/difference. Because the books fall
    back to the salesperson's own activity, nobody needs a Manager to unlock the ledger before
-   counting. Then Close day.
+   counting. Then Close day, which saves everything at once: the whole Vehicle stock sheet,
+   the day's returns, the sales cards' quantities and the close itself in one transaction.
 
 An ordinary paid sale never asks for a customer, invoice, per-sale payment method or amount
 received. The same product can be sold at several prices on the same day and every price line
