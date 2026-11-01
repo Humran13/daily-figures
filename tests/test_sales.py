@@ -1386,3 +1386,144 @@ def test_vehicle_stock_is_read_only_on_a_closed_day(client, sales_setup):
         {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 51}])
     assert blocked.status_code == 400
     assert "closed Sales Day" in blocked.get_json()["error"]
+
+
+def test_close_day_persists_the_vehicle_stock_sheet_in_the_same_action(client, sales_setup):
+    """The Sales screen has no Vehicle stock save: Close day writes the sheet.
+
+    The sheet on screen is part of the close request, so a figure typed there
+    is never lost and never persisted twice - and a product added from the
+    catalogue reaches the database through the same day-level action.
+    """
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    straws = _add_straws(s)
+    lines = [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 150},
+        {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+         "issued_qty": 20, "return_qty": 30},
+        {"product_id": straws.id, "unit": "carton", "previous_qty": 0,
+         "issued_qty": 26, "return_qty": 26},
+    ]
+    # Nothing has been saved for the sheet yet: the day still holds the system
+    # figures and does not know the newly added product at all.
+    before = _day_summary(client, s["profile"].id)
+    assert _stock_row(before, s["compact"].id)["closing"] is None
+    assert all(row["product_id"] != straws.id for row in before["stock"])
+
+    base = {"sales_profile_id": s["profile"].id}
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={**base, "actual_cash_count_ugx": 0}).status_code == 200
+    closed = client.post("/api/sales/days/2026-10-30/close",
+                         json={**base, "vehicle_stock": lines})
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert body["day"]["status"] == "closed"
+    assert _stock_row(body, s["compact"].id)["previous_return"]["cartons"] == 52
+    assert _stock_row(body, s["compact"].id)["total_stock"]["cartons"] == 150
+    assert _stock_row(body, s["compact"].id)["closing"]["cartons"] == 150
+    assert _stock_row(body, straws.id)["total_stock"]["cartons"] == 26
+
+    # Reloading reproduces exactly the figures that were closed.
+    reloaded = _day_summary(client, s["profile"].id)
+    assert _stock_row(reloaded, s["napkin"].id)["closing"]["cartons"] == 30
+    assert _stock_row(reloaded, straws.id)["closing"]["cartons"] == 26
+    assert _stock_row(reloaded, straws.id)["derived_sold"]["cartons"] == 0
+
+
+def test_a_refused_close_does_not_persist_the_vehicle_stock_sheet(client, sales_setup):
+    """A close that is refused writes nothing at all - not even the sheet."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    base = {"sales_profile_id": s["profile"].id}
+    lines = [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 42,
+         "issued_qty": 100, "total_qty": 142, "return_qty": 40},
+        {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+         "issued_qty": 20, "return_qty": 30},
+    ]
+    refused = client.post("/api/sales/days/2026-10-30/close",
+                          json={**base, "vehicle_stock": lines})
+    assert refused.status_code == 400
+    assert "cash you counted" in refused.get_json()["error"]
+    after = _day_summary(client, s["profile"].id)
+    compact = _stock_row(after, s["compact"].id)
+    assert compact["previous_return"]["cartons"] == 50   # the sheet was not written
+    assert compact["closing"] is None
+    assert after["day"]["status"] == "draft"
+
+
+def test_open_day_vehicle_stock_edits_need_no_manager_correction_reason(client, sales_setup):
+    """Correcting Vehicle stock is ordinary work, not an approval."""
+    s = sales_setup; _login(client, s["manager"])
+    _open_day(client, s["profile"].id)
+    first = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 40},
+    ])
+    assert first.status_code == 200, first.get_json()
+    # An ordinary correction to a figure that is already on the sheet: no
+    # Manager/Super Administrator correction reason is asked for or required.
+    corrected = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 20},
+    ])
+    assert corrected.status_code == 200, corrected.get_json()
+    assert _stock_row(corrected.get_json(), s["compact"].id)["derived_sold"]["cartons"] == 130
+
+    # A day the Manager has just reopened is open again, not an exception.
+    assert _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 150},
+        {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+         "issued_qty": 20, "return_qty": 30},
+    ]).status_code == 200
+    base = {"sales_profile_id": s["profile"].id}
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={**base, "actual_cash_count_ugx": 0}).status_code == 200
+    assert client.post("/api/sales/days/2026-10-30/close", json=base).status_code == 200
+    assert client.post("/api/sales/days/2026-10-30/reopen",
+                       json={**base, "reason": "Physical count"}).status_code == 200
+    reopened = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 10},
+    ])
+    assert reopened.status_code == 200, reopened.get_json()
+    # A reason supplied by hand is still recorded in the audit trail.
+    with_reason = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 12,
+         "reason": "Recounted the vehicle"},
+    ])
+    assert with_reason.status_code == 200, with_reason.get_json()
+    stored = (SalesVehicleClosingLine.query.join(SalesDay)
+              .filter(SalesDay.business_date == "2026-10-30",
+                      SalesVehicleClosingLine.product_id == s["compact"].id).one())
+    assert stored.correction_reason == "Recounted the vehicle"
+
+
+def test_third_catalogue_product_reaches_its_own_sales_card(client, sales_setup):
+    """A product added from the catalogue gets a Sales Card with no extra save."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    straws = _add_straws(s)
+    response = _save_vehicle_stock(client, s["profile"].id, [
+        {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+         "issued_qty": 100, "total_qty": 150, "return_qty": 17},
+        {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+         "issued_qty": 20, "return_qty": 5},
+        {"product_id": straws.id, "unit": "carton", "previous_qty": 0,
+         "issued_qty": 26, "return_qty": 2},
+    ])
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert [_stock_row(body, product.id)["derived_sold"]["cartons"]
+            for product in (s["compact"], s["napkin"], straws)] == [133, 25, 24]
+    # Sold Today is what each product's sales card prices - nothing is retyped.
+    assert _save_card(client, s["profile"].id, straws.id,
+                      [{"quantity": 24, "unit": "carton", "unit_price_ugx": 5_000}]).status_code == 200
+    assert _save_card(client, s["profile"].id, s["compact"].id,
+                      [{"quantity": 133, "unit": "carton", "unit_price_ugx": 79_000}]).status_code == 200
+    totals = _day_summary(client, s["profile"].id)["totals"]
+    assert totals["total_sales_ugx"] == 24 * 5_000 + 133 * 79_000

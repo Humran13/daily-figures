@@ -79,11 +79,10 @@ function render(){
   renderOpeningNotice();
   $('reopenDay').classList.toggle('hidden',!closed||!meta.can_manage);
   $('closeDay').classList.toggle('hidden',closed);
-  ['saveCounts','saveVehicleStock','addStockProduct','saveMobileSplit','addExpense','addTransfer'].forEach(id=>{if($(id))$(id).disabled=closed;});
+  ['saveCounts','addStockProduct','saveMobileSplit','addExpense','addTransfer'].forEach(id=>{if($(id))$(id).disabled=closed;});
   renderDebtorNames(current.debtor_names||meta.debtor_names||[]);
   renderStock();
   renderStockWarnings();
-  renderSoldList();
   renderCards();
   renderInvoices();
   renderMoney();
@@ -115,7 +114,7 @@ function renderOpeningNotice(){
 // Given Stock, Total Stock and Return Today are all editable: they are the
 // driver's own physical figures. Sold Today is the only calculated value.
 // Nothing here is hard-coded - the products come from the database.
-let stockCards=[],stockKey='',stockOptions=null;
+let stockCards=[],stockKey='',stockOptions=null,stockDirty=false;
 const NO_RULE={pieces_per_carton:1,pieces_per_pack:0,has_pack_tier:false};
 function stockRule(card){return (card&&card.rule)||NO_RULE;}
 function unitFactor(unit,rule){
@@ -140,10 +139,31 @@ function autoTotal(card){
   if(previous===null&&issued===null)return '';
   return String((previous||0)+(issued||0));
 }
+// ---- One live calculation source -------------------------------------------
+// Sold Today = Total Stock − Return Today, calculated once from what is in the
+// boxes on screen.  The Vehicle stock card, that product's Sales Card and the
+// page totals all read this same figure, so a number typed at the top of the
+// page can never disagree with a number shown further down it, and a stale
+// saved value can never override what the salesperson is looking at.
+function cardFigures(card){
+  const rule=stockRule(card),total=baseValue(card,'total'),returned=baseValue(card,'returned');
+  let sold=null,problem='';
+  if(total!==null&&returned!==null){
+    sold=total-returned;
+    if(sold<0)problem='Return Today cannot be greater than Total Stock.';
+  }
+  return {rule,total,returned,sold,problem,valid:sold!==null&&sold>=0};
+}
+function stockCardFor(productId){return stockCards.find(card=>card.productId===productId)||null;}
+function liveFigures(productId){
+  const card=stockCardFor(productId);
+  return card?cardFigures(card)
+    :{rule:NO_RULE,total:null,returned:null,sold:null,problem:'',valid:false};
+}
 function syncStockDrafts(){
   const key=`${profileId()}|${dateVal()}`;
   if(key===stockKey)return;
-  stockKey=key;stockOptions=null;
+  stockKey=key;stockOptions=null;stockDirty=false;
   stockCards=((current&&current.stock)||[]).map(row=>{
     const rule=row.rule||NO_RULE;
     const previous=(row.previous_return||{}).base_unit_qty;
@@ -152,7 +172,7 @@ function syncStockDrafts(){
     const returned=(row.closing||{}).base_unit_qty;
     const unit=bestUnit([previous,issued,total,returned],rule);
     const card={productId:row.product_id,name:row.product_name,rule,unit,
-      totalTouched:!!row.total_overridden,saved:!!row.return_counted,invalid:false};
+      totalTouched:!!row.total_overridden,invalid:false};
     card.previous=previous==null?'':String(previous/unitFactor(unit,rule));
     card.issued=issued==null?'':String(issued/unitFactor(unit,rule));
     card.total=total==null?'':String(total/unitFactor(unit,rule));
@@ -168,7 +188,6 @@ function stockProductOptions(index){
 
 function stockCardHtml(card,index,closed){
   const rule=stockRule(card),disabled=closed?' disabled':'';
-  const tag=card.invalid?['bad','Check count']:(card.productId?(card.saved?['ok','Saved']:['warn','Not saved']):['warn','Choose a product']);
   const product=card.productId
     ? `<strong class="stock-name">${esc(card.name)}</strong>`
     : `<select data-stock-pick="${index}" aria-label="Product"${disabled}><option value="">Select Product</option>${stockProductOptions(index)}</select>`;
@@ -176,7 +195,7 @@ function stockCardHtml(card,index,closed){
   return `<article class="vstock-row" data-stock-row="${index}">
     <div class="vstock-head"><div class="vstock-product"><span>Product</span>${product}</div>
       <label class="vstock-unit">Counted in<select data-stock-unit="${index}" aria-label="Unit"${disabled}>${unitOptions(rule,card.unit)}</select></label>
-      <span class="tag ${tag[0]}">${tag[1]}</span></div>
+      <span class="tag warn" data-stock-tag="${index}">Choose a product</span></div>
     <div class="vstock-grid">${field('previous','Previous Return',card.previous)}${field('issued','Given Stock / Issued Today',card.issued)}${field('total','Total Stock',card.total)}${field('returned','Return Today',card.returned)}<div class="datum"><span>Sold Today</span><strong data-stock-sold="${index}">—</strong></div></div>
     <p class="vstock-error hidden" data-stock-error="${index}"></p></article>`;
 }
@@ -189,54 +208,41 @@ function renderStock(){
     ||'<p class="empty">No products on the vehicle yet. Press “Add Product” and choose from the product list.</p>';
   $('addStockProduct').textContent=stockCards.some(card=>card.productId)?'Add Another Product':'Add Product';
   $('addStockProduct').disabled=closed;
-  $('saveVehicleStock').disabled=closed||!stockCards.some(card=>card.productId);
   stockCards.forEach((card,index)=>refreshStockCard(index));
 }
 // Sold Today = Total Stock − Return Today, live, from what is in the boxes.
 function refreshStockCard(index){
   const card=stockCards[index];if(!card)return;
-  const rule=stockRule(card),total=baseValue(card,'total'),returned=baseValue(card,'returned');
-  let sold=null,problem='';
-  if(total!==null&&returned!==null){
-    sold=total-returned;
-    if(sold<0)problem='Return Today cannot be greater than Total Stock.';
-  }
-  card.invalid=!!problem;
+  const figures=cardFigures(card),sold=figures.sold;
+  card.invalid=!!figures.problem;
   const cell=document.querySelector(`[data-stock-sold="${index}"]`);
   if(cell){
-    cell.textContent=sold===null?'—':(sold<0?'−'+qtyLabel(-sold,rule):qtyLabel(sold,rule));
+    cell.textContent=sold===null?'—':(sold<0?'−'+qtyLabel(-sold,figures.rule):qtyLabel(sold,figures.rule));
     cell.classList.toggle('short',sold!==null&&sold<0);
   }
   const error=document.querySelector(`[data-stock-error="${index}"]`);
-  if(error){error.textContent=problem;error.classList.toggle('hidden',!problem);}
-  const tag=document.querySelector(`[data-stock-row="${index}"] .tag`);
-  if(tag&&card.productId){
-    tag.className='tag '+(problem?'bad':(card.saved?'ok':'warn'));
-    tag.textContent=problem?'Check count':(card.saved?'Saved':'Not saved');
+  if(error){error.textContent=figures.problem;error.classList.toggle('hidden',!figures.problem);}
+  const tag=document.querySelector(`[data-stock-tag="${index}"]`);
+  if(tag){
+    const state=figures.problem?['bad','Check count']
+      :(!card.productId?['warn','Choose a product']
+        :(figures.valid?['ok','Counted']:['warn','Enter figures']));
+    tag.className='tag '+state[0];
+    tag.textContent=state[1];
   }
 }
-function renderSoldList(){
-  const rows=current.stock||[];
-  $('soldList').classList.toggle('empty',!rows.length);
-  $('soldList').innerHTML=rows.map(r=>{
-    let state;
-    if(!r.derived_sold)state=['warn','Count the return today'];
-    else if(r.derived_sold.base_unit_qty===0)state=['ok','Nothing sold'];
-    else if(r.variance&&r.variance.base_unit_qty===0)state=['ok','Fully priced'];
-    else if(!r.recorded_sold||r.recorded_sold.base_unit_qty===0)state=['bad','Not priced yet'];
-    else state=['bad','Partly priced'];
-    const equation=r.available?`${esc(r.available.label)} available${r.closing?` − ${esc(r.closing.label)} returned`:''}`:'Waiting for starting stock';
-    return `<div class="sold-row"><div><strong>${esc(r.product_name)}</strong><small class="stock-equation">${equation}</small></div><span class="sold-qty">${r.derived_sold?esc(r.derived_sold.label):'—'}</span><span class="tag ${state[0]}">${state[1]}</span></div>`;
-  }).join('')||'<p class="empty">No products in this vehicle balance yet.</p>';
+// Any Vehicle stock change repaints every visible figure that depends on it:
+// the card's own Sold Today, that product's Sales Card, and the page totals.
+// Nothing is sent to the server while the salesperson is typing.
+function updateLive(){
+  stockCards.forEach((card,index)=>refreshStockCard(index));
+  stockCards.forEach(card=>{if(card.productId)updateCard(card.productId);});
+  paintMoney();
 }
 let drafts={},draftsKey='';
 function syncDrafts(){
   const key=`${profileId()}|${dateVal()}`;
   if(key!==draftsKey){drafts={};draftsKey=key;}
-}
-function ruleFor(row){
-  const rule=row&&row.rule?row.rule:null;
-  return rule||{pieces_per_carton:1,pieces_per_pack:0,has_pack_tier:false};
 }
 function toBase(qty,unit,rule){
   const value=Number(qty)||0;
@@ -256,7 +262,6 @@ function qtyLabel(base,rule){
   if(rest||!parts.length)parts.push(`${rest} piece${rest===1?'':'s'}`);
   return parts.join(' ');
 }
-function stockRow(productId){return (current.stock||[]).find(r=>r.product_id===productId)||null;}
 function savedCard(productId){return (current.product_cards||[]).find(c=>c.product_id===productId)||null;}
 function blankRow(){return {quantity:'',unit:'carton',unit_price_ugx:''};}
 function draftFor(productId){
@@ -280,21 +285,24 @@ function renderStockWarnings(){
   $('stockWarnings').innerHTML=warnings.map(w=>`<div>${esc(w)}</div>`).join('');
 }
 function renderCards(){
-  const rows=current.stock||[];
+  const rows=stockCards.filter(card=>card.productId);
+  const closed=!!(current.day&&current.day.status==='closed');
   $('cardList').classList.toggle('empty',!rows.length);
-  $('cardList').innerHTML=rows.map(r=>{
-    const rule=ruleFor(r),draft=draftFor(r.product_id),card=savedCard(r.product_id),sold=!!r.derived_sold;
-    const open=sold&&!(current.day&&current.day.status==='closed');
-    const hint=sold?`${esc(r.derived_sold.label)} sold today`:'Sold quantity appears after you save the return today';
-    const saved=card&&card.rows.length?` · ${ugx(card.card_total_ugx)} saved`:'';
-    return `<article class="sales-card" data-card-product="${r.product_id}"><div class="card-head"><div><strong>${esc(r.product_name)}</strong><small>${hint}${saved}</small></div><span class="tag" id="cardTag-${r.product_id}"></span></div><div class="price-rows">${draft.map((line,index)=>priceRow(r,rule,line,index)).join('')}</div><p class="card-status off" id="cardStatus-${r.product_id}"></p><div class="card-actions"><button data-card-add="${r.product_id}"${open?'':' disabled'}>Add another price</button><button data-card-save="${r.product_id}" class="primary"${open?'':' disabled'}>Save ${esc(r.product_name)} sales</button></div></article>`;
+  $('cardList').innerHTML=rows.map(card=>{
+    const productId=card.productId,rule=stockRule(card),draft=draftFor(productId),saved=savedCard(productId);
+    const figures=liveFigures(productId);
+    const open=figures.valid&&!closed;
+    const hint=figures.valid
+      ?`${esc(qtyLabel(figures.sold,rule))} sold today, from Vehicle stock`
+      :'Sold today appears once Total Stock and Return Today are filled in Vehicle stock';
+    const savedText=saved&&saved.rows.length?` · ${ugx(saved.card_total_ugx)} saved`:'';
+    return `<article class="sales-card" data-card-product="${productId}"><div class="card-head"><div><strong>${esc(card.name)}</strong><small id="cardHint-${productId}">${hint}${savedText}</small></div><span class="tag" id="cardTag-${productId}"></span></div><div class="price-rows">${draft.map((line,index)=>priceRow({product_id:productId},rule,line,index)).join('')}</div><p class="card-status off" id="cardStatus-${productId}"></p><div class="card-actions"><button data-card-add="${productId}"${open?'':' disabled'}>Add another price</button><button data-card-save="${productId}" class="primary"${open?'':' disabled'}>Save ${esc(card.name)} sales</button></div></article>`;
   }).join('')||'<p class="empty">No products in this vehicle balance yet.</p>';
-  rows.forEach(r=>updateCard(r.product_id));
+  rows.forEach(card=>updateCard(card.productId));
 }
 function updateCard(productId){
-  const r=stockRow(productId);
-  if(!r)return;
-  const rule=ruleFor(r),draft=drafts[productId]||[];
+  const figures=liveFigures(productId);
+  const rule=figures.rule,draft=drafts[productId]||[];
   let priced=0,total=0;
   draft.forEach((line,index)=>{
     priced+=toBase(line.quantity,line.unit||'carton',rule);
@@ -305,10 +313,28 @@ function updateCard(productId){
   });
   const status=$(`cardStatus-${productId}`),tag=$(`cardTag-${productId}`);
   if(!status)return;
-  const sold=r.derived_sold?r.derived_sold.base_unit_qty:null;
+  // The header line says how many were sold and what is already saved; both
+  // follow the page, so a Vehicle stock correction repaints them too.
+  const hint=$(`cardHint-${productId}`);
+  if(hint){
+    const recorded=savedCard(productId);
+    const soldText=figures.valid
+      ?`${qtyLabel(figures.sold,rule)} sold today, from Vehicle stock`
+      :'Sold today appears once Total Stock and Return Today are filled in Vehicle stock';
+    hint.textContent=soldText+(recorded&&recorded.rows.length?` · ${ugx(recorded.card_total_ugx)} saved`:'');
+  }
+  // The sold quantity is the one calculated in Vehicle stock - never a saved
+  // figure that a later correction has already made wrong.
+  if(figures.problem){
+    status.className='card-status bad';
+    status.textContent='Return Today is bigger than Total Stock in Vehicle stock, so there is no valid sold quantity to price yet.';
+    if(tag){tag.className='tag bad';tag.textContent='Check stock';}
+    return;
+  }
+  const sold=figures.valid?figures.sold:null;
   if(sold===null){
     status.className='card-status off';
-    status.textContent='Save the return today and the sold quantity appears here.';
+    status.textContent='Fill in Total Stock and Return Today in Vehicle stock and the sold quantity appears here.';
     if(tag){tag.className='tag warn';tag.textContent='Waiting';}
     return;
   }
@@ -340,8 +366,40 @@ function renderInvoices(){
   bindVoidButtons();
 }
 
-function renderMoney(){
-  const t=current.totals;
+// ---- Page totals ----------------------------------------------------------
+// A card on screen is money being typed; the saved figures are money already
+// recorded.  Where a card still has unsaved rows, those rows replace that
+// card's saved total, so the same sale is never counted twice and Total Sales
+// follows the page immediately.  Nothing else is recalculated: expenses, debts,
+// Mobile Money and the counted cash stay exactly as the day recorded them.
+function liveCardDelta(){
+  let saved=0,live=0;
+  stockCards.forEach(card=>{
+    if(!card.productId)return;
+    const draft=drafts[card.productId];
+    if(!draft)return;
+    const recorded=savedCard(card.productId);
+    saved+=recorded?recorded.card_total_ugx:0;
+    live+=draft.reduce((sum,line)=>sum+(Number(line.quantity)||0)*(Number(line.unit_price_ugx)||0),0);
+  });
+  return live-saved;
+}
+function liveTotals(){
+  const t={...(current.totals||{})};
+  const delta=liveCardDelta();
+  if(!delta)return t;
+  // Today's takings are cash unless the day's Mobile Money or unpaid amounts
+  // say otherwise (the same split the server uses), so a change in today's
+  // card totals moves Cash at Hand by that exact amount.
+  t.total_sales_ugx=(t.total_sales_ugx||0)+delta;
+  t.net_sales_after_expenses_ugx=(t.net_sales_after_expenses_ugx||0)+delta;
+  t.cash_from_sales_ugx=(t.cash_from_sales_ugx||0)+delta;
+  if(t.cash_at_hand_ugx!=null)t.cash_at_hand_ugx+=delta;
+  t.cash_variance_ugx=(t.cash_at_hand_ugx==null||t.actual_cash_ugx==null)?null:t.actual_cash_ugx-t.cash_at_hand_ugx;
+  return t;
+}
+function paintMoney(totals){
+  const t=totals||liveTotals();
   const cards=[
     ['Total Sales',ugx(t.total_sales_ugx)],
     ['Cash from sales',ugx(t.cash_from_sales_ugx)],
@@ -354,16 +412,22 @@ function renderMoney(){
   ];
   $('summaryCards').innerHTML=cards.map(c=>`<div class="metric"><span>${c[0]}</span><strong>${c[1]}</strong></div>`).join('');
   $('expectedCashBig').textContent=ugx(t.cash_at_hand_ugx);
-  $('actualCash').value=t.actual_cash_ugx??'';
   $('cashDifferenceBig').textContent=ugx(t.cash_variance_ugx);
   $('cashDifferenceBig').className=t.cash_variance_ugx?'short':'ok';
   $('expectedMobileBig').textContent=ugx(t.expected_mobile_money_ugx);
-  $('actualMobile').value=t.actual_mobile_money_ugx??'';
   $('mobileDifferenceBig').textContent=ugx(t.mobile_variance_ugx);
   $('mobileDifferenceBig').className=t.mobile_variance_ugx?'short':'ok';
-  $('mobileFromSales').value=current.day&&current.day.mobile_money_from_sales_ugx!=null?current.day.mobile_money_from_sales_ugx:'';
   $('cashEquation').textContent=`Total Sales ${ugx(t.total_sales_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)} − Cash expenses ${ugx(t.cash_expenses_ugx)} = Cash at Hand ${ugx(t.cash_at_hand_ugx)}.`;
   $('tenderHint').textContent=`Cash from today's sales: ${ugx(t.cash_from_sales_ugx)} = Total Sales ${ugx(t.total_sales_ugx)} − Debtors ${ugx(t.new_debt_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)}.`;
+}
+function renderMoney(){
+  const t=liveTotals();
+  paintMoney(t);
+  // Counted money and the Mobile Money figure are only ever replaced by the
+  // day's own saved values - never by a stock change.
+  $('actualCash').value=t.actual_cash_ugx??'';
+  $('actualMobile').value=t.actual_mobile_money_ugx??'';
+  $('mobileFromSales').value=current.day&&current.day.mobile_money_from_sales_ugx!=null?current.day.mobile_money_from_sales_ugx:'';
 }
 function renderExpenseList(){
   $('expenseList').innerHTML=current.expenses.map(e=>`<div class="list-row"><div class="row-head"><strong>${esc(e.description)}</strong><strong>${ugx(e.amount_ugx)}</strong></div><small>${esc(METHOD_LABEL[e.payment_method]||e.payment_method)} · ${esc(e.status)}</small>${canVoid()&&e.status==='active'?`<div class="closing-form"><button data-void="expense" data-id="${e.id}">Void expense</button></div>`:''}</div>`).join('')||'<p class="empty">No expenses recorded for this date.</p>';
@@ -395,6 +459,7 @@ function bindCardEvents(){
     if(!draft[index])return;
     draft[index][field]=e.target.value;
     updateCard(productId);
+    paintMoney();
   });
   list.addEventListener('change',e=>{
     const field=e.target.dataset.cardField;
@@ -404,6 +469,7 @@ function bindCardEvents(){
     if(!draft[index])return;
     draft[index][field]=e.target.value;
     updateCard(productId);
+    paintMoney();
   });
   list.addEventListener('click',e=>{
     const add=e.target.closest('[data-card-add]');
@@ -449,8 +515,10 @@ function bindStockEvents(){
       if(box)box.value=card.total;
     }
     if(field==='total')card.totalTouched=true;
-    if(card.saved)card.saved=false;
-    refreshStockCard(index);
+    stockDirty=true;
+    // One edit here repaints Sold Today, this product's sales card and the
+    // page totals.  No server round trip, no save button.
+    updateLive();
   });
   list.addEventListener('change',e=>{
     if(e.target.dataset.stockPick!=null){chooseStockProduct(Number(e.target.dataset.stockPick),e.target.value);return;}
@@ -472,7 +540,7 @@ async function addStockProductCard(){
   const free=(stockOptions.products||[]).filter(p=>!p.on_vehicle&&!used.has(p.id));
   if(!free.length){msg('Every product in the catalogue is already on this vehicle.');return;}
   stockCards.push({productId:null,name:'',rule:null,unit:'carton',previous:'',issued:'',total:'',
-    returned:'',totalTouched:false,saved:false,invalid:false});
+    returned:'',totalTouched:false,invalid:false});
   renderStock();
   const select=document.querySelector(`[data-stock-pick="${stockCards.length-1}"]`);
   if(select)select.focus();
@@ -480,7 +548,7 @@ async function addStockProductCard(){
 function chooseStockProduct(index,value){
   const card=stockCards[index];if(!card)return;
   const id=Number(value);
-  if(!id){card.productId=null;card.name='';card.rule=null;renderStock();return;}
+  if(!id){card.productId=null;card.name='';card.rule=null;renderStock();renderCards();paintMoney();return;}
   const option=((stockOptions&&stockOptions.products)||[]).find(p=>p.id===id);
   if(!option){renderStock();return;}
   if(stockCards.some((other,i)=>i!==index&&other.productId===id)){
@@ -495,8 +563,13 @@ function chooseStockProduct(index,value){
   card.unit=bestUnit([previous,issued],rule);
   card.previous=previous==null?'':String(previous/unitFactor(card.unit,rule));
   card.issued=issued==null?'':String(issued/unitFactor(card.unit,rule));
-  card.total=autoTotal(card);card.totalTouched=false;card.returned='';card.saved=false;
+  card.total=autoTotal(card);card.totalTouched=false;card.returned='';
+  stockDirty=true;
+  // A product added from the catalogue gets its own sales card immediately -
+  // nothing has to be saved first.
   renderStock();
+  renderCards();
+  paintMoney();
   const input=document.querySelector(`[data-stock-index="${index}"][data-stock-field="previous"]`);
   if(input&&card.previous==='')input.focus();
 }
@@ -509,15 +582,22 @@ function changeStockUnit(index,unit){
     const base=Number(card[field])*from;
     card[field]=to&&base%to===0?String(base/to):'';
   });
+  stockDirty=true;
   renderStock();
+  updateLive();
 }
 
-async function saveVehicleStock(button){
-  if(!current||!current.day){msg('Open the day first.');return;}
-  let problem='';
-  const lines=[];
+// ---- One persistence flow -------------------------------------------------
+// Vehicle stock is never written by a keystroke and there is no stock-only save
+// button.  The sheet on screen rides along with the day's own actions: saving a
+// sales card sends the current figures first (the card must price exactly what
+// Vehicle stock says) and Close day carries the sheet inside the same request,
+// so the server always validates the numbers the salesperson can see.
+function stockPayload(){
+  const lines=[];let problem='';
   stockCards.forEach(card=>{
-    if(!card.productId){problem=problem||'Choose a product for every card before saving.';return;}
+    if(!card.productId)return;                          // nothing chosen, nothing to save
+    if(['previous','issued','total','returned'].every(field=>card[field]===''))return;
     const numbers={};
     ['previous','issued','total','returned'].forEach(field=>{
       if(card[field]===''){numbers[field]=null;return;}
@@ -531,29 +611,23 @@ async function saveVehicleStock(button){
       issued_qty:numbers.issued,total_qty:numbers.total,return_qty:numbers.returned});
   });
   if(!problem&&stockCards.some(card=>card.invalid))problem='Return Today cannot be greater than Total Stock.';
-  if(problem){msg(problem);return;}
-  if(!lines.length){msg('Add at least one product to the vehicle stock.');return;}
-  let reason=null;
-  if(meta.can_manage&&current.day.status!=='draft'){
-    const answer=prompt('Reason for correcting a day that was already saved (required, audited):');
-    if(answer===null)return;
-    if(!answer.trim()){msg('A reason is required to correct an existing count.');return;}
-    reason=answer.trim();
-  }
-  await withBusy(button||$('saveVehicleStock'),async()=>{
-    try{
-      const body={sales_profile_id:profileId(),lines:reason?lines.map(line=>({...line,reason})):lines};
-      current=await api(`/api/sales/days/${dateVal()}/vehicle-stock`,{method:'PUT',body:JSON.stringify(body)});
-      stockKey='';
-      render();
-      msg('Vehicle stock saved. Sold Today now feeds the sales cards.',true);
-    }catch(e){msg(e.message);}
-  });
+  if(problem)throw new Error(problem);
+  if(!lines.length)throw new Error('Add at least one product to the vehicle stock.');
+  return lines;
+}
+async function flushVehicleStock(){
+  // Only ever called by an existing save action - never by typing.
+  if(!stockDirty||!current||!current.day||current.day.status==='closed')return false;
+  const lines=stockPayload();
+  current=await api(`/api/sales/days/${dateVal()}/vehicle-stock`,{method:'PUT',
+    body:JSON.stringify({sales_profile_id:profileId(),lines})});
+  stockDirty=false;
+  return true;
 }
 async function saveCard(productId,button){
   await withBusy(button,async()=>{
-    const row=stockRow(productId);
-    const name=row?row.product_name:'Sales card';
+    const card=stockCardFor(productId);
+    const name=card?card.name:'Sales card';
     const draft=drafts[productId]||[];
     const rows=[];
     for(const line of draft){
@@ -564,6 +638,9 @@ async function saveCard(productId,button){
       rows.push({quantity,unit:line.unit||'carton',unit_price_ugx:price});
     }
     try{
+      // The server prices this card against Vehicle stock, so the sheet on
+      // screen is written first - inside this same action, never per keystroke.
+      await flushVehicleStock();
       current=await api(`/api/sales/days/${dateVal()}/products/${productId}/sales`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),rows})});
       delete drafts[productId];
       render();
@@ -589,15 +666,25 @@ async function saveCounts(){
 }
 async function closeDay(){
   const path=`/api/sales/days/${dateVal()}/close`;
+  let lines;
   try{
-    current=await api(path,{method:'POST',body:JSON.stringify({sales_profile_id:profileId()})});
+    // Closing the day is the day's one final save: the Vehicle stock sheet on
+    // screen is part of the same request, so nothing typed there is lost and
+    // nothing is persisted twice. A refused close writes nothing at all.
+    lines=stockPayload();
+  }catch(e){msg(e.message);return;}
+  const body={sales_profile_id:profileId(),vehicle_stock:lines};
+  try{
+    current=await api(path,{method:'POST',body:JSON.stringify(body)});
+    stockKey='';stockDirty=false;
     render();msg('Day closed.',true);
   }catch(e){
     if(meta.can_manage&&/override/i.test(e.message)){
       const reason=prompt(`${e.message}\n\nManager override reason (recorded in the audit trail):`);
       if(!reason||!reason.trim())return;
       try{
-        current=await api(path,{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),override_reason:reason.trim()})});
+        current=await api(path,{method:'POST',body:JSON.stringify({...body,override_reason:reason.trim()})});
+        stockKey='';stockDirty=false;
         render();msg('Day closed with a recorded Manager override.',true);
       }catch(err){msg(err.message);}
       return;
@@ -827,7 +914,6 @@ document.addEventListener('click',e=>{
 document.addEventListener('DOMContentLoaded',()=>{
   $('loadDay').onclick=()=>loadDay(true);
   $('addStockProduct').onclick=addStockProductCard;
-  $('saveVehicleStock').onclick=e=>saveVehicleStock(e.currentTarget);
   bindStockEvents();
   $('addExpense').onclick=e=>addExpense(e.currentTarget);
   $('addTransfer').onclick=e=>addTransfer(e.currentTarget);

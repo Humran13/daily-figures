@@ -445,6 +445,17 @@ def close_day(date_str):
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
     if day is None: return _error("Create the Sales Day first")
     try:
+        # Closing the day is the Sales screen's one final save.  The Vehicle
+        # Stock sheet the salesperson can see is written first, through the same
+        # save_vehicle_stock() path the sheet has always used, and in this same
+        # transaction: the sold quantities Close Day checks are exactly the ones
+        # on screen, and a refused close rolls the sheet back too, so nothing is
+        # persisted twice and nothing typed is silently lost.
+        if data.get("vehicle_stock") is not None and day.status != DAY_CLOSED:
+            svc.save_vehicle_stock(day, data.get("vehicle_stock"), current_user(), elevated=_elevated())
+            # save_vehicle_stock() adds rows by foreign key, so the day's loaded
+            # collection must be re-read before Close Day inspects the returns.
+            db.session.expire(day, ["closing_lines"])
         svc.close_day(day, current_user(), data.get("override_reason"), elevated=_elevated())
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
     except svc.SalesError as exc:

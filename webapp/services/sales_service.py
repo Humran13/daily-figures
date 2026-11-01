@@ -1250,8 +1250,11 @@ def save_vehicle_stock(day, lines, actor, elevated=False, allow_new=True):
         else:
             if day.status != DAY_DRAFT and not elevated:
                 raise SalesError("A closed Sales Day must be reopened by a Manager or Super Administrator")
-            if elevated and not card["reason"]:
-                raise SalesError("A Manager/Super Administrator correction reason is required")
+            # The four Vehicle Stock figures belong to the salesperson: on an
+            # open day correcting them is ordinary work, not a correction that
+            # needs a Manager verdict.  A reason is still recorded when one is
+            # supplied (reopened/administrative work keeps its audit trail),
+            # and a closed day is refused above.
             if card["reason"]:
                 row.corrected_by = actor.id
                 row.correction_reason = card["reason"]
