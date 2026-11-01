@@ -23,7 +23,7 @@
     <div id="openingNotice" class="warning hidden"></div>
 
     <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
-      <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today, and that sold quantity feeds the product's sales card straight away. Every quantity is yours to correct — no approval needed, and nothing to save here: closing the day stores the sheet with the rest of the day.</p>
+      <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today, and that sold quantity feeds the product's sales card straight away. Every quantity is yours to correct — no approval needed, and nothing to save here: closing the day stores the sheet with the rest of the day. A product you added by mistake can be taken off the sheet with its × — that only cancels the extra card.</p>
       <div id="stockList" class="stack empty">Open a day to begin.</div>
       <div id="stockWarnings" class="warning hidden"></div>
       <div class="stock-actions">
@@ -32,7 +32,7 @@
     </section>
 
     <section class="card"><h2><span class="step">2</span> Sales cards</h2>
-      <p class="hint">One card per product. Each card already knows how many were sold from Vehicle stock — add a row for every price you sold at and the rows must add up to that sold quantity. No customer is needed.</p>
+      <p class="hint">One card per product. Each card already knows how many were sold from Vehicle stock — add a row for every price you sold at and the rows must add up to that sold quantity. Quantities may be fractional (0.5, 0.25, 1.5) and the unit follows the product's Vehicle stock card. Everything here is live: totals update as you type and Close day saves the whole day once. No customer is needed.</p>
       <div id="cardList" class="stack empty">Open a day to price today's sales.</div>
       <div id="invoiceList" class="stack"></div>
     </section>
@@ -56,7 +56,8 @@
         <button data-toggle-form="transferForm">Record money transfer / handover</button>
       </div>
       <div id="expenseForm" class="mini-form hidden">
-        <label>Description<input id="expenseDescription" maxlength="160" list="expenseSuggestions" autocomplete="off"></label><datalist id="expenseSuggestions"></datalist>
+        <p class="hint">Descriptions you have used before appear as you type — tap one to reuse it. The × on an expense cancels it immediately and the totals follow.</p>
+        <label>Description<input id="expenseDescription" maxlength="160" list="expenseSuggestions" autocomplete="off" placeholder="e.g. Lunch"></label><datalist id="expenseSuggestions"></datalist><div id="expenseMatches" class="suggest-list hidden" aria-label="Previously used descriptions"></div>
         <label>Amount UGX<input id="expenseAmount" type="number" min="1" inputmode="numeric"></label>
         <label>Paid from<select id="expenseMethod"><option value="cash">Cash</option><option value="mobile_money">Mobile Money</option><option value="other">Other</option></select></label>
         <button id="addExpense">Record expense</button>

@@ -10,7 +10,7 @@ from webapp.models.dispatch import Dispatch, DispatchLine, STATUS_FINALIZED
 from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
 from webapp.models.sales import (
-    SalesBaseline, SalesDay, SalesDebtor, SalesInvoice, SalesOpeningStockLine, SalesProfile,
+    SalesBaseline, SalesDay, SalesDebtor, SalesExpense, SalesInvoice, SalesOpeningStockLine, SalesProfile,
     SalesVehicleClosingLine,
 )
 from webapp.models.section import SECTION_SALES, Section
@@ -1742,3 +1742,220 @@ def test_a_catalogue_product_reaches_its_card_and_the_close_with_no_stock_save(c
     assert stored["closing"]["cartons"] == 2
     assert stored["derived_sold"]["cartons"] == 24
     assert len(_closed_lines()) == 3
+
+
+# ---------------------------------------------------------------------------
+# The Sales screen the salesperson actually works on: Close day is the only
+# save (the sheet and every Sales Card together), a card that was added by
+# mistake can be cancelled, an expense is cancelled with a compact X that
+# leaves the rest of the day alone, descriptions are remembered, and a card
+# prices fractional quantities with no unit selector of its own.
+# ---------------------------------------------------------------------------
+
+def _close_with_cards(client, profile_id, lines, cards, date="2026-10-30", **extra):
+    body = {"sales_profile_id": profile_id, "vehicle_stock": lines, "sales_cards": cards, **extra}
+    return client.post(f"/api/sales/days/{date}/close", json=body)
+
+
+def test_close_day_stores_the_sales_cards_and_the_sheet_together(client, sales_setup):
+    """One request closes the day: both cards and the whole sheet are stored."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    compact = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+               "issued_qty": 100, "total_qty": 150, "return_qty": 40}
+    napkin = {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+              "issued_qty": 20, "return_qty": 5}
+    cards = [
+        {"product_id": s["compact"].id, "rows": [
+            {"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000},
+            {"quantity": 10, "unit": "carton", "unit_price_ugx": 80_000},
+        ]},
+        {"product_id": s["napkin"].id, "rows": [
+            {"quantity": 25, "unit": "carton", "unit_price_ugx": 103_000},
+        ]},
+    ]
+    # While the day is open nothing from either card is stored.
+    assert SalesInvoice.query.count() == 0
+    assert _closed_lines() == []
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={"sales_profile_id": s["profile"].id,
+                              "actual_cash_count_ugx": 10_580_000}).status_code == 200
+
+    closed = _close_with_cards(client, s["profile"].id, [compact, napkin], cards)
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert body["day"]["status"] == "closed"
+    assert body["totals"]["total_sales_ugx"] == 100 * 79_000 + 10 * 80_000 + 25 * 103_000
+    # One card per product, with the price rows exactly as submitted.
+    assert SalesInvoice.query.count() == 2
+    stored_card = next(c for c in body["product_cards"] if c["product_id"] == s["compact"].id)
+    assert [(r["quantity"], r["unit"], r["unit_price_ugx"]) for r in stored_card["rows"]] == [
+        (100, "carton", 79_000), (10, "carton", 80_000)]
+    # The sheet that was typed is the sheet that is stored, and reloading
+    # reproduces the close exactly.
+    reloaded = _day_summary(client, s["profile"].id)
+    compact_row = _stock_row(reloaded, s["compact"].id)
+    assert (compact_row["previous_return"]["cartons"], compact_row["total_stock"]["cartons"],
+            compact_row["closing"]["cartons"], compact_row["derived_sold"]["cartons"]) == (52, 150, 40, 110)
+    assert reloaded["totals"]["total_sales_ugx"] == body["totals"]["total_sales_ugx"]
+
+
+
+def test_a_close_refused_for_a_card_writes_no_card_and_no_sheet(client, sales_setup):
+    """A refused close is all or nothing: no partial card, no partial sheet."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    compact = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+               "issued_qty": 100, "total_qty": 150, "return_qty": 40}
+    napkin = {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+              "issued_qty": 20, "return_qty": 5}
+    good_napkin = {"product_id": s["napkin"].id,
+                   "rows": [{"quantity": 25, "unit": "carton", "unit_price_ugx": 103_000}]}
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={"sales_profile_id": s["profile"].id,
+                              "actual_cash_count_ugx": 0}).status_code == 200
+
+    # Napkins prices exactly what was sold; Compact prices 100 of the 110 sold,
+    # so the second card is refused after the first was already priced.
+    refused = _close_with_cards(client, s["profile"].id, [compact, napkin], [
+        good_napkin,
+        {"product_id": s["compact"].id,
+         "rows": [{"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000}]},
+    ])
+    assert refused.status_code == 400
+    error = refused.get_json()["error"]
+    assert "Compact Standard" in error and "were sold" in error
+    # Nothing at all was written: no card, no sheet row, still open.
+    assert SalesInvoice.query.count() == 0
+    assert _closed_lines() == []
+    after = _day_summary(client, s["profile"].id)
+    assert after["day"]["status"] == "draft"
+    assert after["totals"]["total_sales_ugx"] == 0
+
+    # The corrected card closes the day and both are stored.
+    fixed = _close_with_cards(client, s["profile"].id, [compact, napkin], [
+        good_napkin,
+        {"product_id": s["compact"].id,
+         "rows": [{"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}]},
+    ])
+    assert fixed.status_code == 200, fixed.get_json()
+    assert SalesInvoice.query.count() == 2
+    assert len(_closed_lines()) == 2
+
+
+def test_decimal_sales_card_quantities_price_sold_today_exactly(client, sales_setup):
+    """0.5, 0.25 and 1.5 price what the vehicle says was sold - exactly."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    # Compact: 152 less 149 is 3 cartons sold, priced as 1.5 + 1.5.
+    compact = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+               "issued_qty": 100, "total_qty": 152, "return_qty": 149}
+    # Napkins: 30 less 29 is 1 carton sold, priced as 0.25 + 0.25 + 0.5.
+    napkin = {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+              "issued_qty": 20, "return_qty": 29}
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={"sales_profile_id": s["profile"].id,
+                              "actual_cash_count_ugx": 0}).status_code == 200
+    cards = [
+        {"product_id": s["compact"].id, "rows": [
+            {"quantity": 1.5, "unit": "carton", "unit_price_ugx": 79_000},
+            {"quantity": 1.5, "unit": "carton", "unit_price_ugx": 80_000},
+        ]},
+        {"product_id": s["napkin"].id, "rows": [
+            {"quantity": 0.25, "unit": "carton", "unit_price_ugx": 103_000},
+            {"quantity": 0.25, "unit": "carton", "unit_price_ugx": 104_000},
+            {"quantity": 0.5, "unit": "carton", "unit_price_ugx": 105_000},
+        ]},
+    ]
+    closed = _close_with_cards(client, s["profile"].id, [compact, napkin], cards)
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    compact_total = 1.5 * 79_000 + 1.5 * 80_000
+    napkin_total = 0.25 * 103_000 + 0.25 * 104_000 + 0.5 * 105_000
+    assert body["totals"]["total_sales_ugx"] == compact_total + napkin_total
+    compact_card = next(c for c in body["product_cards"] if c["product_id"] == s["compact"].id)
+    assert [r["quantity"] for r in compact_card["rows"]] == [1.5, 1.5]
+    assert compact_card["card_total_ugx"] == compact_total
+    # The stored base quantities are exact pieces: 1.5 cartons is 150 pieces.
+    assert [r["base_unit_qty"] for r in compact_card["rows"]] == [150, 150]
+    # Sold Today and the priced rows agree, so the close found no variance.
+    assert body["stock_warnings"] == []
+
+
+
+def test_decimal_rows_that_do_not_price_sold_today_are_refused(client, sales_setup):
+    """A fractional card is still checked against Sold Today, not rounded."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    compact = {"product_id": s["compact"].id, "unit": "piece", "previous_qty": 15000,
+               "issued_qty": 0, "total_qty": 15000, "return_qty": 14950}
+    # 50 pieces sold; 0.25 + 0.25 cartons is 50 pieces exactly, 0.2 is not.
+    short = _save_card(client, s["profile"].id, s["compact"].id,
+                       [{"quantity": 0.25, "unit": "carton", "unit_price_ugx": 79_000},
+                        {"quantity": 0.2, "unit": "carton", "unit_price_ugx": 79_000}],
+                       vehicle_stock=[compact])
+    assert short.status_code == 400
+    assert "were sold" in short.get_json()["error"]
+    exact = _save_card(client, s["profile"].id, s["compact"].id,
+                       [{"quantity": 0.25, "unit": "carton", "unit_price_ugx": 79_000},
+                        {"quantity": 0.25, "unit": "carton", "unit_price_ugx": 80_000}],
+                       vehicle_stock=[compact])
+    assert exact.status_code == 200, exact.get_json()
+    assert exact.get_json()["totals"]["total_sales_ugx"] == 0.25 * 79_000 + 0.25 * 80_000
+    # More than three decimal places is a typo, not silently rounded away.
+    too_precise = _save_card(client, s["profile"].id, s["compact"].id,
+                             [{"quantity": 0.1234, "unit": "carton", "unit_price_ugx": 79_000}],
+                             vehicle_stock=[compact])
+    assert too_precise.status_code == 400
+    assert "three decimal places" in too_precise.get_json()["error"]
+
+
+def test_cancelling_an_expense_leaves_stock_sales_and_history_alone(client, sales_setup):
+    """The X on an expense only cancels that expense; nothing else moves."""
+    s = sales_setup; _login(client, s["operator"])
+    _card_ready(client, s)
+    assert _save_card(client, s["profile"].id, s["compact"].id,
+                      [{"quantity": 110, "unit": "carton", "unit_price_ugx": 79_000}]).status_code == 200
+    lunch = _cash_expense(client, s["profile"].id, "Lunch", 10_000)
+    fahad = _cash_expense(client, s["profile"].id, "Fahad", 20_000)
+    assert lunch.status_code == 201 and fahad.status_code == 201
+
+    before = _day_summary(client, s["profile"].id)
+    cancelled = client.post(f"/api/sales/void/expense/{lunch.get_json()['id']}",
+                            json={"reason": "Removed from the Sales screen"})
+    assert cancelled.status_code == 200
+    after = _day_summary(client, s["profile"].id)
+
+    # Only the cancelled expense left the active list, and the money follows.
+    assert [e["description"] for e in after["expenses"]] == ["Fahad"]
+    assert after["totals"]["cash_expenses_ugx"] == 20_000
+    assert after["totals"]["cash_at_hand_ugx"] == before["totals"]["cash_at_hand_ugx"] + 10_000
+    # Sales, stock and yesterday's closed figures are untouched.
+    assert after["totals"]["total_sales_ugx"] == before["totals"]["total_sales_ugx"] == 110 * 79_000
+    compact_row = _stock_row(after, s["compact"].id)
+    assert compact_row["closing"]["cartons"] == 40
+    assert compact_row["previous_return"]["cartons"] == 50
+    assert compact_row["derived_sold"]["cartons"] == 110
+    # It is a soft void with a reason, never a physical delete.
+    row = db.session.get(SalesExpense, lunch.get_json()["id"])
+    assert row is not None and row.status == "void" and row.void_reason
+
+
+def test_expense_descriptions_are_remembered_for_later_days(client, sales_setup):
+    """Descriptions survive days and sessions, and capitals are one suggestion."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    assert _cash_expense(client, s["profile"].id, "Lunch", 10_000).status_code == 201
+    assert _cash_expense(client, s["profile"].id, "lunch", 5_000).status_code == 201
+    assert _cash_expense(client, s["profile"].id, "Fahad", 20_000).status_code == 201
+
+    today = _day_summary(client, s["profile"].id)["expense_suggestions"]
+    # Newest first, one suggestion per spelling, and free text is preserved.
+    assert today == ["Fahad", "lunch"]
+    # A later day still offers them, and a cancelled expense keeps its words.
+    tomorrow = _day_summary(client, s["profile"].id, date="2026-10-31")["expense_suggestions"]
+    assert tomorrow == today
+    expenses = _day_summary(client, s["profile"].id)["expenses"]
+    assert client.post(f"/api/sales/void/expense/{expenses[0]['id']}",
+                       json={"reason": "Removed from the Sales screen"}).status_code == 200
+    assert "Fahad" in _day_summary(client, s["profile"].id)["expense_suggestions"]
