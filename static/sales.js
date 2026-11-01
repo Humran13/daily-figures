@@ -57,29 +57,50 @@ async function openDefaultDay(){
   const today=session.business_today;
   const target=dateVal()||today;
   $('businessDate').value=target;
-  await loadDay(today===target&&session.user.role==='operator');
+  await loadDay();
 }
 async function loadAdminUsers(){if(!meta.can_manage)return;try{const users=await api('/api/admin/users');fillSelect($('profileUser'),users.filter(u=>u.role==='operator'&&!meta.profiles.some(p=>p.user_id===u.id)),u=>u.username);}catch(e){/* profile creation is super-admin only */}}
-async function loadDay(create=false){
+// ---- The working day -------------------------------------------------------
+// An unfinished day is browser state and nothing else.  Selecting a date only
+// asks the server for that date's context - what carried forward, today's
+// Finished Goods load, the packaging rules, and (only if the day was really
+// closed) what was stored.  Nothing is written until Close day.
+let work=null,workKey='';
+function blankWork(){
+  return {expenses:[],transfers:[],debts:[],collections:[],
+          mobile:'',cash:'',actualMobile:'',notes:''};
+}
+function syncWork(){
+  const key=`${profileId()}|${dateVal()}`;
+  if(!work||key!==workKey){workKey=key;work=blankWork();}
+  return work;
+}
+function isClosed(){return !!(current&&current.day&&current.day.status==='closed');}
+function numOrNull(value){return value===''||value==null?null:Number(value);}
+async function loadDay(){
   msg('');
   if(!dateVal()){msg('Choose a date.');return;}
   if(!profileId()){msg('Choose a salesperson.');return;}
   try{
-    current=create
-      ?await api('/api/sales/days',{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),business_date:dateVal()})})
-      :await api(`/api/sales/days/${dateVal()}?${profileParam()}`);
+    // Read only.  POST /days used to create a draft day row; opening a date now
+    // writes nothing at all, so an unfinished day can never be left behind.
+    current=await api(`/api/sales/days/${dateVal()}?${profileParam()}`);
+    work=blankWork();workKey=`${profileId()}|${dateVal()}`;
+    stockKey='';stockOptions=null;drafts={};draftsKey='';
     render();
   }catch(e){msg(e.message);}
 }
 function render(){
   if(!current)return;
-  syncDrafts();
-  const closed=current.day&&current.day.status==='closed';
-  $('statusPill').textContent=current.day?current.day.status.toUpperCase():'NOT OPENED';
+  syncDrafts();syncWork();
+  const closed=isClosed();
+  $('statusPill').textContent=current.day?current.day.status.toUpperCase():'NOT SAVED YET';
   renderOpeningNotice();
   $('reopenDay').classList.toggle('hidden',!closed||!meta.can_manage);
   $('closeDay').classList.toggle('hidden',closed);
-  ['saveCounts','addStockProduct','saveMobileSplit','addExpense','addTransfer'].forEach(id=>{if($(id))$(id).disabled=closed;});
+  ['mobileFromSales','actualCash','actualMobile'].forEach(id=>{if($(id))$(id).disabled=closed;});
+  ['addStockProduct','addExpense','addTransfer','addDebt','addCollection']
+    .forEach(id=>{if($(id))$(id).disabled=closed;});
   renderDebtorNames(current.debtor_names||meta.debtor_names||[]);
   renderStock();
   renderStockWarnings();
@@ -181,8 +202,12 @@ function syncStockDrafts(){
   });
 }
 function stockProductOptions(index){
+  // The working sheet is the browser's own list now, so a product is "on the
+  // vehicle" because it has a card on screen - never because a saved day once
+  // mentioned it.  Removing a card therefore makes its product selectable again
+  // immediately, with no server round trip.
   const used=new Set(stockCards.filter((card,i)=>i!==index&&card.productId).map(card=>card.productId));
-  return ((stockOptions&&stockOptions.products)||[]).filter(p=>!p.on_vehicle&&!used.has(p.id))
+  return ((stockOptions&&stockOptions.products)||[]).filter(p=>!used.has(p.id))
     .map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
 }
 
@@ -192,13 +217,12 @@ function stockCardHtml(card,index,closed){
     ? `<strong class="stock-name">${esc(card.name)}</strong>`
     : `<select data-stock-pick="${index}" aria-label="Product"${disabled}><option value="">Select Product</option>${stockProductOptions(index)}</select>`;
   const field=(name,label,value)=>`<label>${label}<input data-stock-index="${index}" data-stock-field="${name}" type="number" min="0" step="1" inputmode="numeric" value="${esc(value)}"${disabled}></label>`;
-  // A card the salesperson added with "Add Another Product" can be taken back
-  // off the screen: pressing X cancels the extra card and nothing else.  The
-  // products that were already on the vehicle keep no X, so normal stock and
-  // history can never be deleted from here.
-  const remove=card.added
-    ? `<button type="button" class="row-remove" data-stock-remove="${index}" aria-label="Remove this product from the vehicle stock"${disabled}>×</button>`
-    : '';
+  // The compact × is on EVERY product card.  On an unfinished day it is a
+  // browser-only cancel: the card leaves the screen, its product becomes
+  // selectable again and nothing is written.  On a closed day it stays visible
+  // because a correction may be needed, but it goes through the audited Manager
+  // removal instead of deleting anything.
+  const remove=`<button type="button" class="row-remove" data-stock-remove="${index}" aria-label="Remove ${esc(card.name||'this product')} from the vehicle stock">×</button>`;
   return `<article class="vstock-row" data-stock-row="${index}">
     <div class="vstock-head"><div class="vstock-product"><span>Product</span>${product}</div>
       <label class="vstock-unit">Counted in<select data-stock-unit="${index}" aria-label="Unit"${disabled}>${unitOptions(rule,card.unit)}</select></label>
@@ -245,6 +269,9 @@ function updateLive(){
   stockCards.forEach((card,index)=>refreshStockCard(index));
   stockCards.forEach(card=>{if(card.productId)updateCard(card.productId);});
   paintMoney();
+  // The mismatch warning is part of the same live picture: it is recomputed
+  // from the figures on screen, never re-read from an earlier saved state.
+  renderStockWarnings();
 }
 let drafts={},draftsKey='';
 function syncDrafts(){
@@ -318,10 +345,34 @@ function priceRow(row,rule,line,index,closed){
   const disabled=closed?' disabled':'';
   return `<div class="price-row"><label class="price-qty">Quantity (${esc(unitText(line.unit))})<input data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="quantity" type="number" min="0" step="any" inputmode="decimal" value="${qty}" placeholder="Qty"${disabled}></label><label class="price-amount">Price per ${esc(line.unit||'unit')} (UGX)<input data-card-product="${row.product_id}" data-card-index="${index}" data-card-field="unit_price_ugx" type="number" min="1" step="1" inputmode="numeric" value="${price}" placeholder="Selling price"${disabled}></label><strong class="row-value" id="rowValue-${row.product_id}-${index}">${value>0?ugx(value):'—'}</strong><button data-card-remove="${row.product_id}" data-card-index="${index}" aria-label="Remove this price row"${disabled}>×</button></div>`;
 }
+// The stock-vs-sales warning has to describe the figures the salesperson can
+// actually see.  A saved day's warning was being shown unchanged while the
+// Vehicle Stock boxes were edited or reset on screen, which is how a blank sheet
+// ended up "warning" that 144 cartons had been sold.  An open day is therefore
+// worked out here from the working sheet and the price rows on screen on every
+// repaint; only a closed day (where nothing is being typed) uses what was
+// stored when it was closed.
+function liveStockWarnings(){
+  const out=[];
+  stockCards.forEach(card=>{
+    if(!card.productId)return;
+    const figures=cardFigures(card);
+    if(!figures.valid)return;
+    const rule=figures.rule,draft=drafts[card.productId]||[];
+    const priced=draft.reduce((sum,line)=>sum+toBase(line.quantity,line.unit||CARD_UNIT,rule),0);
+    if(qtyMilli(priced)===qtyMilli(figures.sold))return;
+    // Same wording and the same sign as the server: sold minus priced.
+    const difference=figures.sold-priced;
+    out.push(`${card.name}: stock count says ${qtyLabel(figures.sold,rule)} sold, cards price ${qtyLabel(priced,rule)} (difference ${difference<0?'-':''}${qtyLabel(difference,rule)}).`);
+  });
+  return out;
+}
 function renderStockWarnings(){
-  const warnings=current.stock_warnings||[];
-  $('stockWarnings').classList.toggle('hidden',!warnings.length);
-  $('stockWarnings').innerHTML=warnings.map(w=>`<div>${esc(w)}</div>`).join('');
+  const closed=!!(current&&current.day&&current.day.status==='closed');
+  const warnings=closed?(current.stock_warnings||[]):liveStockWarnings();
+  const box=$('stockWarnings');if(!box)return;
+  box.classList.toggle('hidden',!warnings.length);
+  box.innerHTML=warnings.map(w=>`<div>${esc(w)}</div>`).join('');
 }
 function renderCards(){
   const rows=stockCards.filter(card=>card.productId);
@@ -409,36 +460,59 @@ function renderInvoices(){
 }
 
 // ---- Page totals ----------------------------------------------------------
-// A card on screen is money being typed; the saved figures are money already
-// recorded.  Where a card still has unsaved rows, those rows replace that
-// card's saved total, so the same sale is never counted twice and Total Sales
-// follows the page immediately.  Nothing else is recalculated: expenses, debts,
-// Mobile Money and the counted cash stay exactly as the day recorded them.
-function liveCardDelta(){
-  let saved=0,live=0;
+// An unfinished day's money is calculated here, from what is on screen.  The
+// approved allocation is by construction:
+//     Cash from today's sales + Mobile Money + New Debt = Total Sales
+// so Mobile Money and credit explain how the sales were paid and can never be
+// added on top of them.  Money collected today on an older debt is money
+// received today, and never becomes part of today's sales.
+function liveTotals(){
+  const base=current.totals||{};
+  if(isClosed())return base;
+  const opening=current.opening_balances||{};
+  const openingCash=Number(opening.cash_ugx||0),openingMobile=Number(opening.mobile_money_ugx||0);
+  let totalSales=0;
   stockCards.forEach(card=>{
     if(!card.productId)return;
-    const draft=drafts[card.productId];
-    if(!draft)return;
-    const recorded=savedCard(card.productId);
-    saved+=recorded?recorded.card_total_ugx:0;
-    live+=draft.reduce((sum,line)=>sum+rowTotal(line),0);
+    const draft=drafts[card.productId]||[];
+    totalSales+=draft.reduce((sum,line)=>sum+rowTotal(line),0);
   });
-  return live-saved;
-}
-function liveTotals(){
-  const t={...(current.totals||{})};
-  const delta=liveCardDelta();
-  if(!delta)return t;
-  // Today's takings are cash unless the day's Mobile Money or unpaid amounts
-  // say otherwise (the same split the server uses), so a change in today's
-  // card totals moves Cash at Hand by that exact amount.
-  t.total_sales_ugx=(t.total_sales_ugx||0)+delta;
-  t.net_sales_after_expenses_ugx=(t.net_sales_after_expenses_ugx||0)+delta;
-  t.cash_from_sales_ugx=(t.cash_from_sales_ugx||0)+delta;
-  if(t.cash_at_hand_ugx!=null)t.cash_at_hand_ugx+=delta;
-  t.cash_variance_ugx=(t.cash_at_hand_ugx==null||t.actual_cash_ugx==null)?null:t.actual_cash_ugx-t.cash_at_hand_ugx;
-  return t;
+  const money=rows=>rows.reduce((sum,row)=>sum+Number(row.amount_ugx||0),0);
+  const newDebt=money(work.debts);
+  const mobile=Number(work.mobile||0);
+  const cashFromSales=totalSales-newDebt-mobile;
+  const totalExpenses=money(work.expenses);
+  const cashExpenses=money(work.expenses.filter(row=>row.payment_method==='cash'));
+  const mobileExpenses=money(work.expenses.filter(row=>row.payment_method==='mobile_money'));
+  const collectedCash=money(work.collections.filter(row=>row.payment_method==='cash'));
+  const collectedMobile=money(work.collections.filter(row=>row.payment_method==='mobile_money'));
+  const transferIn=account=>money(work.transfers.filter(row=>row.to_account===account));
+  const transferOut=account=>money(work.transfers.filter(row=>row.from_account===account));
+  const cashAtHand=openingCash+cashFromSales+collectedCash-cashExpenses
+    +transferIn('cash')-transferOut('cash');
+  const expectedMobile=openingMobile+mobile+collectedMobile-mobileExpenses
+    +transferIn('mobile_money')-transferOut('mobile_money');
+  const actualCash=numOrNull(work.cash),actualMobile=numOrNull(work.actualMobile);
+  return {
+    total_sales_ugx:totalSales,
+    total_expenses_ugx:totalExpenses,
+    net_sales_after_expenses_ugx:totalSales-totalExpenses,
+    cash_from_sales_ugx:cashFromSales,
+    mobile_money_from_sales_ugx:mobile,
+    old_debt_collections_ugx:collectedCash+collectedMobile,
+    old_debt_cash_ugx:collectedCash,
+    old_debt_mobile_money_ugx:collectedMobile,
+    new_debt_ugx:newDebt,
+    cash_expenses_ugx:cashExpenses,
+    mobile_money_expenses_ugx:mobileExpenses,
+    cash_at_hand_ugx:cashAtHand,
+    expected_cash_ugx:cashAtHand,
+    actual_cash_ugx:actualCash,
+    cash_variance_ugx:actualCash==null?null:actualCash-cashAtHand,
+    expected_mobile_money_ugx:expectedMobile,
+    actual_mobile_money_ugx:actualMobile,
+    mobile_variance_ugx:actualMobile==null?null:actualMobile-expectedMobile,
+  };
 }
 function paintMoney(totals){
   const t=totals||liveTotals();
@@ -461,30 +535,82 @@ function paintMoney(totals){
   $('mobileDifferenceBig').className=t.mobile_variance_ugx?'short':'ok';
   $('cashEquation').textContent=`Total Sales ${ugx(t.total_sales_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)} − Cash expenses ${ugx(t.cash_expenses_ugx)} = Cash at Hand ${ugx(t.cash_at_hand_ugx)}.`;
   $('tenderHint').textContent=`Cash from today's sales: ${ugx(t.cash_from_sales_ugx)} = Total Sales ${ugx(t.total_sales_ugx)} − Debtors ${ugx(t.new_debt_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)}.`;
+  // Any repaint of the money is also a repaint of the stock-vs-sales warning:
+  // both read the same working figures, so a card row edited just now can never
+  // leave yesterday's warning (or a saved day's) on screen.
+  renderStockWarnings();
 }
 function renderMoney(){
   const t=liveTotals();
   paintMoney(t);
-  // Counted money and the Mobile Money figure are only ever replaced by the
-  // day's own saved values - never by a stock change.
-  $('actualCash').value=t.actual_cash_ugx??'';
-  $('actualMobile').value=t.actual_mobile_money_ugx??'';
-  $('mobileFromSales').value=current.day&&current.day.mobile_money_from_sales_ugx!=null?current.day.mobile_money_from_sales_ugx:'';
+  if(!isClosed()){
+    // The boxes show the working values; they are never replaced by anything
+    // the server stored, because for an unfinished day the server stored none.
+    if(document.activeElement!==$('actualCash'))$('actualCash').value=work.cash;
+    if(document.activeElement!==$('actualMobile'))$('actualMobile').value=work.actualMobile;
+    if(document.activeElement!==$('mobileFromSales'))$('mobileFromSales').value=work.mobile;
+  }else{
+    $('actualCash').value=t.actual_cash_ugx??'';
+    $('actualMobile').value=t.actual_mobile_money_ugx??'';
+    $('mobileFromSales').value=current.day&&current.day.mobile_money_from_sales_ugx!=null
+      ?current.day.mobile_money_from_sales_ugx:'';
+  }
 }
 function renderExpenseList(){
-  $('expenseList').innerHTML=current.expenses.map(e=>`<div class="list-row" data-expense-row="${e.id}"><div class="row-head"><strong>${esc(e.description)}</strong><span class="row-tail"><strong>${ugx(e.amount_ugx)}</strong>${canVoid()&&e.status==='active'?`<button type="button" class="row-remove" data-remove-expense="${e.id}" data-expense-description="${esc(e.description)}" aria-label="Remove the ${esc(e.description)} expense">×</button>`:''}</span></div><small>${esc(METHOD_LABEL[e.payment_method]||e.payment_method)} · ${esc(e.status)}</small></div>`).join('')||'<p class="empty">No expenses recorded for this date.</p>';
-  bindVoidButtons();
-  document.querySelectorAll('[data-remove-expense]').forEach(b=>b.onclick=()=>removeExpense(Number(b.dataset.removeExpense),b));
+  if(isClosed()){
+    $('expenseList').innerHTML=current.expenses.map(e=>`<div class="list-row" data-expense-row="${e.id}"><div class="row-head"><strong>${esc(e.description)}</strong><span class="row-tail"><strong>${ugx(e.amount_ugx)}</strong>${canVoid()&&e.status==='active'?`<button type="button" class="row-remove" data-void="expense" data-id="${e.id}" aria-label="Void the ${esc(e.description)} expense">×</button>`:''}</span></div><small>${esc(METHOD_LABEL[e.payment_method]||e.payment_method)} · ${esc(e.status)}</small></div>`).join('')||'<p class="empty">No expenses recorded for this date.</p>';
+    bindVoidButtons();
+    return;
+  }
+  // Before Close day an expense is working state: it changes the totals at once
+  // and writes nothing.  Its × only takes it off this list.
+  $('expenseList').innerHTML=work.expenses.map((e,index)=>`<div class="list-row"><div class="row-head"><strong>${esc(e.description)}</strong><span class="row-tail"><strong>${ugx(e.amount_ugx)}</strong><button type="button" class="row-remove" data-remove-expense="${index}" aria-label="Remove the ${esc(e.description)} expense">×</button></span></div><small>${esc(METHOD_LABEL[e.payment_method]||e.payment_method)} · not saved until Close day</small></div>`).join('')||'<p class="empty">No expenses yet — Close day saves them with the rest of the day.</p>';
+  document.querySelectorAll('[data-remove-expense]').forEach(b=>b.onclick=()=>removeLocalExpense(Number(b.dataset.removeExpense)));
 }
 function renderTransferList(){
-  $('transferList').innerHTML=(current.transfers||[]).map(t=>`<div class="list-row"><div class="row-head"><strong>${esc(ACCOUNT_LABEL[t.from_account]||t.from_account)} → ${esc(ACCOUNT_LABEL[t.to_account]||t.to_account)}</strong><strong>${ugx(t.amount_ugx)}</strong></div><small>${esc(t.reference||'No reference')} · ${esc(t.status)}</small>${canVoid()&&t.status==='active'?`<div class="closing-form"><button data-void="transfer" data-id="${t.id}">Void transfer</button></div>`:''}</div>`).join('')||'<p class="empty">No money transfers for this date.</p>';
-  bindVoidButtons();
+  if(isClosed()){
+    $('transferList').innerHTML=(current.transfers||[]).map(t=>`<div class="list-row"><div class="row-head"><strong>${esc(ACCOUNT_LABEL[t.from_account]||t.from_account)} → ${esc(ACCOUNT_LABEL[t.to_account]||t.to_account)}</strong><strong>${ugx(t.amount_ugx)}</strong></div><small>${esc(t.reference||'No reference')} · ${esc(t.status)}</small>${canVoid()&&t.status==='active'?`<div class="closing-form"><button data-void="transfer" data-id="${t.id}">Void transfer</button></div>`:''}</div>`).join('')||'<p class="empty">No money transfers for this date.</p>';
+    bindVoidButtons();
+    return;
+  }
+  $('transferList').innerHTML=work.transfers.map((t,index)=>`<div class="list-row"><div class="row-head"><strong>${esc(ACCOUNT_LABEL[t.from_account]||t.from_account)} → ${esc(ACCOUNT_LABEL[t.to_account]||t.to_account)}</strong><span class="row-tail"><strong>${ugx(t.amount_ugx)}</strong><button type="button" class="row-remove" data-remove-transfer="${index}" aria-label="Remove this money transfer">×</button></span></div><small>not saved until Close day</small></div>`).join('')||'<p class="empty">No money movements yet.</p>';
+  document.querySelectorAll('[data-remove-transfer]').forEach(b=>b.onclick=()=>removeLocalTransfer(Number(b.dataset.removeTransfer)));
 }
+// The Debtors card: who owes money from today, what has already been paid and
+// what is still outstanding, plus any money collected today on an older debt.
 function renderDayDebts(){
-  const debts=current.debts||[],payments=current.debt_payments||[];
-  const rows=[...debts.map(d=>`<div class="list-row"><div class="row-head"><strong>${esc(d.name)}</strong><strong>${ugx(d.amount_ugx)}</strong></div><small>Unpaid${d.kind==='opening'?' (historical)':''}${canVoid()&&d.status==='active'?` · <button data-void="debt" data-id="${d.id}">Void</button>`:''}</small></div>`),
-    ...payments.map(p=>`<div class="list-row"><div class="row-head"><strong>${esc(p.name)} paid</strong><strong>${ugx(p.amount_ugx)}</strong></div><small>${esc(METHOD_LABEL[p.payment_method]||p.payment_method)}${canVoid()?` · <button data-void="debt-payment" data-id="${p.id}">Void</button>`:''}</small></div>`)];
-  $('debtList').innerHTML=rows.join('')||'<p class="empty">No unpaid amounts recorded for this date.</p>';
+  const open=!isClosed();
+  const debts=open?work.debts:(current.debts||[]);
+  const collected=open?work.collections:(current.debt_payments||[]);
+  const balances=current.debtor_balances||[];
+  const paidByName={};
+  collected.forEach(row=>{
+    const key=String(row.name||'').trim().toLowerCase();
+    paidByName[key]=(paidByName[key]||0)+Number(row.amount_ugx||0);
+  });
+  const rows=[];
+  balances.forEach(row=>{
+    const key=String(row.name||'').trim().toLowerCase();
+    const paid=paidByName[key]||0;
+    const remaining=Number(row.outstanding_ugx||0)-paid;
+    const status=remaining<=0?'Paid':(paid>0?'Partially Paid':'Unpaid');
+    rows.push(`<div class="list-row" data-debtor-balance="${row.debtor_id}"><div class="row-head"><strong>${esc(row.name)}</strong><strong>${ugx(Math.max(remaining,0))}</strong></div><small>Owed ${ugx(row.outstanding_ugx)}${paid?` · collected today ${ugx(paid)}`:''} · <strong>${status}</strong></small></div>`);
+  });
+  debts.forEach((d,index)=>rows.push(`<div class="list-row"><div class="row-head"><strong>${esc(d.name)} owes today</strong><span class="row-tail"><strong>${ugx(d.amount_ugx)}</strong>${open?`<button type="button" class="row-remove" data-remove-debt="${index}" aria-label="Remove this unpaid sale">×</button>`:''}</span></div><small>Unpaid${d.kind==='opening'?' (historical)':''}</small></div>`));
+  collected.forEach((p,index)=>rows.push(`<div class="list-row"><div class="row-head"><strong>${esc(p.name)} paid</strong><span class="row-tail"><strong>${ugx(p.amount_ugx)}</strong>${open?`<button type="button" class="row-remove" data-remove-collection="${index}" aria-label="Remove this collection">×</button>`:''}</span></div><small>${esc(METHOD_LABEL[p.payment_method]||p.payment_method)} · money received today, not a new sale</small></div>`));
+  $('debtList').innerHTML=rows.join('')||'<p class="empty">No unpaid amounts and nothing collected today.</p>';
+  document.querySelectorAll('[data-remove-debt]').forEach(b=>b.onclick=()=>{
+    work.debts.splice(Number(b.dataset.removeDebt),1);renderDayDebts();paintMoney();});
+  document.querySelectorAll('[data-remove-collection]').forEach(b=>b.onclick=()=>{
+    work.collections.splice(Number(b.dataset.removeCollection),1);renderDayDebts();paintMoney();});
+  const pick=$('collectionDebtor');
+  if(pick){
+    pick.innerHTML='<option value="">Choose a debtor</option>'+balances.map(row=>{
+      const paid=paidByName[String(row.name||'').trim().toLowerCase()]||0;
+      const remaining=Math.max(Number(row.outstanding_ugx||0)-paid,0);
+      return `<option value="${row.debtor_id}" data-name="${esc(row.name)}" data-outstanding="${remaining}">${esc(row.name)} — ${ugx(remaining)}</option>`;
+    }).join('');
+  }
   bindVoidButtons();
 }
 function renderSuggestions(){
@@ -589,13 +715,13 @@ async function openStockOptions(){
   return stockOptions;
 }
 async function addStockProductCard(){
-  if(!current||!current.day){msg('Open the day first.');return;}
-  if(current.day.status==='closed'){msg('A closed Sales Day must be reopened before it can be edited.');return;}
+  if(!current){msg('Open the day first.');return;}
+  if(isClosed()){msg('A closed Sales Day must be reopened before it can be edited.');return;}
   try{
     await openStockOptions();
   }catch(e){msg(e.message);return;}
   const used=new Set(stockCards.filter(card=>card.productId).map(card=>card.productId));
-  const free=(stockOptions.products||[]).filter(p=>!p.on_vehicle&&!used.has(p.id));
+  const free=(stockOptions.products||[]).filter(p=>!used.has(p.id));
   if(!free.length){msg('Every product in the catalogue is already on this vehicle.');return;}
   stockCards.push({productId:null,name:'',rule:null,unit:'carton',previous:'',issued:'',total:'',
     returned:'',totalTouched:false,invalid:false,added:true});
@@ -603,13 +729,30 @@ async function addStockProductCard(){
   const select=document.querySelector(`[data-stock-pick="${stockCards.length-1}"]`);
   if(select)select.focus();
 }
-// X on a card that was added by mistake is a browser-only cancel.  The card
-// leaves the screen, its product is selectable again straight away and nothing
-// reaches the database: no stock row, no sale, no historical figure and no
-// product record is deleted here.
+// X on a card.  An unfinished day needs no server: the card leaves the screen,
+// its product is selectable again straight away and nothing is written.  A
+// closed day is corrected through the audited Manager removal, which keeps the
+// counted row and records who removed it, when and why.
 function removeStockCard(index){
   const card=stockCards[index];if(!card)return;
-  if(current&&current.day&&current.day.status==='closed')return;
+  if(isClosed()){
+    if(!meta.can_manage){
+      msg('A closed Sales Day must be reopened by a Manager before a product can be removed.');
+      return;
+    }
+    if(!card.productId)return;
+    const reason=prompt(`Reason for removing ${card.name} from this closed day (required, audited):`);
+    if(reason===null)return;
+    if(!reason.trim()){msg('A reason is required to remove a product from a closed day.');return;}
+    api(`/api/sales/days/${dateVal()}/vehicle-stock/${card.productId}/remove`,{method:'POST',
+      body:JSON.stringify({sales_profile_id:profileId(),reason:reason.trim()})})
+      .then(data=>{
+        current=data;stockKey='';stockOptions=null;drafts={};
+        render();msg('Product removed with a recorded reason.',true);
+      })
+      .catch(e=>msg(e.message));
+    return;
+  }
   if(card.productId)delete drafts[card.productId];
   stockCards.splice(index,1);
   renderStock();
@@ -723,39 +866,59 @@ function cardPayload(){
   });
   return cards;
 }
-async function saveMobileSplit(){
-  try{
-    const raw=$('mobileFromSales').value;
-    await api(`/api/sales/days/${dateVal()}`,{method:'PATCH',body:JSON.stringify({sales_profile_id:profileId(),mobile_money_from_sales_ugx:raw===''?null:Number(raw)})});
-    await loadDay(false);msg('Mobile Money saved.',true);
-  }catch(e){msg(e.message);}
+function workPayload(){
+  // Everything the salesperson has typed, in the shape Close day writes it.
+  return {
+    expenses:work.expenses.map(row=>({description:row.description,
+      amount_ugx:Number(row.amount_ugx),payment_method:row.payment_method})),
+    transfers:work.transfers.map(row=>({from_account:row.from_account,
+      to_account:row.to_account,amount_ugx:Number(row.amount_ugx),
+      reference:row.reference||null})),
+    debts:work.debts.map(row=>({name:row.name,amount_ugx:Number(row.amount_ugx),
+      notes:row.notes||null})),
+    debt_payments:work.collections.map(row=>({debtor_id:row.debtor_id,
+      name:row.name,amount_ugx:Number(row.amount_ugx),payment_method:row.payment_method})),
+    mobile_money_from_sales_ugx:numOrNull(work.mobile),
+    actual_cash_count_ugx:numOrNull(work.cash),
+    actual_mobile_money_ugx:numOrNull(work.actualMobile),
+    notes:work.notes||null,
+  };
 }
-async function saveCounts(){
-  try{
-    const body={sales_profile_id:profileId(),
-      actual_cash_count_ugx:$('actualCash').value===''?null:Number($('actualCash').value),
-      actual_mobile_money_ugx:$('actualMobile').value===''?null:Number($('actualMobile').value)};
-    current=await api(`/api/sales/days/${dateVal()}`,{method:'PATCH',body:JSON.stringify(body)});
-    render();msg('Counted money saved.',true);
-  }catch(e){msg(e.message);}
+function validateWork(){
+  work.expenses.forEach(row=>{
+    if(!String(row.description||'').trim())throw new Error('Every expense needs a description.');
+    if(!(Number(row.amount_ugx)>0))throw new Error(`${row.description}: the amount must be greater than zero.`);
+  });
+  work.debts.forEach(row=>{
+    if(!String(row.name||'').trim())throw new Error('Every unpaid sale needs a name.');
+    if(!(Number(row.amount_ugx)>0))throw new Error(`${row.name}: the amount owed must be greater than zero.`);
+  });
+  work.collections.forEach(row=>{
+    if(!row.debtor_id)throw new Error('Choose the debtor the money came from.');
+    if(!(Number(row.amount_ugx)>0))throw new Error('Enter the amount collected.');
+  });
+  const totals=liveTotals();
+  if(totals.cash_from_sales_ugx<0)
+    throw new Error('Mobile Money and unpaid amounts cannot exceed total sales.');
 }
 async function closeDay(){
   const path=`/api/sales/days/${dateVal()}/close`;
-  let lines,cards;
+  let body;
   try{
-    // Save everything at once.  Close day is the day's only save: the complete
-    // Vehicle stock sheet and every Sales Card price row on screen go in this
-    // single request, the server stores them, derives Sold Today from the
-    // sheet, checks every card against those figures and closes the day in one
-    // transaction.  A refused close writes nothing and leaves every typed
-    // figure on screen to correct.
-    lines=stockPayload();
-    cards=cardPayload();
+    // Close day is the day's only save: the complete Vehicle Stock sheet, every
+    // Sales Card, the expenses, the money movements, Mobile Money, the counted
+    // cash, the unpaid part of today's sales and the collections of older ones.
+    // The server validates and stores all of it in one transaction; a refusal
+    // writes nothing and leaves every typed figure on screen.
+    validateWork();
+    body={sales_profile_id:profileId(),vehicle_stock:stockPayload(),
+      sales_cards:cardPayload(),...workPayload()};
   }catch(e){msg(e.message);return;}
-  const body={sales_profile_id:profileId(),vehicle_stock:lines,sales_cards:cards};
   try{
     current=await api(path,{method:'POST',body:JSON.stringify(body)});
-    // The day is stored now, so the screen is rebuilt from what was stored.
+    // The day is stored now, so the working state is emptied and the screen is
+    // rebuilt from what was stored.
+    work=blankWork();workKey=`${profileId()}|${dateVal()}`;
     stockKey='';stockOptions=null;drafts={};draftsKey='';
     render();msg('Day closed.',true);
   }catch(e){
@@ -764,6 +927,7 @@ async function closeDay(){
       if(!reason||!reason.trim())return;
       try{
         current=await api(path,{method:'POST',body:JSON.stringify({...body,override_reason:reason.trim()})});
+        work=blankWork();workKey=`${profileId()}|${dateVal()}`;
         stockKey='';stockOptions=null;drafts={};draftsKey='';
         render();msg('Day closed with a recorded Manager override.',true);
       }catch(err){msg(err.message);}
@@ -782,55 +946,65 @@ async function reopenDay(){
   }catch(e){msg(e.message);}
 }
 
-// Repaint only what a money record changes: the expense list, that day's
-// monetary totals and the description memory.  Deliberately not render() or
-// loadDay(): the Vehicle stock sheet, the Sales Cards, Mobile Money and the
-// counted cash on screen are unsaved browser work and must survive untouched.
-async function refreshMoney(){
-  const data=await api(`/api/sales/days/${dateVal()}?${profileParam()}`);
-  current.day=data.day;
-  current.totals=data.totals;
-  current.expenses=data.expenses;
-  current.transfers=data.transfers;
-  current.expense_suggestions=data.expense_suggestions;
-  renderExpenseList();
-  renderTransferList();
-  renderSuggestions();
-  paintMoney();
+// ---- Working-state handlers -------------------------------------------------
+// Every function below changes the browser's working day only.  Nothing here
+// calls the API: the single write is Close day.
+function repaintAll(){renderStockWarnings();renderCards();renderMoney();renderExpenseList();
+  renderTransferList();renderDayDebts();}
+function addExpense(button){
+  const description=($('expenseDescription').value||'').trim();
+  const amount=Number($('expenseAmount').value);
+  if(!description){msg('Enter what the expense was for.');return;}
+  if(!Number.isFinite(amount)||amount<=0){msg('Enter an expense amount greater than zero.');return;}
+  work.expenses.push({description,amount_ugx:amount,payment_method:$('expenseMethod').value});
+  $('expenseDescription').value='';$('expenseAmount').value='';
+  renderExpenseList();renderExpenseMatches();paintMoney();
+  msg('Expense added — Close day saves it with the rest of the day.',true);
 }
-async function addExpense(button){
-  await withBusy(button,async()=>{
-    try{
-      await api('/api/sales/expenses',{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),business_date:dateVal(),description:$('expenseDescription').value,amount_ugx:Number($('expenseAmount').value),payment_method:$('expenseMethod').value,notes:null,idempotency_key:token()})});
-      $('expenseDescription').value='';$('expenseAmount').value='';
-      await refreshMoney();
-      renderExpenseMatches();
-      msg('Expense recorded.',true);
-    }catch(e){msg(e.message);}
-  });
+function removeLocalExpense(index){
+  work.expenses.splice(index,1);
+  renderExpenseList();paintMoney();
+  msg('Expense removed from today\'s list.',true);
 }
-// The X on an expense cancels one expense immediately.  It is still a soft
-// void, not a delete: the row keeps its audit trail and the accounting history
-// stays intact, but the salesperson sees it leave the list and the totals
-// follow.  Nothing else on the page is reloaded.
-async function removeExpense(id,button){
-  await withBusy(button,async()=>{
-    try{
-      await api(`/api/sales/void/expense/${id}`,{method:'POST',body:JSON.stringify({reason:'Removed from the Sales screen'})});
-      await refreshMoney();
-      msg('Expense removed.',true);
-    }catch(e){msg(e.message);}
-  });
+function addTransfer(button){
+  const from=$('transferFrom').value,to=$('transferTo').value;
+  const amount=Number($('transferAmount').value);
+  if(from===to){msg('Choose two different accounts.');return;}
+  if(!Number.isFinite(amount)||amount<=0){msg('Enter an amount greater than zero.');return;}
+  work.transfers.push({from_account:from,to_account:to,amount_ugx:amount,reference:null});
+  $('transferAmount').value='';
+  renderTransferList();paintMoney();
+  msg('Money movement added — Close day saves it.',true);
 }
-async function addTransfer(button){
-  await withBusy(button,async()=>{
-    try{
-      if($('transferFrom').value===$('transferTo').value){msg('Choose two different accounts.');return;}
-      await api('/api/sales/transfers',{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),business_date:dateVal(),from_account:$('transferFrom').value,to_account:$('transferTo').value,amount_ugx:Number($('transferAmount').value),idempotency_key:token()})});
-      $('transferAmount').value='';
-      await refreshMoney();msg('Transfer recorded.',true);
-    }catch(e){msg(e.message);}
-  });
+function removeLocalTransfer(index){
+  work.transfers.splice(index,1);
+  renderTransferList();paintMoney();
+}
+// A credit sale: the products are sold and counted, the money is not in yet.
+function addDebt(button){
+  const name=($('debtorName').value||'').trim();
+  const amount=Number($('debtAmount').value);
+  if(!name){msg('Enter the name of the person who owes money.');return;}
+  if(!Number.isFinite(amount)||amount<=0){msg('Enter the amount owed.');return;}
+  work.debts.push({name,amount_ugx:amount,notes:null});
+  $('debtorName').value='';$('debtAmount').value='';
+  renderDayDebts();paintMoney();renderExpenseMatches();
+  msg('Unpaid sale added — it is part of today\'s sales and Close day saves it.',true);
+}
+// Money received today against an older debt: receipts today, never new sales.
+function addCollection(button){
+  const pick=$('collectionDebtor');
+  const amount=Number($('collectionAmount').value);
+  if(!pick||!pick.value){msg('Choose the debtor the money came from.');return;}
+  if(!Number.isFinite(amount)||amount<=0){msg('Enter the amount collected.');return;}
+  const option=pick.options[pick.selectedIndex];
+  const remaining=Number(option.dataset.outstanding||0);
+  if(remaining&&amount>remaining){msg(`That is more than the ${ugx(remaining)} still owed.`);return;}
+  work.collections.push({debtor_id:Number(pick.value),name:option.dataset.name||option.textContent,
+    amount_ugx:amount,payment_method:$('collectionMethod').value});
+  $('collectionAmount').value='';
+  renderDayDebts();paintMoney();
+  msg('Collection added — it is money received today, not a new sale.',true);
 }
 async function voidRecord(kind,id){
   const label={invoice:'sale',payment:'receipt',expense:'expense',transfer:'transfer','stock-adjustment':'stock adjustment',debt:'unpaid amount','debt-payment':'debt payment'}[kind]||kind;
@@ -840,36 +1014,12 @@ async function voidRecord(kind,id){
   if(!confirm(`Void this ${label}? It stays visible as VOID and stops counting in totals.`))return;
   try{
     await api(`/api/sales/void/${kind}/${id}`,{method:'POST',body:JSON.stringify({reason:reason.trim()})});
-    await loadDay(false);
+    await loadDay();
     if($('debtorList')&&!$('debtorsView').classList.contains('hidden'))await loadDebtors();
     msg(`${label[0].toUpperCase()+label.slice(1)} voided with a recorded reason.`,true);
   }catch(e){msg(e.message);}
 }
 
-async function addDebt(button){
-  await withBusy(button,async()=>{
-    const name=($('debtorName').value||'').trim();
-    if(!name){msg('Enter the name of the person who owes money.');return;}
-    const businessDate=$('debtDate').value||dateVal();
-    const payload={sales_profile_id:profileId(),business_date:businessDate,name,amount_ugx:Number($('debtAmount').value),idempotency_key:token()};
-    try{
-      try{
-        await api('/api/sales/debts',{method:'POST',body:JSON.stringify(payload)});
-      }catch(first){
-        // An unpaid amount belongs to a selling day. If that day has not been
-        // opened yet, open it once and record the debt instead of making the
-        // driver understand server state.
-        if(!/Create the Sales Day first/i.test(first.message))throw first;
-        await api('/api/sales/days',{method:'POST',body:JSON.stringify({sales_profile_id:profileId(),business_date:businessDate})});
-        await api('/api/sales/debts',{method:'POST',body:JSON.stringify({...payload,idempotency_key:token()})});
-      }
-      $('debtorName').value='';$('debtAmount').value='';
-      if(businessDate===dateVal())await loadDay(false);
-      await loadDebtors();
-      msg('Debt recorded. Total Sales is unchanged.',true);
-    }catch(e){msg(e.message);}
-  });
-}
 async function loadDebtors(){
   try{
     const q=new URLSearchParams();
@@ -877,25 +1027,9 @@ async function loadDebtors(){
     debtorRows=await api('/api/sales/debtors?'+q);
     const search=($('debtorSearch').value||'').trim().toLowerCase();
     const rows=debtorRows.filter(r=>!search||String(r.name||r.customer_name||'').toLowerCase().includes(search));
-    $('debtorList').innerHTML=rows.length?rows.map(r=>{
-      const key=`${r.kind}-${r.id}`;
-      return `<div class="list-row"><div class="row-head"><strong>${esc(r.name||r.customer_name)}</strong><strong class="money">${ugx(r.outstanding_ugx)}</strong></div><small>Owing since ${esc(r.business_date)} · ${r.days_outstanding} days${r.kind==='invoice'?' · older customer record':''} · ${esc(r.salesperson||'')}</small><div class="closing-form"><input data-pay-amount="${key}" type="number" min="1" max="${r.outstanding_ugx}" inputmode="numeric" placeholder="Amount"><select data-pay-method="${key}"><option value="cash">Cash</option><option value="mobile_money">Mobile Money</option></select><input data-pay-date="${key}" type="date" value="${esc(session.business_today)}"><button data-pay-kind="${esc(r.kind)}" data-pay-id="${r.id}">Record payment</button></div></div>`;
-    }).join(''):'<p class="empty">No outstanding debts.</p>';
-    document.querySelectorAll('[data-pay-kind]').forEach(b=>b.onclick=()=>payDebt(b.dataset.payKind,b.dataset.payId));
-  }catch(e){msg(e.message);}
-}
-async function payDebt(kind,id){
-  const key=`${kind}-${id}`;
-  const amount=Number(document.querySelector(`[data-pay-amount="${key}"]`).value);
-  const method=document.querySelector(`[data-pay-method="${key}"]`).value;
-  const date=document.querySelector(`[data-pay-date="${key}"]`).value;
-  if(!Number.isFinite(amount)||amount<=0){msg('Enter the amount received.');return;}
-  try{
-    const path=kind==='debt'?`/api/sales/debtors/${id}/payments`:`/api/sales/invoices/${id}/payments`;
-    await api(path,{method:'POST',body:JSON.stringify({amount_ugx:amount,payment_method:method,payment_date:date,idempotency_key:token()})});
-    await loadDebtors();
-    await loadDay(false);
-    msg('Payment recorded on the date it was received.',true);
+    $('debtorList').innerHTML=rows.length?rows.map(r=>
+      `<div class="list-row"><div class="row-head"><strong>${esc(r.name||r.customer_name)}</strong><strong class="money">${ugx(r.outstanding_ugx)}</strong></div><small>Owing since ${esc(r.business_date)} · ${r.days_outstanding} days${r.kind==='invoice'?' · older customer record':''} · ${esc(r.salesperson||'')}</small></div>`
+    ).join(''):'<p class="empty">No outstanding debts.</p>';
   }catch(e){msg(e.message);}
 }
 
@@ -1025,22 +1159,31 @@ document.addEventListener('click',e=>{
   document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x===b));
   document.querySelectorAll('.view').forEach(v=>v.classList.add('hidden'));
   $(b.dataset.view+'View').classList.remove('hidden');
-  if(b.dataset.view==='debtors'){if(current&&current.business_date)$('debtDate').value=current.business_date;loadDebtors();}
+  if(b.dataset.view==='debtors')loadDebtors();
   if(b.dataset.view==='history')loadHistory();
   renderReportLinks();
 });
 document.addEventListener('DOMContentLoaded',()=>{
-  $('loadDay').onclick=()=>loadDay(true);
+  $('loadDay').onclick=()=>loadDay();
   $('addStockProduct').onclick=addStockProductCard;
   bindStockEvents();
   $('addExpense').onclick=e=>addExpense(e.currentTarget);
   $('addTransfer').onclick=e=>addTransfer(e.currentTarget);
   $('expenseDescription').addEventListener('input',renderExpenseMatches);
-  $('saveMobileSplit').onclick=saveMobileSplit;
-  $('saveCounts').onclick=saveCounts;
+  ['mobileFromSales','actualCash','actualMobile'].forEach(id=>{
+    const box=$(id);if(!box)return;
+    box.addEventListener('input',()=>{
+      if(!work)return;
+      if(id==='mobileFromSales')work.mobile=box.value;
+      if(id==='actualCash')work.cash=box.value;
+      if(id==='actualMobile')work.actualMobile=box.value;
+      paintMoney();
+    });
+  });
   $('closeDay').onclick=closeDay;
   $('reopenDay').onclick=reopenDay;
   $('addDebt').onclick=e=>addDebt(e.currentTarget);
+  $('addCollection').onclick=e=>addCollection(e.currentTarget);
   $('loadDebtors').onclick=loadDebtors;
   $('debtorSearch').addEventListener('input',loadDebtors);
   $('loadHistory').onclick=loadHistory;
@@ -1050,7 +1193,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   $('addOpeningDebt').onclick=e=>addOpeningDebt(e.currentTarget);
   $('addStockAdj').onclick=e=>addStockAdj(e.currentTarget);
   $('addCashAdj').onclick=e=>addCashAdj(e.currentTarget);
-  $('profileSelect').onchange=()=>loadDay(false);
+  $('profileSelect').onchange=()=>loadDay();
+  $('businessDate').addEventListener('change',()=>loadDay());
   bindCardEvents();
   ['historyFrom','historyTo'].forEach(id=>$(id).addEventListener('change',renderReportLinks));
   boot();

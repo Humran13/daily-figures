@@ -171,13 +171,70 @@ Reports are available as CSV, XLSX and branded PDF for daily summaries and date-
 
 Every report and export page links to `csv`, `xlsx` and `pdf` for the currently selected salesperson and date, so nobody has to hand-write query strings.
 
-The Sales screen itself is a single mobile-first page with six numbered steps: vehicle stock (one editable card per product the salesperson put on the vehicle — Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today and a calculated Sold Today, with Add Product), one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. Sold Today is calculated once, inside its Vehicle stock card, and the same figure drives that product's sales card and the page totals as the salesperson types; there is no separate Sold today section and no separate Vehicle stock save.
+The Sales screen itself is a single mobile-first page with seven numbered steps: vehicle stock (one editable card per product the salesperson put on the vehicle — Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today and a calculated Sold Today, with Add Product), one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. Sold Today is calculated once, inside its Vehicle stock card, and the same figure drives that product's sales card and the page totals as the salesperson types; there is no separate Sold today section and no separate Vehicle stock save.
 
-**Save everything once, at Close day.** Until Close day both the Vehicle stock sheet and every Sales Card exist only in the browser: a keystroke writes nothing, there is no autosave, no stock-only save button and no per-product Save Sales button. Sales Cards are live — typing a quantity or a price repaints that product's card total, Total sales today and the money that depends on them immediately. A Sales Card has no unit selector of its own because its quantity is always a **carton-equivalent**: `1` is one carton, `0.5` half a carton, `0.25` a quarter and `1.5` one and a half, and the row label always reads cartons. Pieces and packs are only ever derived from the product's PackagingRule (`0.5` cartons of a 10-pack carton is 5 packs, of a 12-pack carton 6 packs), so the Vehicle stock "Counted in" selector — which may be Cartons, Packs or Pieces for the counts on the sheet — can never change what a number on a Sales Card means. A card added with "Add Another Product" can be cancelled with its own compact ×, which removes the extra browser card, frees the product in the dropdown again and writes nothing at all; products already on the vehicle carry no × and can never be deleted from the screen. Close day (`POST /api/sales/days/<date>/close`) is the one write: it validates the submitted sheet, stores it through `save_vehicle_stock()`, derives Sold Today from the figures it just stored, stores the complete Sales Cards it was handed (`sales_cards`, through `save_product_sales()`), re-checks every card against those figures, validates the cash/money side and closes the day — all in a single transaction. If any check fails nothing from that attempt is committed (no partial sheet, no partial card, no partial close), the day stays open and the typed figures stay on screen to correct. The per-card `PUT /api/sales/days/<date>/products/<id>/sales` endpoint still exists for API clients, but the Sales screen no longer uses it.
+**Save everything once, at Close day.** Until Close day both the Vehicle stock sheet and every Sales Card exist only in the browser: a keystroke writes nothing, there is no autosave, no stock-only save button and no per-product Save Sales button. Sales Cards are live — typing a quantity or a price repaints that product's card total, Total sales today and the money that depends on them immediately. A Sales Card has no unit selector of its own because its quantity is always a **carton-equivalent**: `1` is one carton, `0.5` half a carton, `0.25` a quarter and `1.5` one and a half, and the row label always reads cartons. Pieces and packs are only ever derived from the product's PackagingRule (`0.5` cartons of a 10-pack carton is 5 packs, of a 12-pack carton 6 packs), so the Vehicle stock "Counted in" selector — which may be Cartons, Packs or Pieces for the counts on the sheet — can never change what a number on a Sales Card means. Every Vehicle Stock card carries a compact ×. On an unfinished day it is a browser-only cancel — the card leaves the screen, its product becomes selectable again immediately and nothing is written; a closed day keeps the × but routes it through the audited Manager removal (who, when, why, with the counted row kept), so a correction never destroys the history. Close day (`POST /api/sales/days/<date>/close`) is the one write: it validates the submitted sheet, stores it through `save_vehicle_stock()`, derives Sold Today from the figures it just stored, stores the complete Sales Cards it was handed (`sales_cards`, through `save_product_sales()`), re-checks every card against those figures, validates the cash/money side and closes the day — all in a single transaction. If any check fails nothing from that attempt is committed (no partial sheet, no partial card, no partial close), the day stays open and the typed figures stay on screen to correct. The per-card `PUT /api/sales/days/<date>/products/<id>/sales` endpoint still exists for API clients, but the Sales screen no longer uses it.
 
 A salesperson completes all six alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
 
-## Corrections, idempotency and audit
+**Warnings describe the screen.** The stock-vs-sales warning ("stock count says 1 carton sold, cards price 5 packs (difference 5 packs)") is worked out on every repaint from the figures in the Vehicle Stock boxes and the price rows on screen, so it can never quote a saved day's figures while a different count is being typed; a closed day, where nothing is being typed, shows the warning stored when it was closed.
+
+## Resetting Sales transactional data
+
+Testing the workflow leaves Sales rows that afterwards read like real accounting history. `scripts/reset_sales_data.py` removes that transaction layer and nothing else:
+
+```bash
+# read-only: prints exactly what would be removed and changes nothing
+python scripts/reset_sales_data.py --database data/production.db
+
+# take a verified backup, then reset
+python scripts/reset_sales_data.py --database data/production.db \
+    --apply --confirm RESET-SALES-DATA
+```
+
+It clears `sales_debt_payments`, `sales_debts`, `sales_debtors`, `sales_payments`, `sales_invoice_lines`, `sales_invoices`, `sales_expenses`, `sales_money_transfers`, `sales_cash_adjustments`, `sales_stock_adjustments`, `sales_vehicle_closing_lines`, `sales_days`, `sales_opening_stock_lines` and `sales_baselines` — child rows first, in one transaction that is rolled back on any error.
+
+It never touches products, packaging rules, sales categories, customers, users, sales profiles, sections and permissions, feature flags, company settings, the audit trail, any other department's rows, the database schema or the Alembic history, and it never drops or recreates a table. Finished Goods dispatches are not Sales data: they are the evidence that stock reached the vehicle, so a load already made still appears as Given Stock after a reset, with no counted return and no sold figure of its own.
+
+`--apply` refuses to run without `--confirm RESET-SALES-DATA`, and before deleting anything it writes a transactionally consistent `<db>.bak-<timestamp>` next to the database and verifies it with `PRAGMA integrity_check`. The command prints the rows removed, the master data that stayed, and re-reads the database to prove the Sales tables are empty. `tests/test_sales_reset.py` covers the zero state, the preserved master data, the clean day that follows, and the CLI's confirmation and backup behaviour.
+
+## The working day, Close Day and the Debtors card
+
+An unfinished day lives in the browser and nowhere else. `GET /api/sales/days/<date>` returns that date's context — what carried forward, today's Finished Goods load, the packaging rules, the carried cash and Mobile Money balances, the outstanding debtors — and, only if the day was really closed, what was stored. `POST /api/sales/days` is kept for older clients but is now read-only: it creates nothing. Changing the date, refreshing, logging out or closing the browser therefore throws the working day away, and reopening the date starts clean. A leftover `draft` row from the old per-keystroke workflow is never read, so an abandoned day can never come back.
+
+`POST /api/sales/days/<date>/close` carries the whole day and is the only write:
+
+```json
+{
+  "sales_profile_id": 1,
+  "vehicle_stock": [{"product_id": 1, "unit": "carton", "previous_qty": 50,
+                     "issued_qty": 100, "total_qty": 150, "return_qty": 40}],
+  "sales_cards":   [{"product_id": 1, "rows": [{"quantity": 110, "unit": "carton",
+                                                "unit_price_ugx": 79000}]}],
+  "expenses":      [{"description": "Lunch", "amount_ugx": 10000, "payment_method": "cash"}],
+  "transfers":     [{"from_account": "cash", "to_account": "mobile_money", "amount_ugx": 200000}],
+  "debts":         [{"name": "Darius", "amount_ugx": 100000}],
+  "debt_payments": [{"debtor_id": 3, "amount_ugx": 40000, "payment_method": "cash"}],
+  "mobile_money_from_sales_ugx": 300000,
+  "actual_cash_count_ugx": 10780000,
+  "actual_mobile_money_ugx": 305000,
+  "notes": "Saturday route"
+}
+```
+
+`sales_service.close_working_day()` then, in one uncommitted transaction: resolves or creates the day, applies its money fields, validates and stores the Vehicle Stock sheet, derives Sold Today from exactly that sheet, validates and stores every Sales Card against it, writes the expenses and money movements, writes today's unpaid sales (each validated against the sales already counted), writes today's collections of older debts, validates the finished day and marks it CLOSED. The route commits once afterwards; any `SalesError` rolls the whole thing back, so a refused close leaves no day, no sheet, no card, no expense, no transfer, no debt and no collection — and the browser keeps every typed figure to correct.
+
+**Debtors.** The Daily page has a Debtors card for customers who took products without paying in full. The products are sold (the stock stays sold and the sale is in Total Sales); the unpaid part becomes a debtor. The card shows, per debtor, what is owed, what has been collected today, the remaining balance and the status — Unpaid, Partially Paid or Paid. Collections can be Cash or Mobile Money and are recorded on the receipt date: money collected on 2 November against a 30 October debt reduces that debt, counts in 2 November's cash or Mobile Money receipts, and never becomes a 2 November product sale. Today's allocation must satisfy
+
+```
+Cash from today's sales + Mobile Money from today's sales + New Debt today = Total Sales today
+```
+
+so Mobile Money and credit explain how the sales were paid and are never added on top of them. The Debtors tab is the read-only list of everything still owed, oldest first.
+
+**Corrections.** The separate endpoints — counted return, vehicle stock sheet, opening stock, per-product card, invoices, payments, expenses, transfers, stock and cash adjustments, debts, debtor payments and voids — are now historical-correction paths: they refuse a date that was never closed (`409`, "Nothing is saved before Close Day") and a day that is still closed (it must be reopened by a Manager with a reason first). The Vehicle Stock × on a closed day is `POST /api/sales/days/<date>/vehicle-stock/<product_id>/remove`, which requires a Manager and a reason, keeps the counted row and records who removed it, when and why; the row stops counting for the day and never carries forward.
+
+
 
 Closed days require Manager/Super Admin reopening, with the reason recorded. Correcting the four Vehicle Stock figures on an open day (Previous Return, Given Stock, Total Stock, Return Today) is the salesperson's own ordinary work and asks for no approval; a reason supplied with a correction is still stored and audited. Manual stock and cash adjustments require reasons. Invoices, payments, expenses, transfers and stock adjustments are soft-voided with actor, timestamp and reason. The compact × on an expense cancels it without a prompt and without reloading the page: the row is soft-voided with the recorded reason "Removed from the Sales screen", it leaves the active list, the expense totals and Cash at Hand follow, and the browser-only Vehicle stock, Sales Card, Mobile Money and counted-cash values on screen are left exactly as typed. Expense descriptions are remembered from the expenses already recorded (newest first, de-duplicated case-insensitively) so the form can suggest them while typing; no separate table is needed, and a description stays remembered even after its expense was cancelled. Audit records capture before/after values without secrets. Unique idempotency keys prevent duplicate sale, payment, expense and transfer creation after double-clicks or network retries.
 
@@ -192,6 +249,8 @@ Revision `a3d9f1c7b2e4` follows `19f4c7a2b8d1` and adds the editable Vehicle Sto
 Revision `c4f1a7d90b23` follows `a3d9f1c7b2e4` and widens the two quantity columns of `sales_invoice_lines` (`quantity`, `base_unit_qty`) from `Integer` to `Numeric(12, 3)`, so a Sales Card can price a fraction of a unit. It is a widening type change only: every existing value is a whole number and keeps it, money columns stay whole UGX integers, and no Vehicle Stock quantity changes. The CHECK constraints on the table are re-stated in the same migration because a SQLite batch rebuild cannot carry them across. Expense description suggestions need no table: they are read from `sales_expenses.description` (newest first, de-duplicated case-insensitively), so no new schema was added for them.
 
 Deployment is intentionally outside this feature task. Review and merge the feature branch separately, back up the production database using existing procedures, then run the normal migration/startup process. Never map Closing Vehicle Stock into warehouse Returns during deployment or data import.
+
+Revision `d81f4c2b7a95` follows `c4f1a7d90b23` and adds three nullable columns to `sales_vehicle_closing_lines` — `removed_at`, `removed_by` and `removal_reason` — so a Manager can take a product off a closed day without deleting the counted row. Every existing row is "not removed"; nothing else changes and the downgrade drops the three columns.
 
 ## Verification
 
@@ -245,7 +304,7 @@ untouched.
 ## Operator workflow (corrected)
 
 The person using the Daily Sales screen is a salesperson, not an accountant. The screen is
-six numbered steps that follow the real-world order of the day, and one person can complete
+seven numbered steps that follow the real-world order of the day, and one person can complete
 all six without a Manager or Super Administrator watching:
 
 1. Vehicle stock. The salesperson chooses the products that are physically on the

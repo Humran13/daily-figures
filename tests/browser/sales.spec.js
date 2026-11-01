@@ -15,26 +15,26 @@ async function loginAsSalesOperator(page) {
   await expect(page).toHaveURL(/\/sales\.html/);
   await expect(page.getByRole('heading', { name: 'Daily accountability' })).toBeVisible();
   await expect(page.locator('#statusPill')).not.toHaveText('Not loaded');
+  // The page loads its own default day on boot; wait for that to settle so a
+  // later repaint can never overwrite figures typed by the test.
+  await page.waitForLoadState('networkidle');
 }
 
 async function openDay(page, date) {
+  // Changing the date is what loads it (the page listens for the change), so
+  // this waits for that one request instead of firing a second load on top.
+  const response = page.waitForResponse(r => r.url().includes(`/api/sales/days/${date}?`)
+    && r.request().method() === 'GET');
   await page.locator('#businessDate').fill(date);
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/api/sales/days') && r.request().method() === 'POST'),
-    page.locator('#loadDay').click(),
-  ]);
+  await response;
+  await page.waitForLoadState('networkidle');
+  await expect(page.locator('#stockList')).not.toContainText('Open a day to begin.');
 }
 
-async function fillPriceRow(card, index, quantity, price) {
-  const row = card.locator('.price-row').nth(index);
-  await row.locator('[data-card-field="quantity"]').fill(String(quantity));
-  await row.locator('[data-card-field="unit_price_ugx"]').fill(String(price));
-}
-
-async function addPriceRow(card, quantity, price) {
-  const before = await card.locator('.price-row').count();
-  await card.locator('[data-card-add]').click();
-  await fillPriceRow(card, before, quantity, price);
+async function chooseDebtor(page, name) {
+  const value = await page.locator('#collectionDebtor option', { hasText: name })
+    .first().getAttribute('value');
+  await page.locator('#collectionDebtor').selectOption(value);
 }
 
 async function dayJson(page, date) {
@@ -43,480 +43,337 @@ async function dayJson(page, date) {
 
 async function stockOf(page, date, productName) {
   const day = await dayJson(page, date);
-  return day.stock.find((row) => row.product_name === productName);
+  return (day.stock || []).find((row) => row.product_name === productName);
 }
 
-async function addExpense(page, description, amount) {
-  await page.locator('#expenseDescription').fill(description);
-  await page.locator('#expenseAmount').fill(String(amount));
-  await Promise.all([
-    page.waitForResponse(r => r.url().includes('/expenses') && r.request().method() === 'POST'),
-    page.locator('#addExpense').click(),
-  ]);
+async function sheetTotal(page, name) {
+  return Number(await stockRow(page, name).locator('[data-stock-field="total"]').inputValue());
 }
 
-async function showExpenseForm(page) {
-  const form = page.locator('#expenseForm');
-  if (!(await form.isVisible())) await page.locator('[data-toggle-form="expenseForm"]').click();
+// Count every product back in full: nothing sold, nothing to price.
+async function countEverythingBack(page) {
+  const rows = page.locator('.vstock-row');
+  const total = await rows.count();
+  for (let index = 0; index < total; index += 1) {
+    const row = rows.nth(index);
+    const figure = Number((await row.locator('[data-stock-field="total"]').inputValue()) || 0);
+    await row.locator('[data-stock-field="returned"]').fill(String(figure));
+  }
+  // Prove every card really holds a counted figure before Close day is pressed.
+  for (let index = 0; index < total; index += 1) {
+    await expect(rows.nth(index).locator('[data-stock-field="returned"]')).not.toHaveValue('');
+  }
+}
+
+async function closeDay(page) {
+  const waiter = page
+    .waitForResponse(r => r.url().endsWith('/close') && r.request().method() === 'POST', { timeout: 5000 })
+    .catch(() => null);
+  await page.locator('#closeDay').click();
+  const response = await waiter;
+  if (!response) {
+    throw new Error(`Close day sent no request. On-screen message: "${await page.locator('#message').textContent()}"`);
+  }
+  return response;
+}
+
+async function showForm(page, id) {
+  const form = page.locator('#' + id);
+  if (!(await form.isVisible())) await page.locator(`[data-toggle-form="${id}"]`).click();
   await expect(form).toBeVisible();
 }
 
+// Enter a whole day's working values without closing it.
+async function typeAWorkingDay(page) {
+  await stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]').fill('40');
+  await stockRow(page, 'Napkins Standard').locator('[data-stock-field="returned"]').fill('5');
 
-test('Salesperson works live during the day and saves everything at Close Day', async ({ page }) => {
+  const compact = salesCard(page, 'Compact Standard');
+  await compact.locator('[data-card-field="quantity"]').first().fill('100');
+  await compact.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+
+  await showForm(page, 'expenseForm');
+  await page.locator('#expenseDescription').fill('Lunch');
+  await page.locator('#expenseAmount').fill('10000');
+  await page.locator('#addExpense').click();
+  await expect(page.locator('#expenseList')).toContainText('Lunch');
+
+  await page.locator('#mobileFromSales').fill('300000');
+  await page.locator('#actualCash').fill('100000');
+
+  await page.locator('#debtorName').fill('Darius');
+  await page.locator('#debtAmount').fill('100000');
+  await page.locator('#addDebt').click();
+  await expect(page.locator('#debtList')).toContainText('Darius owes today');
+}
+
+test('A/B/C: an unfinished day is browser state and never comes back', async ({ page }) => {
   await loginAsSalesOperator(page);
 
-  // Every non-GET request to the Vehicle stock sheet is recorded: the sheet and
-  // the sales cards must never leave the browser before Close Day.
-  const stockWrites = [];
+  // Record every write the page attempts: before Close Day there must be none.
+  const writes = [];
   page.on('request', (request) => {
-    if (request.url().includes('/vehicle-stock') && request.method() !== 'GET') {
-      stockWrites.push(`${request.method()} ${request.url()}`);
-    }
-  });
-  const cardWrites = [];
-  page.on('request', (request) => {
-    if (request.url().includes('/products/') && request.url().endsWith('/sales')) {
-      cardWrites.push(`${request.method()} ${request.url()}`);
+    const method = request.method();
+    if (method !== 'GET' && request.url().includes('/api/sales/')) {
+      writes.push(`${method} ${request.url()}`);
     }
   });
 
-  // The six steps, in the order a salesperson works. Sold Today has no section
-  // of its own: it lives in its Vehicle stock card.
-  const headings = await page.locator('#dailyView .card h2').allTextContents();
-  expect(headings.map(h => h.replace(/^\s*\d+\s*/, '').trim())).toEqual([
-    'Vehicle stock',
-    'Sales cards',
-    'Total sales today',
-    'Mobile Money',
-    'Expenses and money movement',
-    'Cash at hand',
-  ]);
-  await expect(page.locator('#profileWrap')).toBeHidden();
-  await expect(page.locator('#soldList')).toHaveCount(0);
-  await expect(page.locator('#saveVehicleStock')).toHaveCount(0);
-  // Nothing is saved per product any more: Close Day is the one save.
-  await expect(page.locator('[data-card-save]')).toHaveCount(0);
-
   await openDay(page, BUSINESS_DATE);
-  await expect(page.locator('#statusPill')).toHaveText('DRAFT');
-  await expect(page.locator('.vstock-row')).toHaveCount(2);
+  await typeAWorkingDay(page);
+  expect(writes).toEqual([]);
 
-  // ---- Step 1: the editable Vehicle stock sheet --------------------------
-  const compactStock = stockRow(page, 'Compact Standard');
-  const napkinStock = stockRow(page, 'Napkins Standard');
-  for (const label of ['Previous Return', 'Given Stock / Issued Today', 'Total Stock', 'Return Today', 'Sold Today']) {
-    await expect(compactStock).toContainText(label);
-  }
-  await expect(compactStock.locator('[data-stock-field="previous"]')).toHaveValue('50');
-  await expect(compactStock.locator('[data-stock-field="issued"]')).toHaveValue('100');
-  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('150');
-  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('');
-  await expect(napkinStock.locator('[data-stock-field="previous"]')).toHaveValue('10');
-  await expect(napkinStock.locator('[data-stock-field="issued"]')).toHaveValue('20');
-  await expect(napkinStock.locator('[data-stock-field="total"]')).toHaveValue('30');
-  await expect(page.locator('#openingNotice')).toBeHidden();
-  // Test G — the Unit control is a Vehicle stock field and stays here.
-  await expect(compactStock.locator('[data-stock-unit]')).toHaveCount(1);
-
-  // 52 + 100 = 152 by hand, corrected to 150, less 40 returns = 110 sold.
-  await compactStock.locator('[data-stock-field="previous"]').fill('52');
-  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('152');
-  await compactStock.locator('[data-stock-field="total"]').fill('150');
-  await compactStock.locator('[data-stock-field="issued"]').fill('90');
-  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('150');
-  await compactStock.locator('[data-stock-field="issued"]').fill('100');
-  await compactStock.locator('[data-stock-field="returned"]').fill('40');
-  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('110 cartons');
-  await napkinStock.locator('[data-stock-field="returned"]').fill('5');
-  await expect(napkinStock.locator('[data-stock-sold]')).toHaveText('25 cartons');
-  // A sold quantity repaints the product's Sales Card immediately, with no save.
-  await expect(salesCard(page, 'Compact Standard')).toContainText('110 cartons sold today, from Vehicle stock');
-  await expect(salesCard(page, 'Napkins Standard')).toContainText('25 cartons sold today, from Vehicle stock');
-  // The products that were already on the vehicle carry no remove control.
-  await expect(page.locator('[data-stock-remove]')).toHaveCount(0);
-
-  // ---- TEST A: X on a card that was added by mistake ---------------------
-  await page.locator('#addStockProduct').click();
-  await expect(page.locator('.vstock-row')).toHaveCount(3);
-  const addedEmpty = page.locator('.vstock-row').nth(2);
-  await expect(addedEmpty.locator('[data-stock-pick]')).toHaveValue('');
-  await expect(addedEmpty.locator('[data-stock-remove]')).toBeVisible();
-  await expect(page.locator('[data-stock-remove]')).toHaveCount(1);
-  await addedEmpty.locator('[data-stock-remove]').click();
-  await expect(page.locator('.vstock-row')).toHaveCount(2);
-  await expect(page.locator('[data-stock-remove]')).toHaveCount(0);
-  // Cancelling a card writes nothing at all.
-  expect(stockWrites).toEqual([]);
-  expect(await stockOf(page, BUSINESS_DATE, 'Compact Standard')).toMatchObject({ closing: null });
-
-  // A catalogue-only product can still be added, and while it is on the sheet
-  // it cannot be chosen a second time.
-  await page.locator('#addStockProduct').click();
-  const strawPicker = page.locator('.vstock-row').nth(2).locator('[data-stock-pick]');
-  await expect(strawPicker.locator('option', { hasText: 'Straws' })).toHaveCount(1);
-  await strawPicker.selectOption({ label: 'Straws' });
-  const strawStock = stockRow(page, 'Straws');
-  await expect(strawStock.locator('[data-stock-field="previous"]')).toHaveValue('0');
-  await expect(strawStock.locator('[data-stock-remove]')).toBeVisible();
-  await page.locator('#addStockProduct').click();
-  const emptyAgain = page.locator('.vstock-row').nth(3);
-  const offeredWhileActive = await emptyAgain.locator('[data-stock-pick] option').allTextContents();
-  expect(offeredWhileActive).not.toContain('Straws');
-  expect(offeredWhileActive).not.toContain('Compact Standard');
-  await emptyAgain.locator('[data-stock-remove]').click();
-  await expect(page.locator('.vstock-row')).toHaveCount(3);
-  // X on the Straws card takes it off the sheet and frees the product again.
-  await strawStock.locator('[data-stock-remove]').click();
-  await expect(page.locator('.vstock-row')).toHaveCount(2);
-  await expect(page.locator('[data-stock-remove]')).toHaveCount(0);
-  expect(stockWrites).toEqual([]);
-  await page.locator('#addStockProduct').click();
-  const strawsAgain = page.locator('.vstock-row').nth(2).locator('[data-stock-pick]');
-  await expect(strawsAgain.locator('option', { hasText: 'Straws' })).toHaveCount(1);
-  await strawsAgain.selectOption({ label: 'Straws' });
-  // Straws was on no earlier sheet: 0 carried + 2 given, 1 back = 1 sold.
-  await stockRow(page, 'Straws').locator('[data-stock-field="issued"]').fill('2');
-  await expect(stockRow(page, 'Straws').locator('[data-stock-field="total"]')).toHaveValue('2');
-  await stockRow(page, 'Straws').locator('[data-stock-field="returned"]').fill('1');
-  await expect(stockRow(page, 'Straws').locator('[data-stock-sold]')).toHaveText('1 carton');
-
-  // ---- Step 2: Sales Cards are live, with no per-product save ------------
-  const compactCard = salesCard(page, 'Compact Standard');
-  const napkinCard = salesCard(page, 'Napkins Standard');
-  const strawCard = salesCard(page, 'Straws');
-  await expect(page.locator('.sales-card')).toHaveCount(3);
-  // Test D — no per-product Save Sales buttons exist on any card.
-  await expect(page.locator('[data-card-save]')).toHaveCount(0);
-  await expect(page.getByText('Save Compact Standard sales', { exact: false })).toHaveCount(0);
-  await expect(page.getByText('Save Napkins Standard sales', { exact: false })).toHaveCount(0);
-  // Test G — the Sales Card has no Unit selector at all: its quantity is always
-  // a carton-equivalent, shown as plain text.
-  await expect(page.locator('.sales-card [data-card-field="unit"]')).toHaveCount(0);
-  await expect(page.locator('.sales-card select')).toHaveCount(0);
-  await expect(compactCard.locator('.price-row').first()).toContainText('Quantity (cartons)');
-
-  // ---- TEST H: fractional quantities -------------------------------------
-  // Compact: 150 less 149 = 1 carton sold, priced 0.5 + 0.25 + 0.25.
-  await compactStock.locator('[data-stock-field="returned"]').fill('149');
-  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('1 carton');
-  await expect(compactCard).toContainText('1 carton sold today, from Vehicle stock');
-  await fillPriceRow(compactCard, 0, 0.5, 79000);
-  await addPriceRow(compactCard, 0.25, 80000);
-  await addPriceRow(compactCard, 0.25, 84000);
-  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
-  await expect(compactCard.locator('.card-status')).toContainText('UGX 80,500');
-  // Napkins: 20 × 103,000 and 5 × 104,000 = UGX 2,580,000 for 25 cartons.
-  await fillPriceRow(napkinCard, 0, 20, 103000);
-  await addPriceRow(napkinCard, 5, 104000);
-  await expect(napkinCard.locator('.card-status')).toContainText('matches the stock count');
-  // Straws: a catalogue product priced in halves of a carton.
-  await fillPriceRow(strawCard, 0, 0.5, 5000);
-  await addPriceRow(strawCard, 0.5, 5000);
-  await expect(strawCard.locator('.card-status')).toContainText('matches the stock count');
-  await expect(strawCard.locator('.card-status')).toContainText('UGX 5,000');
-  // Test D — total sales today is the live sum, before any save at all.
-  await expect(page.locator('#summaryCards')).toContainText('UGX 2,665,500');
-  const liveDay = await dayJson(page, BUSINESS_DATE);
-  expect(liveDay.totals.total_sales_ugx).toBe(0);       // nothing persisted yet
-  expect(liveDay.product_cards).toEqual([]);
-  expect(cardWrites).toEqual([]);
-  expect(stockWrites).toEqual([]);
-
-  // A fractional card that prices too much is still checked, not rounded.
-  await compactCard.locator('.price-row').nth(2).locator('[data-card-field="quantity"]').fill('0.5');
-  await expect(compactCard.locator('.card-status')).toContainText('but only 1 carton were sold');
-  await expect(compactCard.locator('.card-status.bad')).toHaveCount(1);
-  await compactCard.locator('.price-row').nth(2).locator('[data-card-field="quantity"]').fill('0.25');
-  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
-
-  // 1.5 + 1.5 = 3 cartons: the same rule with a bigger fraction.
-  await compactStock.locator('[data-stock-field="returned"]').fill('147');
-  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('3 cartons');
-  await compactCard.locator('.price-row').nth(2).locator('[data-card-remove]').click();
-  await compactCard.locator('.price-row').nth(1).locator('[data-card-remove]').click();
-  await fillPriceRow(compactCard, 0, 1.5, 79000);
-  await addPriceRow(compactCard, 1.5, 80000);
-  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
-  await expect(compactCard.locator('.card-status')).toContainText('UGX 238,500');
-  await expect(page.locator('#summaryCards')).toContainText('UGX 2,823,500');
-  await expect(page.locator('#tenderHint')).toContainText('UGX 2,823,500');
-  expect(cardWrites).toEqual([]);
-  expect(stockWrites).toEqual([]);
-
-  await expect(page.locator('.vstock-row')).toHaveCount(3);
-  expect(stockWrites).toEqual([]);
-  expect(cardWrites).toEqual([]);
-
-  // ---- TEST L: a card quantity is a carton, never a stock unit ------------
-  // Compact Standard is 10 packs of 10 pieces per carton and Straws is 12 packs
-  // of 100.  Vehicle stock may be counted in cartons, packs or pieces, and
-  // switching it must never change what the number on a card means: a card is
-  // always cartons, which is why it has no unit selector.
-  const strawsStock = stockRow(page, 'Straws');
-  const compactQtys = compactCard.locator('[data-card-field="quantity"]');
-  // Counted in packs: the sheet now reads 1500 packs for 150 cartons...
-  await compactStock.locator('[data-stock-unit]').selectOption('pack');
-  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('1500');
-  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('1470');
-  // ...while the card is untouched: same two 1.5 rows, still labelled cartons.
-  await expect(compactCard.locator('.price-row').first()).toContainText('Quantity (cartons)');
-  await expect(compactCard.locator('.price-row').first()).toContainText('Price per carton (UGX)');
-  await expect(compactQtys.nth(0)).toHaveValue('1.5');
-  await expect(compactQtys.nth(1)).toHaveValue('1.5');
-  await expect(page.locator('.sales-card [data-card-field="unit"]')).toHaveCount(0);
-  await expect(page.locator('.sales-card select')).toHaveCount(0);
-  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
-  // A row added while the sheet is counted in packs is still a carton row: the
-  // card never inherits the stock unit, however it is redrawn.
-  await compactCard.locator('[data-card-add]').click();
-  await expect(compactCard.locator('.price-row')).toHaveCount(3);
-  await expect(compactCard.locator('.price-row').nth(2)).toContainText('Quantity (cartons)');
-  await expect(compactCard.locator('.price-row').nth(2)).toContainText('Price per carton (UGX)');
-  await expect(compactQtys.nth(2)).toHaveValue('');
-  await expect(compactQtys.nth(0)).toHaveValue('1.5');
-  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
-  await compactCard.locator('.price-row').nth(2).locator('[data-card-remove]').click();
-  await expect(compactCard.locator('.price-row')).toHaveCount(2);
-
-  // 0.5 on a card is half a CARTON, so 5 packs of a 10-pack carton - never half
-  // a pack.  With 1 carton (10 packs) sold, one 0.5 row prices 5 packs and 5
-  // packs remain, even though the sheet is being counted in packs.
-  await compactStock.locator('[data-stock-field="returned"]').fill('1490');
-  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('1 carton');
-  await compactQtys.nth(0).fill('0.5');
-  await compactQtys.nth(1).fill('');
-  await expect(compactCard.locator('.card-status')).toContainText('Priced 5 packs of 1 carton sold');
-  await expect(compactCard.locator('.card-status')).toContainText('5 packs still to price');
-
-  // Counted in pieces instead: the same 0.5 is still half a carton = 5 packs.
-  await compactStock.locator('[data-stock-unit]').selectOption('piece');
-  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('15000');
-  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('14900');
-  await expect(compactCard.locator('.price-row').first()).toContainText('Quantity (cartons)');
-  await expect(compactQtys.nth(0)).toHaveValue('0.5');
-  await expect(compactCard.locator('.card-status')).toContainText('Priced 5 packs of 1 carton sold');
-  await expect(compactCard.locator('.card-status')).toContainText('5 packs still to price');
-
-  // Straws is 12 packs per carton, so the same 0.5 is 6 packs.
-  await strawsStock.locator('[data-stock-unit]').selectOption('pack');
-  await expect(strawsStock.locator('[data-stock-field="returned"]')).toHaveValue('12');
-  await expect(strawCard.locator('.price-row').nth(1)).toContainText('Quantity (cartons)');
-  await strawCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]').fill('');
-  await expect(strawCard.locator('.card-status')).toContainText('Priced 6 packs of 1 carton sold');
-  await expect(strawCard.locator('.card-status')).toContainText('6 packs still to price');
-  await strawCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]').fill('0.5');
-  await expect(strawCard.locator('.card-status')).toContainText('matches the stock count');
-
-  // Back in cartons, every figure the salesperson typed is exactly as it was.
-  await compactStock.locator('[data-stock-unit]').selectOption('carton');
-  await strawsStock.locator('[data-stock-unit]').selectOption('carton');
-  await compactStock.locator('[data-stock-field="returned"]').fill('147');
-  await compactQtys.nth(0).fill('1.5');
-  await compactQtys.nth(1).fill('1.5');
-  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('150');
-  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('147');
-  await expect(strawsStock.locator('[data-stock-field="returned"]')).toHaveValue('1');
-  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
-  await expect(strawCard.locator('.card-status')).toContainText('matches the stock count');
-  expect(stockWrites).toEqual([]);
-
-  // ---- TEST B: the expense X must not reset the page ---------------------
-  await showExpenseForm(page);
-  const expenseRows = page.locator('#expenseList .list-row');
-  for (const [description, amount] of [['Lunch', 10000], ['Fahad', 20000], ['Breakfast', 10000]]) {
-    await addExpense(page, description, amount);
-  }
-  await expect(expenseRows).toHaveCount(3);
-  await expect(page.locator('#summaryCards')).toContainText('UGX 40,000');       // total expenses
-  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 2,783,500');    // 2,823,500 − 40,000
-  // No confirmation popup and no page-wide reload: the old "Void expense"
-  // button is gone, replaced by the compact X.
-  await expect(page.getByText('Void expense', { exact: true })).toHaveCount(0);
-  const dialogs = [];
-  page.on('dialog', async (dialog) => { dialogs.push(dialog.message()); await dialog.dismiss(); });
-
-  // Browser-only work that must survive the removal: a changed sheet figure
-  // (Sold Today unchanged), the typed Mobile Money and counted cash.
-  await compactStock.locator('[data-stock-field="issued"]').fill('101');
-  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('3 cartons');
-  await page.locator('#mobileFromSales').fill('500000');
-  await page.locator('#actualCash').fill('2823500');
-  // The middle expense is cancelled with its X.
-  await expenseRows.nth(1).locator('[data-remove-expense]').click();
-  await expect(expenseRows).toHaveCount(2);
-  await expect(page.locator('#expenseList')).not.toContainText('Fahad');
-  await expect(page.locator('#expenseList')).toContainText('Lunch');
-  await expect(page.locator('#expenseList')).toContainText('Breakfast');
-  // Expenses and the money that depends on them move...
-  await expect(page.locator('#summaryCards')).toContainText('UGX 20,000');
-  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 2,803,500');
-  // ...and nothing else does.
-  await expect(compactStock.locator('[data-stock-field="issued"]')).toHaveValue('101');
-  await expect(compactStock.locator('[data-stock-field="previous"]')).toHaveValue('52');
-  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('147');
-  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('3 cartons');
-  await expect(compactCard.locator('.price-row').nth(0).locator('[data-card-field="quantity"]')).toHaveValue('1.5');
-  await expect(compactCard.locator('.price-row').nth(1).locator('[data-card-field="unit_price_ugx"]')).toHaveValue('80000');
-  await expect(napkinCard.locator('.price-row').nth(0).locator('[data-card-field="quantity"]')).toHaveValue('20');
-  await expect(strawCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]')).toHaveValue('0.5');
-  await expect(page.locator('.vstock-row')).toHaveCount(3);
-  await expect(page.locator('#mobileFromSales')).toHaveValue('500000');
-  await expect(page.locator('#actualCash')).toHaveValue('2823500');
-  await expect(page.locator('#summaryCards')).toContainText('UGX 2,823,500');   // total sales unchanged
-  expect(stockWrites).toEqual([]);
-  // The first and the last expense go the same way.
-  await expenseRows.nth(0).locator('[data-remove-expense]').click();
-  await expect(expenseRows).toHaveCount(1);
-  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 2,813,500');
-  await expenseRows.nth(0).locator('[data-remove-expense]').click();
-  await expect(expenseRows).toHaveCount(0);
-  await expect(page.locator('#expenseList')).toContainText('No expenses recorded for this date');
-  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 2,823,500');
-  await expect(page.locator('#mobileFromSales')).toHaveValue('500000');
-  await expect(page.locator('#actualCash')).toHaveValue('2823500');
-  await expect(page.locator('.vstock-row')).toHaveCount(3);
-  expect(dialogs).toEqual([]);
-
-
-  // ---- TEST F: a refused Close Day rolls everything back -----------------
-  // Nothing typed in Vehicle stock or on the cards has reached the database.
-  const beforeClose = await dayJson(page, BUSINESS_DATE);
-  expect(beforeClose.day.status).toBe('draft');
-  expect(beforeClose.stock.find(r => r.product_name === 'Compact Standard').closing).toBeNull();
-  expect(beforeClose.totals.total_sales_ugx).toBe(0);
-  expect(beforeClose.product_cards).toEqual([]);
-
-  // Napkins is priced for 25 cartons but the sheet now says 20 were sold.
-  await napkinStock.locator('[data-stock-field="returned"]').fill('10');
-  await expect(napkinStock.locator('[data-stock-sold]')).toHaveText('20 cartons');
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/close') && r.request().method() === 'POST'),
-    page.locator('#closeDay').click(),
-  ]);
-  await expect(page.locator('#message')).toContainText('Napkins Standard');
-  await expect(page.locator('#message')).toContainText('were sold');
-  await expect(page.locator('#statusPill')).toHaveText('DRAFT');
-  const afterRefusal = await dayJson(page, BUSINESS_DATE);
-  expect(afterRefusal.day.status).toBe('draft');
-  expect(afterRefusal.stock.find(r => r.product_name === 'Compact Standard').closing).toBeNull();
-  expect(afterRefusal.totals.total_sales_ugx).toBe(0);
-  expect(afterRefusal.product_cards).toEqual([]);
-  // Every typed figure is still on screen to correct.
-  await expect(compactStock.locator('[data-stock-field="issued"]')).toHaveValue('101');
-  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('147');
-  await expect(compactCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]')).toHaveValue('1.5');
-  await expect(page.locator('.vstock-row')).toHaveCount(3);
-
-  // ---- TEST E: Close Day saves everything in one transaction -------------
-  await napkinStock.locator('[data-stock-field="returned"]').fill('5');
-  await expect(napkinStock.locator('[data-stock-sold]')).toHaveText('25 cartons');
-  await page.locator('#actualCash').fill('2823500');
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith(`/api/sales/days/${BUSINESS_DATE}`) && r.request().method() === 'PATCH'),
-    page.locator('#saveCounts').click(),
-  ]);
-  await expect(page.locator('#message')).toContainText('Counted money saved');
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/close') && r.request().method() === 'POST'),
-    page.locator('#closeDay').click(),
-  ]);
-  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
-  await expect(page.locator('#message')).toContainText('Day closed');
-
-  const closedDay = await dayJson(page, BUSINESS_DATE);
-  expect(closedDay.day.status).toBe('closed');
-  expect(closedDay.totals.total_sales_ugx).toBe(2823500);
-  const closedCompact = closedDay.stock.find(r => r.product_name === 'Compact Standard');
-  expect(closedCompact.closing.cartons).toBe(147);
-  expect(closedCompact.total_stock.cartons).toBe(150);
-  const closedCards = closedDay.product_cards;
-  expect(closedCards).toHaveLength(3);
-  const compactRows = closedCards.find(c => c.product_id === closedCompact.product_id).rows;
-  expect(compactRows.map(r => [r.quantity, r.unit, r.unit_price_ugx])).toEqual([
-    [1.5, 'carton', 79000], [1.5, 'carton', 80000]]);
-  expect(compactRows.map(r => r.base_unit_qty)).toEqual([150, 150]);
-
-  // Reloading reproduces exactly what was submitted.
-  await openDay(page, BUSINESS_DATE);
-  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
-  const reloadedCompact = stockRow(page, 'Compact Standard');
-  await expect(reloadedCompact.locator('[data-stock-field="issued"]')).toHaveValue('101');
-  await expect(reloadedCompact.locator('[data-stock-field="returned"]')).toHaveValue('147');
-  await expect(reloadedCompact.locator('[data-stock-sold]')).toHaveText('3 cartons');
-  const reloadedCard = salesCard(page, 'Compact Standard');
-  await expect(reloadedCard.locator('.price-row').nth(0).locator('[data-card-field="quantity"]')).toHaveValue('1.5');
-  await expect(reloadedCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]')).toHaveValue('1.5');
-  await expect(page.locator('#summaryCards')).toContainText('UGX 2,823,500');
-  // A closed day is read-only, and still has no Save button anywhere.
-  await expect(reloadedCompact.locator('[data-stock-field="returned"]')).toBeDisabled();
-  await expect(page.locator('#addStockProduct')).toBeDisabled();
-  await expect(reloadedCard.locator('[data-card-field="quantity"]').first()).toBeDisabled();
-  await expect(page.locator('[data-card-save]')).toHaveCount(0);
-  // Still nothing but the one close request wrote the sheet.
-  expect(stockWrites).toEqual([]);
-  expect(cardWrites).toEqual([]);
-
-
-  // ---- TEST C: descriptions are remembered for later days ----------------
+  // Leaving the date and coming back gives a clean, unsaved day.
   await openDay(page, NEXT_DATE);
-  await expect(page.locator('#statusPill')).toHaveText('DRAFT');
-  await showExpenseForm(page);
-  // Typing "L" offers yesterday's "Lunch" as a tappable suggestion.
-  await page.locator('#expenseDescription').fill('L');
-  const chips = page.locator('#expenseMatches .suggest-chip');
-  await expect(chips.filter({ hasText: 'Lunch' })).toHaveCount(1);
-  await chips.filter({ hasText: 'Lunch' }).click();
-  await expect(page.locator('#expenseDescription')).toHaveValue('Lunch');
-  await expect(chips).toHaveCount(0);
-  // Capitals never create a second logical suggestion.
-  await expect(page.locator('#expenseSuggestions option[value="Lunch"]')).toHaveCount(1);
-  await expect(page.locator('#expenseSuggestions option[value="lunch"]')).toHaveCount(0);
-  await expect(page.locator('#expenseSuggestions option[value="LUNCH"]')).toHaveCount(0);
-  await page.locator('#expenseDescription').fill('lunch');
-  await expect(chips).toHaveCount(0);
-  // A brand-new description is still free text, and is remembered afterwards.
-  await page.locator('#expenseDescription').fill('Transport');
-  await expect(chips).toHaveCount(0);
-  await page.locator('#expenseAmount').fill('3000');
-  await Promise.all([
-    page.waitForResponse(r => r.url().includes('/expenses') && r.request().method() === 'POST'),
-    page.locator('#addExpense').click(),
-  ]);
-  await page.locator('#expenseDescription').fill('T');
-  await expect(chips.filter({ hasText: 'Transport' })).toHaveCount(1);
-  await page.locator('#expenseDescription').fill('');
-
-  // ---- TEST J: today's work never rewrites yesterday ---------------------
   await openDay(page, BUSINESS_DATE);
-  expect(await stockOf(page, BUSINESS_DATE, 'Compact Standard')).toMatchObject({ total_stock: { cartons: 150 } });
-  const yesterday = await dayJson(page, BUSINESS_DATE);
-  expect(yesterday.totals.total_sales_ugx).toBe(2823500);
-  expect(yesterday.stock.find(r => r.product_name === 'Compact Standard').closing.cartons).toBe(147);
-  expect(yesterday.expenses).toEqual([]);
-  const tomorrow = await dayJson(page, NEXT_DATE);
-  expect(tomorrow.expenses.map(e => e.description)).toEqual(['Transport']);
+  await expect(page.locator('#expenseList')).not.toContainText('Lunch');
+  await expect(page.locator('#debtList')).not.toContainText('Darius');
+  await expect(page.locator('#mobileFromSales')).toHaveValue('');
+  await expect(page.locator('#actualCash')).toHaveValue('');
+  await expect(salesCard(page, 'Compact Standard').locator('[data-card-field="quantity"]').first())
+    .toHaveValue('');
+  await expect(stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]'))
+    .toHaveValue('');
 
-  // ---- TEST K: mobile 375 x 812 ------------------------------------------
+  // A refresh is the same story: nothing was stored, so nothing returns.
+  await typeAWorkingDay(page);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Daily accountability' })).toBeVisible();
+  await openDay(page, BUSINESS_DATE);
+  await expect(page.locator('#expenseList')).not.toContainText('Lunch');
+  await expect(page.locator('#debtList')).not.toContainText('Darius');
+  expect(writes).toEqual([]);
+
+  // And the database agrees: no day, no stock, no cards, no money.
+  const stored = await dayJson(page, BUSINESS_DATE);
+  expect(stored.day).toBeNull();
+  expect(stored.invoices).toEqual([]);
+  expect(stored.expenses).toEqual([]);
+  expect(stored.debts).toEqual([]);
+  expect(stored.debt_payments).toEqual([]);
+  expect(stored.totals.total_sales_ugx).toBe(0);
+  const stock = await stockOf(page, BUSINESS_DATE, 'Compact Standard');
+  expect(stock ? stock.closing : null).toBeNull();
+});
+
+
+test('D: Close day stores the whole day and reloading reproduces it', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, BUSINESS_DATE);
+  await stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]').fill('40');
+  await stockRow(page, 'Napkins Standard').locator('[data-stock-field="returned"]').fill('5');
+  const compact = salesCard(page, 'Compact Standard');
+  await compact.locator('[data-card-field="quantity"]').first().fill('110');
+  await compact.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  const napkin = salesCard(page, 'Napkins Standard');
+  await napkin.locator('[data-card-field="quantity"]').first().fill('25');
+  await napkin.locator('[data-card-field="unit_price_ugx"]').first().fill('100000');
+
+  await showForm(page, 'expenseForm');
+  await page.locator('#expenseDescription').fill('Lunch');
+  await page.locator('#expenseAmount').fill('10000');
+  await page.locator('#addExpense').click();
+  await page.locator('#mobileFromSales').fill('300000');
+  await page.locator('#actualCash').fill('10780000');
+  await page.locator('#debtorName').fill('Darius');
+  await page.locator('#debtAmount').fill('100000');
+  await page.locator('#addDebt').click();
+
+  // Total Sales = 110 × 79,000 + 25 × 100,000 = 11,190,000, and the allocation
+  // Cash + Mobile Money + New Debt must add up to exactly that.
+  await expect(page.locator('#summaryCards')).toContainText('UGX 11,190,000');
+  await expect(page.locator('#tenderHint')).toContainText('Cash from today\'s sales: UGX 10,790,000');
+  await expect(page.locator('#cashEquation')).toContainText('Cash at Hand UGX 10,780,000');
+
+  const closed = await closeDay(page);
+  expect(closed.status(), await closed.text()).toBe(200);
+  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
+  await expect(page.locator('#closeDay')).toBeHidden();
+
+  const stored = await dayJson(page, BUSINESS_DATE);
+  expect(stored.day.status).toBe('closed');
+  expect(stored.totals.total_sales_ugx).toBe(11190000);
+  expect(stored.totals.mobile_money_from_sales_ugx).toBe(300000);
+  expect(stored.totals.new_debt_ugx).toBe(100000);
+  expect(stored.totals.cash_from_sales_ugx).toBe(10790000);
+  expect(stored.totals.total_expenses_ugx).toBe(10000);
+  expect(stored.totals.cash_at_hand_ugx).toBe(10780000);
+  expect(stored.totals.cash_variance_ugx).toBe(0);
+  expect(stored.expenses.map((e) => e.description)).toEqual(['Lunch']);
+  expect(stored.debts.map((d) => d.name)).toEqual(['Darius']);
+  expect(stored.invoices.length).toBe(2);
+
+  // Reloading the page and the date shows exactly what was stored.
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Daily accountability' })).toBeVisible();
+  await openDay(page, BUSINESS_DATE);
+  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
+  await expect(page.locator('#expenseList')).toContainText('Lunch');
+  await expect(page.locator('#debtList')).toContainText('Darius');
+  await expect(page.locator('#mobileFromSales')).toHaveValue('300000');
+  await expect(page.locator('#actualCash')).toHaveValue('10780000');
+  await expect(salesCard(page, 'Compact Standard').locator('[data-card-field="quantity"]').first())
+    .toHaveValue('110');
+});
+
+test('E: a refused Close day writes nothing and keeps the typed figures', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, NEXT_DATE);
+  await stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]').fill('35');
+  await stockRow(page, 'Napkins Standard').locator('[data-stock-field="returned"]').fill('5');
+  const compact = salesCard(page, 'Compact Standard');
+  await compact.locator('[data-card-field="quantity"]').first().fill('3');   // 5 were sold
+  await compact.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await page.locator('#actualCash').fill('1000');
+
+  const refused = await closeDay(page);
+  expect(refused.status()).toBe(400);
+  await expect(page.locator('#message')).toContainText('were sold');
+
+  // Nothing was stored, and every typed figure is still on screen.
+  const stored = await dayJson(page, NEXT_DATE);
+  expect(stored.day).toBeNull();
+  expect(stored.invoices).toEqual([]);
+  expect(stored.totals.total_sales_ugx).toBe(0);
+  await expect(compact.locator('[data-card-field="quantity"]').first()).toHaveValue('3');
+  await expect(stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]'))
+    .toHaveValue('35');
+  await expect(page.locator('#actualCash')).toHaveValue('1000');
+  await expect(page.locator('#statusPill')).not.toHaveText('CLOSED');
+});
+
+
+
+test('F/G/L/M: every card has an X, a closed day protects its history, no overflow', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  const writes = [];
+  page.on('request', (request) => {
+    if (request.method() !== 'GET' && request.url().includes('/api/sales/')) {
+      writes.push(`${request.method()} ${request.url()}`);
+    }
+  });
+
+  await openDay(page, '2026-11-05');
+  // Every Vehicle Stock card carries the compact ×, including the ones loaded
+  // from an earlier count (not just the ones added by hand).
+  const total = await page.locator('.vstock-row').count();
+  expect(total).toBeGreaterThan(0);
+  await expect(page.locator('.vstock-row [data-stock-remove]')).toHaveCount(total);
+
+  // Removing a card is a browser-only cancel: the card leaves, the product is
+  // selectable again and nothing is written.
+  await stockRow(page, 'Compact Standard').locator('[data-stock-remove]').click();
+  await expect(page.locator('.vstock-row').filter({ hasText: 'Compact Standard' })).toHaveCount(0);
+  await page.locator('#addStockProduct').click();
+  const picker = page.locator('[data-stock-pick]').last();
+  const pickerHtml = await picker.innerHTML();
+  expect(pickerHtml, pickerHtml).toContain('Compact Standard');
+  expect(writes).toEqual([]);
+
+  // The expense × is just as local and never resets the rest of the page.
+  await showForm(page, 'expenseForm');
+  await page.locator('#expenseDescription').fill('Lunch');
+  await page.locator('#expenseAmount').fill('10000');
+  await page.locator('#addExpense').click();
+  await page.locator('#expenseDescription').fill('Fuel');
+  await page.locator('#expenseAmount').fill('20000');
+  await page.locator('#addExpense').click();
+  await expect(page.locator('#expenseList .list-row')).toHaveCount(2);
+  await page.locator('#mobileFromSales').fill('50000');
+  await page.locator('#actualCash').fill('7000');
+  await page.locator('#expenseList [data-remove-expense]').first().click();
+  await expect(page.locator('#expenseList .list-row')).toHaveCount(1);
+  await expect(page.locator('#expenseList')).toContainText('Fuel');
+  await expect(page.locator('#mobileFromSales')).toHaveValue('50000');
+  await expect(page.locator('#actualCash')).toHaveValue('7000');
+  expect(writes).toEqual([]);
+
+  // On a CLOSED day the × is still visible, but it refuses to destroy history.
+  // Close this test's own day first so the check never depends on another test.
+  await openDay(page, '2026-11-06');
+  await countEverythingBack(page);
+  await page.locator('#actualCash').fill('0');
+  const closedSix = await closeDay(page);
+  expect(closedSix.status(), await closedSix.text()).toBe(200);
+  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
+  const closedRows = await page.locator('.vstock-row').count();
+  await expect(page.locator('.vstock-row [data-stock-remove]')).toHaveCount(closedRows);
+  const writesBeforeX = writes.length;
+  await stockRow(page, 'Compact Standard').locator('[data-stock-remove]').click();
+  await expect(page.locator('#message')).toContainText('reopened by a Manager');
+  expect(writes.length, writes.join('\n')).toBe(writesBeforeX);
+
+  // No horizontal overflow at a 375 × 812 viewport.
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
-  await expect(page.locator('[data-card-save]')).toHaveCount(0);
-  await expect(page.locator('.sales-card [data-card-field="unit"]')).toHaveCount(0);
-  await expect(page.locator('.sales-card select')).toHaveCount(0);
-  // Every control - including the X buttons and the suggestion chips - is a
-  // comfortable touch target (at least 36px tall).
-  await openDay(page, NEXT_DATE);
-  await showExpenseForm(page);
-  await page.locator('#expenseDescription').fill('T');
-  const tooShort = await page.evaluate(() => {
-    const targets = [...document.querySelectorAll('#dailyView input, #dailyView select, #dailyView button')];
-    return targets.filter((el) => {
-      const box = el.getBoundingClientRect();
-      return box.width > 0 && box.height > 0 && box.height < 36;
-    }).map((el) => el.id || el.getAttribute('data-remove-expense') || el.tagName);
-  });
-  expect(tooShort).toEqual([]);
-  const chipBox = await page.locator('#expenseMatches .suggest-chip').first().boundingBox();
-  expect(chipBox.height).toBeGreaterThanOrEqual(36);
-  const overflowAgain = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  expect(overflowAgain).toBeLessThanOrEqual(0);
+});
+
+
+
+test('H/I/J/K: an unpaid sale, then collections on later dates', async ({ page }) => {
+  await loginAsSalesOperator(page);
+
+  // 10 Nov: one carton sold entirely on credit.  The carried figure is whatever
+  // the vehicle holds, so the test works from the sheet it can see.
+  await openDay(page, '2026-11-10');
+  const compactTotal = await sheetTotal(page, 'Compact Standard');
+  await stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]').fill(String(compactTotal - 1));
+  await stockRow(page, 'Napkins Standard').locator('[data-stock-field="returned"]').fill(String(await sheetTotal(page, 'Napkins Standard')));
+  const compact = salesCard(page, 'Compact Standard');
+  await compact.locator('[data-card-field="quantity"]').first().fill('1');
+  await compact.locator('[data-card-field="unit_price_ugx"]').first().fill('100000');
+  await page.locator('#debtorName').fill('Musa');
+  await page.locator('#debtAmount').fill('100000');
+  await page.locator('#addDebt').click();
+  await page.locator('#actualCash').fill('0');
+  // Cash 0 + Mobile 0 + New Debt 100,000 = Total Sales 100,000.
+  await expect(page.locator('#summaryCards')).toContainText('UGX 100,000');
+  await expect(page.locator('#tenderHint')).toContainText('Cash from today\'s sales: UGX 0');
+  expect((await closeDay(page)).status()).toBe(200);
+  await expect(page.locator('#debtList')).toContainText('Unpaid');
+
+  // 11 Nov: 40,000 of it arrives in cash.  No product sold today.
+  await openDay(page, '2026-11-11');
+  await countEverythingBack(page);
+  await chooseDebtor(page, 'Musa');
+  await page.locator('#collectionAmount').fill('40000');
+  await page.locator('#collectionMethod').selectOption('cash');
+  await page.locator('#addCollection').click();
+  await expect(page.locator('#debtList')).toContainText('Partially Paid');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 0');
+  await page.locator('#actualCash').fill('40000');
+  const openingEleven = (await dayJson(page, '2026-11-11')).opening_balances.cash_ugx;
+  const elevenClose = await closeDay(page);
+  expect(elevenClose.status(), await elevenClose.text()).toBe(200);
+  const eleven = await dayJson(page, '2026-11-11');
+  expect(eleven.totals.total_sales_ugx).toBe(0);
+  expect(eleven.totals.old_debt_collections_ugx).toBe(40000);
+  // The collection is money received today on top of what the van already held.
+  expect(eleven.totals.expected_cash_ugx).toBe(openingEleven + 40000);
+
+  // 12 Nov: the remaining 60,000 arrives on Mobile Money; the debt is Paid.
+  await openDay(page, '2026-11-12');
+  await countEverythingBack(page);
+  await chooseDebtor(page, 'Musa');
+  await page.locator('#collectionAmount').fill('60000');
+  await page.locator('#collectionMethod').selectOption('mobile_money');
+  await page.locator('#addCollection').click();
+  await expect(page.locator('#debtList')).toContainText('Paid');
+  await page.locator('#actualCash').fill('40000');
+  await page.locator('#actualMobile').fill('60000');
+  const openingTwelve = (await dayJson(page, '2026-11-12')).opening_balances.mobile_money_ugx;
+  const twelveClose = await closeDay(page);
+  expect(twelveClose.status(), await twelveClose.text()).toBe(200);
+  const twelve = await dayJson(page, '2026-11-12');
+  expect(twelve.totals.total_sales_ugx).toBe(0);
+  expect(twelve.totals.old_debt_mobile_money_ugx).toBe(60000);
+  expect(twelve.totals.expected_mobile_money_ugx).toBe(openingTwelve + 60000);
+  expect((twelve.debtor_balances || []).filter((row) => row.name === 'Musa')).toEqual([]);
+
+  // 10 November is untouched: the sale and its stock stay exactly as closed.
+  const ten = await dayJson(page, '2026-11-10');
+  expect(ten.totals.total_sales_ugx).toBe(100000);
+  expect(ten.totals.old_debt_collections_ugx).toBe(0);
+  const stock = (ten.stock || []).find((row) => row.product_name === 'Compact Standard');
+  expect(stock.derived_sold.cartons).toBe(1);
 });

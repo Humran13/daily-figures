@@ -27,6 +27,10 @@ READ_ALL = (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_VIEWER)
 
 
 def _error(exc, status=400):
+    if status == 400 and isinstance(exc, svc.DayNotSaved):
+        # A write aimed at a working day that was never closed is a conflict
+        # with the workflow, not a bad value.
+        status = 409
     return jsonify({"error": str(exc)}), status
 
 
@@ -86,9 +90,19 @@ def _product_meta(product, business_date):
 
 
 def _require_editable_day(profile, business_date):
-    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(business_date)).first()
-    if day is None:
-        raise svc.SalesError("Create the Sales Day first")
+    """The day a correction endpoint may edit: one Close Day already saved.
+
+    An unfinished working day exists in the browser and nowhere else, so there
+    is nothing here to edit: a caller that has not closed the day is told to use
+    Close Day, and a closed day must be reopened by a Manager first.  This is
+    what keeps the separate endpoints from quietly becoming draft persistence
+    again.
+    """
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id,
+                                   business_date=svc.valid_date(business_date)).first()
+    if day is None or day.status == DAY_DRAFT:
+        raise svc.DayNotSaved("Nothing is saved before Close Day. "
+                              "Enter the whole day and press Close day to save it.")
     if day.status == DAY_CLOSED:
         raise svc.SalesError("A closed Sales Day must be reopened before it can be edited")
     return day
@@ -229,22 +243,22 @@ def save_baseline():
 @sales_bp.route("/days", methods=["POST"])
 @login_required
 def create_day():
-    if not _operational_writer(): return _error("This role cannot create Sales Days", 403)
+    """Open a date for work.  Nothing is written: the working day is the browser's.
+
+    Open day used to create a draft Sales Day row, which is exactly the hidden
+    persistence this workflow must not have.  Selecting a date now only asks for
+    its context - the carry-forward, today's Finished Goods load, the packaging
+    rules and (if the day was really closed) its stored figures.
+    """
+    if not _operational_writer(): return _error("This role cannot work Sales Days", 403)
     data = request.get_json(silent=True) or {}
     profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
     try:
         business_date = svc.valid_date(data.get("business_date"))
-        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=business_date).first()
-        created = False
-        if day is None:
-            day = SalesDay(sales_profile_id=profile.id, business_date=business_date, created_by=current_user().id)
-            db.session.add(day); db.session.flush(); created = True
-            record_audit(current_user(), "create", "sales_day", day.id, after={"business_date": business_date})
-            db.session.commit()
-        return jsonify(svc.daily_summary(profile, business_date)), 201 if created else 200
+        return jsonify(svc.daily_summary(profile, business_date))
     except svc.SalesError as exc:
-        db.session.rollback(); return _error(exc)
+        return _error(exc)
 
 
 @sales_bp.route("/days/<date_str>", methods=["GET", "PATCH"])
@@ -258,9 +272,7 @@ def day_detail(date_str):
         date_str = svc.valid_date(date_str)
         if request.method == "PATCH":
             data = request.get_json(silent=True) or {}
-            day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
-            if day is None: raise svc.SalesError("Create the Sales Day first")
-            if day.status == DAY_CLOSED: raise svc.SalesError("A closed Sales Day must be reopened before it can be edited")
+            day = _require_editable_day(profile, date_str)
             before = {"actual_cash_count_ugx": day.actual_cash_count_ugx, "actual_mobile_money_ugx": day.actual_mobile_money_ugx,
                       "mobile_money_from_sales_ugx": day.mobile_money_from_sales_ugx, "notes": day.notes}
             if "actual_cash_count_ugx" in data:
@@ -295,7 +307,9 @@ def closing_stock(date_str):
     profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
-    if day is None: return _error("Create the Sales Day first")
+    if day is None or day.status == DAY_DRAFT:
+        return _error(svc.DayNotSaved("Nothing is saved before Close Day. "
+                                      "Enter the whole day and press Close day to save it."))
     try:
         svc.set_closing_stock(day, data, current_user(), elevated=_elevated())
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
@@ -310,14 +324,17 @@ def opening_stock(date_str):
 
     This is the one thing a Manager used to have to open the day for.  It is
     ordinary data entry: whoever is holding the stock says what is on the
-    vehicle, and every later day carries it forward automatically.
+    vehicle, and every later day carries it forward automatically.  Like every
+    other piece of a working day it is saved by Close Day, never before it.
     """
     if not _operational_writer(): return _error("This role cannot declare starting stock", 403)
     data = request.get_json(silent=True) or {}
     profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
-    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(date_str)).first()
-    if day is None: return _error("Create the Sales Day first")
+    try:
+        _require_editable_day(profile, date_str)
+    except svc.SalesError as exc:
+        return _error(exc)
     lines = data.get("lines")
     if lines is None and data.get("product_id") is not None:
         lines = [data]
@@ -343,7 +360,9 @@ def returns_today(date_str):
     profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(date_str)).first()
-    if day is None: return _error("Create the Sales Day first")
+    if day is None or day.status == DAY_DRAFT:
+        return _error(svc.DayNotSaved("Nothing is saved before Close Day. "
+                                      "Enter the whole day and press Close day to save it."))
     try:
         svc.save_returns_today(day, data.get("lines"), current_user(), elevated=_elevated())
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
@@ -367,9 +386,34 @@ def vehicle_stock(date_str):
     if err: return err
     try:
         date_str = svc.valid_date(date_str)
-        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
-        if day is None: return _error("Create the Sales Day first")
+        day = _require_editable_day(profile, date_str)
         svc.save_vehicle_stock(day, data.get("lines"), current_user(), elevated=_elevated())
+        db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/days/<date_str>/vehicle-stock/<int:product_id>/remove", methods=["POST"])
+@login_required
+def remove_vehicle_stock(date_str, product_id):
+    """Take one product off a CLOSED day, audited, without destroying history.
+
+    The counted row is kept exactly as it was recorded and marked removed with
+    actor, time and reason, so the day recalculates while the evidence of the
+    correction survives.  An unfinished working day needs no such endpoint: its
+    cards live in the browser and the × is a local cancel.
+    """
+    if not _elevated():
+        return _error("Manager or Super Administrator authority is required", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id,
+                                   business_date=svc.valid_date(date_str)).first()
+    if day is None or day.status == DAY_DRAFT:
+        return _error(svc.DayNotSaved("Nothing is saved before Close Day, so there is nothing to remove."))
+    try:
+        svc.remove_vehicle_line(day, product_id, current_user(), data.get("reason"))
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
     except svc.SalesError as exc:
         db.session.rollback(); return _error(exc)
@@ -445,34 +489,22 @@ def closing_stock_preview(date_str):
 @sales_bp.route("/days/<date_str>/close", methods=["POST"])
 @login_required
 def close_day(date_str):
+    """The one write of the working day: validate everything, then store it once."""
     if not _operational_writer(): return _error("This role cannot close Sales Days", 403)
     data = request.get_json(silent=True) or {}
     profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
-    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
-    if day is None: return _error("Create the Sales Day first")
     try:
-        # Closing the day is the day's one save: the Vehicle Stock sheet on
-        # screen is written here and nowhere else, through the same
-        # save_vehicle_stock() path the sheet has always used, in this same
-        # transaction.  So the sold quantities validated below are exactly the
-        # ones the salesperson can see, the sales cards are checked against
-        # those stored figures, and a refused close writes nothing at all.
-        if data.get("vehicle_stock") is not None and day.status != DAY_CLOSED:
-            svc.save_vehicle_stock(day, data.get("vehicle_stock"), current_user(), elevated=_elevated())
-            # save_vehicle_stock() adds rows by foreign key, so the day's loaded
-            # collection must be re-read before Close Day inspects the returns.
-            db.session.expire(day, ["closing_lines"])
-        if data.get("sales_cards") is not None and day.status != DAY_CLOSED:
-            # The Sales Cards are browser state until now: Close day stores the
-            # price rows the salesperson is showing, priced against the same
-            # sheet, in this same transaction.  One card per product, checked
-            # against Sold Today exactly like a per-card save always was.
-            svc.save_sales_cards(profile, date_str, data.get("sales_cards"), current_user(),
-                                 vehicle_stock=data.get("vehicle_stock"))
-            db.session.flush()
-        svc.close_day(day, current_user(), data.get("override_reason"), elevated=_elevated())
-        db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
+        # Close Day carries the complete day: the Vehicle Stock sheet, every
+        # Sales Card, expenses, money movements, Mobile Money, the counted cash,
+        # the unpaid part of today's sales and the collections of older ones.
+        # sales_service.close_working_day() validates and writes all of it in
+        # this one transaction, from the same sheet the salesperson can see, so
+        # a refused close leaves no day, no sheet, no card, no expense, no debt
+        # and no collection behind.
+        svc.close_working_day(profile, date_str, data, current_user(), elevated=_elevated())
+        db.session.commit()
+        return jsonify(svc.daily_summary(profile, date_str))
     except svc.SalesError as exc:
         db.session.rollback(); return _error(exc)
 
@@ -582,9 +614,7 @@ def add_debt_payment(debtor_id):
     data = request.get_json(silent=True) or {}
     try:
         payment_date = svc.valid_date(data.get("payment_date") or business_today(), "payment_date")
-        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=payment_date).first()
-        if day is not None and day.status == DAY_CLOSED:
-            raise svc.SalesError("A closed Sales Day must be reopened before it can be edited")
+        _require_editable_day(profile, payment_date)
         payment, created = svc.record_debt_payment(debtor, {**data, "payment_date": payment_date}, current_user())
         db.session.commit()
         return jsonify({
@@ -664,6 +694,10 @@ def stock_adjustment():
     data = request.get_json(silent=True) or {}; profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
     try:
+        _require_editable_day(profile, data.get("business_date"))
+    except svc.SalesError as exc:
+        return _error(exc)
+    try:
         product = db.session.get(Product, data.get("product_id"))
         if product is None: raise svc.SalesError("product not found")
         business_date = svc.valid_date(data.get("business_date")); rule = svc._rule_for(product.id, business_date)
@@ -687,6 +721,10 @@ def cash_adjustment():
     if not _elevated(): return _error("Manager or Super Administrator authority is required", 403)
     data = request.get_json(silent=True) or {}; profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
+    try:
+        _require_editable_day(profile, data.get("business_date"))
+    except svc.SalesError as exc:
+        return _error(exc)
     try:
         account = data.get("account", "cash")
         if account not in ("cash", "mobile_money"): raise svc.SalesError("account must be cash or mobile_money")
@@ -718,12 +756,15 @@ def void_entity(entity, record_id):
     profile, err = _profile_response(profile_id, write=True)
     if err: return err
     if not _elevated():
-        # A salesperson fixes their own mistakes before the day is closed; a
-        # closed day still needs a Manager, because it has already been
-        # reconciled and reported.
+        # A salesperson corrects their own closed-and-reopened day; a day that
+        # never closed has nothing stored to correct, and a day that is still
+        # closed needs a Manager to reopen it and record why.
         day_date = getattr(row, "business_date", None) or getattr(row, "payment_date", None)
-        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=day_date).first() if day_date else None
-        if day is not None and day.status == DAY_CLOSED:
+        day = (SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=day_date).first()
+               if day_date else None)
+        if day is None or day.status == DAY_DRAFT:
+            return _error(svc.DayNotSaved("Nothing is saved before Close Day, so there is nothing to void."))
+        if day.status == DAY_CLOSED:
             return _error("A closed Sales Day must be reopened by a Manager or Super Administrator before it can be edited", 403)
     try:
         svc.void_record(row, current_user(), (request.get_json(silent=True) or {}).get("reason"))
