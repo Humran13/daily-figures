@@ -22,6 +22,10 @@ PRODUCTS = {
     "Compact Standard": {"opening_cartons": 50, "loaded_cartons": 100},
     "Napkins Standard": {"opening_cartons": 10, "loaded_cartons": 20},
 }
+# Products that exist in the catalogue but carry no stock and no dispatch today.
+# They can only reach Vehicle Stock by being chosen from the Product dropdown,
+# which is what proves the dropdown is the database and not a hard-coded list.
+CATALOGUE_ONLY = ("Straws",)
 
 app = create_app()
 with app.app_context():
@@ -47,6 +51,15 @@ with app.app_context():
                                  effective_from=datetime(2026, 1, 1), created_by=user.id)
             db.session.add(rule); db.session.flush()
         products[name], rules[name] = product, rule
+    for order, name in enumerate(CATALOGUE_ONLY, start=len(PRODUCTS) + 1):
+        product = Product.query.filter_by(name=name).first()
+        if product is None:
+            product = Product(name=name, display_order=order, active=True)
+            db.session.add(product); db.session.flush()
+        if PackagingRule.query.filter_by(product_id=product.id).first() is None:
+            db.session.add(PackagingRule(product_id=product.id, cartons_to_packs=10, packs_to_pieces=10,
+                                         effective_from=datetime(2026, 1, 1), created_by=user.id))
+    db.session.flush()
     profile = SalesProfile.query.filter_by(user_id=user.id).first()
     if profile is None:
         profile = SalesProfile(user_id=user.id, display_name="Browser Metro Sales", recipient_customer_id=recipient.id)

@@ -61,13 +61,23 @@ transaction, and a vehicle return never posts into Finished Goods. The next
 morning the stock given is added to whatever the vehicle still holds:
 
 ```text
-Previous Return  = most recent prior closing Return (or the trusted opening)
-Stock Added      = finalized Dispatch base units + active stock adjustments
-Total Stock      = Previous Return + Stock Added
+Previous Return  = most recent prior counted Return (or the trusted opening)
+Given Stock      = finalized Dispatch base units + active stock adjustments
+Total Stock      = Previous Return + Given Stock
 Return Today     = the physical count still in the vehicle at day end
-Sold             = Total Stock − Return Today
-Difference       = Sold (stock) − quantities entered on the sale lines
+Sold Today       = Total Stock − Return Today
+Difference       = Sold Today (stock) − quantities entered on the sale lines
 ```
+
+All four stock figures are the salesperson's own working numbers and every one
+of them is editable on the day being worked on: Previous Return, Given Stock,
+Total Stock and Return Today. A correction is written to that day's own row, so
+correcting today's Previous Return never changes yesterday's counted return.
+Total Stock is prefilled from Previous Return + Given Stock and stops following
+the formula as soon as the salesperson corrects it by hand. A figure that still
+equals its system value is not copied into the day's row, so a later dispatch or
+a corrected earlier day still carries forward until the salesperson corrects it
+themselves.
 
 For salesperson `S`, product `P`, date `D` the same rule is stored/derived as:
 
@@ -85,14 +95,15 @@ Stock-derived Sold = Available Stock - Closing Vehicle Stock
 Quantity Variance = Stock-derived Sold - Recorded/priced Sale base units
 ```
 
-A profile with no trusted starting point at all shows `Starting point
-required`; zero is never silently assumed for a vehicle that has never been
-counted. Once a trusted starting point exists for that vehicle, a product it
-does not list means "not carried yet", so newly dispatched stock reconciles
-from zero instead of blocking the day. Closing stock greater than total stock
-is rejected, not clamped. A normal close requires an explicit closing count for
-each product and exact quantity reconciliation. An elevated override requires a
-reason and remains visibly flagged.
+A product with no counted return and no trusted opening shows a blank Previous
+Return and the card asks for the starting figure; zero is never silently assumed
+for a vehicle that has never been counted. Once a trusted starting point exists
+for that vehicle, a product it does not list means "not carried yet", so newly
+dispatched stock reconciles from zero instead of blocking the day. Return Today
+greater than Total Stock is rejected, not clamped. A normal close requires a
+counted return for each product on the vehicle and exact quantity
+reconciliation. An elevated override requires a reason and remains visibly
+flagged.
 
 Changing an old closing count immediately changes that date's sold quantity and
 the next selling day's opening return. It never edits invoice quantities,
@@ -160,7 +171,7 @@ Reports are available as CSV, XLSX and branded PDF for daily summaries and date-
 
 Every report and export page links to `csv`, `xlsx` and `pdf` for the currently selected salesperson and date, so nobody has to hand-write query strings.
 
-The Sales screen itself is a single mobile-first page with seven numbered steps: vehicle stock (the printed equation — Previous Return, Stock Added and Total Stock, one prominent Return Today entry per carried product and one Save Returns action), sold today, one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. A salesperson completes all seven alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
+The Sales screen itself is a single mobile-first page with seven numbered steps: vehicle stock (one editable card per product the salesperson put on the vehicle — Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today and a calculated Sold Today, with Add Product and one Save vehicle stock action), sold today, one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. A salesperson completes all seven alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
 
 ## Corrections, idempotency and audit
 
@@ -171,6 +182,8 @@ The server validates dates, whole nonnegative values, account/method codes, pack
 ## Migration and deployment notes
 
 Revision `de22eee9674b` follows `a6c8e4922fbc`. It creates only new Sales tables and seeds the new department/section. It does not alter existing Products, Customers, Users or grants and does not grant Sales to ordinary users. Upgrade and downgrade are supported, leaving one Alembic head.
+
+Revision `a3d9f1c7b2e4` follows `19f4c7a2b8d1` and adds the editable Vehicle Stock figures to `sales_vehicle_closing_lines`: `previous_return_base_qty`, `issued_base_qty`, `total_stock_base_qty` (nullable — NULL means "follow the system figure") and `return_counted` (backfilled to true for every existing row). It is additive: no existing quantity is changed and no historical row is rewritten.
 
 Deployment is intentionally outside this feature task. Review and merge the feature branch separately, back up the production database using existing procedures, then run the normal migration/startup process. Never map Closing Vehicle Stock into warehouse Returns during deployment or data import.
 
@@ -217,19 +230,21 @@ The person using the Daily Sales screen is a salesperson, not an accountant. The
 seven numbered steps that follow the real-world order of the day, and one person can complete
 all seven without a Manager or Super Administrator watching:
 
-1. Vehicle stock. Each carried product is shown as the printed equation: Previous Return,
-   Stock Added and Total Stock (read-only), a prominent RETURN TODAY entry, and Sold.
-   Previous Return is filled from the last counted return, so nothing is retyped in the
-   morning. Sold is previewed in the browser the moment a return is typed, so the paper
-   arithmetic is visible before anything is saved; the saved figures always come back from
-   the server. Today's Sales Day is opened for the salesperson automatically (opening a day
-   is not a financial transaction) and any other date is opened with one tap, so nobody has
-   to ask for it. On the day a vehicle balance starts, the salesperson types their own
-   starting stock and saves it in one action (`PUT /api/sales/days/<date>/opening-stock`);
-   there is no approval step. From the next day on, starting stock is locked to the previous
-   closing count and the form is gone, so an earlier day cannot be rewritten by accident. One
-   Save Returns button sends every changed row.
-2. Sold today. A read-only roll-up per product: previous return + stock added = total stock,
+1. Vehicle stock. The salesperson chooses the products that are physically on the
+   vehicle today with Add Product, which lists the live product catalogue
+   (`GET /api/sales/days/<date>/vehicle-stock/options`) and never a list written in
+   JavaScript: a product added to the catalogue later is selectable with no code
+   change, and a product already on the sheet is not offered twice. Each card shows
+   Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today
+   and Sold Today. Previous Return and Given Stock are prefilled from the last
+   counted return and today's finalized dispatch; Total Stock is prefilled from
+   Previous Return + Given Stock and Sold Today is Total Stock − Return Today,
+   recalculated live. All four stock figures stay editable — the salesperson is
+   reconciling their own vehicle, so no Manager, unlock or approval is involved. A
+   return greater than total stock is refused with a plain-language warning. One
+   Save vehicle stock action (`PUT /api/sales/days/<date>/vehicle-stock`) stores the
+   whole sheet in one transaction, auditing each changed card.
+2. Sold today. A read-only roll-up per product: previous return + given stock = total stock,
    less return today = sold. Nothing is typed twice.
 3. Sales cards. One card per product that actually sold. The card already knows the counted
    quantity ("10 cartons sold today"), so the salesperson just adds one or more price rows

@@ -351,6 +351,42 @@ def returns_today(date_str):
         db.session.rollback(); return _error(exc)
 
 
+@sales_bp.route("/days/<date_str>/vehicle-stock", methods=["PUT"])
+@login_required
+def vehicle_stock(date_str):
+    """Save the salesperson's own Vehicle Stock sheet in one action.
+
+    The salesperson chooses which products are on the vehicle (any active
+    product from the catalogue may be added) and corrects Previous Return,
+    Given Stock, Total Stock and Return Today.  Every correction belongs to
+    this day only; earlier days are never rewritten.
+    """
+    if not _operational_writer(): return _error("This role cannot edit vehicle stock", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    try:
+        date_str = svc.valid_date(date_str)
+        day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
+        if day is None: return _error("Create the Sales Day first")
+        svc.save_vehicle_stock(day, data.get("lines"), current_user(), elevated=_elevated())
+        db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
+
+
+@sales_bp.route("/days/<date_str>/vehicle-stock/options", methods=["GET"])
+@login_required
+def vehicle_stock_options(date_str):
+    """The Product dropdown: every active product and today's system figures."""
+    profile, err = _profile_response(request.args.get("sales_profile_id"))
+    if err: return err
+    try:
+        return jsonify(svc.vehicle_stock_options(profile, svc.valid_date(date_str)))
+    except svc.SalesError as exc:
+        return _error(exc)
+
+
 @sales_bp.route("/days/<date_str>/products/<int:product_id>/sales", methods=["PUT"])
 @login_required
 def product_sales(date_str, product_id):

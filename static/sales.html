@@ -23,19 +23,12 @@
     <div id="openingNotice" class="warning hidden"></div>
 
     <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
-      <p class="hint">Previous Return + Stock Added = Total Stock. Total Stock − Return Today = Sold. A return here is unsold stock still in the vehicle, never a warehouse return.</p>
+      <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today. Every quantity is yours to correct — no approval needed.</p>
       <div id="stockList" class="stack empty">Open a day to begin.</div>
-      <div id="declareForm" class="starting-form hidden">
-        <span class="start-label">Carrying a product that is not listed? Declare it here</span>
-        <select id="declareProduct" aria-label="Product to declare"></select>
-        <input id="declareQty" type="number" min="0" inputmode="numeric" placeholder="Qty" aria-label="Starting quantity">
-        <select id="declareUnit" aria-label="Starting unit"><option value="carton">Cartons</option><option value="piece">Pieces</option></select>
-        <button id="declareOpening">Add to vehicle stock</button>
-      </div>
       <div id="stockWarnings" class="warning hidden"></div>
-      <div class="actions sticky-actions">
-        <button id="saveOpening">Save starting stock</button>
-        <button id="saveReturns" class="primary">Save returns today</button>
+      <div class="stock-actions">
+        <button id="addStockProduct">Add Product</button>
+        <button id="saveVehicleStock" class="primary">Save vehicle stock</button>
       </div>
     </section>
 

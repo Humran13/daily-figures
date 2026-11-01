@@ -109,12 +109,35 @@ class SalesDay(db.Model):
 
 
 class SalesVehicleClosingLine(db.Model):
+    """One product on one salesperson's vehicle sheet for one day.
+
+    The row exists because the salesperson put that product on the vehicle
+    today: it is the only product list Vehicle Stock reads (plus the evidence
+    the system already has - a finalized dispatch, a stock adjustment, a sale or
+    a carried count - so nothing has to be retyped).
+
+    `base_unit_qty` is the counted Return Today.  The three optional working
+    figures hold today's own reconciliation of Previous Return, Given Stock and
+    Total Stock.  They stay NULL while the sheet simply follows the system
+    figure, which is what lets a corrected earlier day carry forward.  A stored
+    number is this salesperson's physical count for THIS day only: it never
+    rewrites an earlier day's row.
+    """
+
     __tablename__ = "sales_vehicle_closing_lines"
     id = db.Column(db.Integer, primary_key=True)
     sales_day_id = db.Column(db.Integer, db.ForeignKey("sales_days.id"), nullable=False, index=True)
     product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False, index=True)
     base_unit_qty = db.Column(db.Integer, nullable=False)
     packaging_rule_id = db.Column(db.Integer, db.ForeignKey("packaging_rules.id"), nullable=False)
+    # Today's working figures. NULL = follow the system figure (most recent
+    # counted return / finalized dispatch / Previous Return + Given Stock).
+    previous_return_base_qty = db.Column(db.Integer, nullable=True)
+    issued_base_qty = db.Column(db.Integer, nullable=True)
+    total_stock_base_qty = db.Column(db.Integer, nullable=True)
+    # False = the product is on the vehicle but its return has not been counted
+    # yet, so base_unit_qty is a placeholder zero and Sold is still unknown.
+    return_counted = db.Column(db.Boolean, nullable=False, default=True)
     corrected_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     correction_reason = db.Column(db.Text, nullable=True)
     updated_at = db.Column(db.DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)

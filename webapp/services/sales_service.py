@@ -151,6 +151,10 @@ def opening_stock(profile_id, product_id, business_date):
             SalesDay.sales_profile_id == profile_id,
             SalesDay.business_date < business_date,
             SalesVehicleClosingLine.product_id == product_id,
+            # A product can be put on the vehicle before its return is counted.
+            # Such a row only says "it is on the van today"; its placeholder
+            # zero is not a counted return, so it never carries forward.
+            SalesVehicleClosingLine.return_counted.is_(True),
         )
         .order_by(SalesDay.business_date.desc(), SalesVehicleClosingLine.id.desc())
         .first()
@@ -195,6 +199,70 @@ def adjustment_loads(profile_id, business_date):
         .all()
     )
     return {product_id: int(total) for product_id, total in rows}
+
+
+def optional_base(quantity, unit, rule, field):
+    """Convert one optional Vehicle Stock quantity, allowing an explicit zero.
+
+    Blank/None means "leave this figure on the system value"; zero is a real
+    answer ("none here").  Only whole numbers are accepted, exactly like every
+    other stock entry in Sales.
+    """
+    if quantity is None or quantity == "":
+        return None
+    if isinstance(quantity, bool) or not isinstance(quantity, int):
+        raise SalesError(f"{field} must be a whole number")
+    if quantity < 0:
+        raise SalesError(f"{field} cannot be negative")
+    if quantity == 0:
+        return 0
+    return unit_to_base(quantity, unit, rule)
+
+
+def resolve_vehicle_stock(profile, business_date, product_id, line=None, dispatch=None, adjustments=None):
+    """The four working Vehicle Stock figures for one product on one day.
+
+    Every figure has a system default and every figure can be corrected for the
+    day being worked on:
+
+      Previous Return = the most recent counted return (or the trusted opening)
+      Given Stock     = finalized Dispatch base units + active adjustments
+      Total Stock     = Previous Return + Given Stock
+      Return Today    = the counted return, or None until it is counted
+
+    A correction is stored on THIS day's row and wins for THIS day only.
+    Earlier days are read from their own rows, so correcting today's Previous
+    Return can never rewrite yesterday's counted return.
+    """
+    business_date = valid_date(business_date)
+    opening, source, source_date, opening_rule_id = opening_stock(profile.id, product_id, business_date)
+    if dispatch is None:
+        dispatch = dispatch_loads(profile, business_date)
+    if adjustments is None:
+        adjustments = adjustment_loads(profile.id, business_date)
+    previous_override = line.previous_return_base_qty if line is not None else None
+    issued_override = line.issued_base_qty if line is not None else None
+    total_override = line.total_stock_base_qty if line is not None else None
+    issued_derived = dispatch.get(product_id, 0) + adjustments.get(product_id, 0)
+    previous = opening if previous_override is None else previous_override
+    issued = issued_derived if issued_override is None else issued_override
+    total_derived = None if previous is None else previous + issued
+    total = total_derived if total_override is None else total_override
+    counted = bool(line is not None and line.return_counted)
+    closing = line.base_unit_qty if counted else None
+    sold = None if total is None or closing is None else total - closing
+    return {
+        "opening": opening, "opening_source": source, "opening_source_date": source_date,
+        "opening_rule_id": opening_rule_id,
+        "previous": previous, "previous_derived": opening,
+        "previous_overridden": previous_override is not None,
+        "issued": issued, "issued_derived": issued_derived,
+        "issued_overridden": issued_override is not None,
+        "dispatch": dispatch.get(product_id, 0), "adjustment": adjustments.get(product_id, 0),
+        "total": total, "total_derived": total_derived,
+        "total_overridden": total_override is not None,
+        "closing": closing, "return_counted": counted, "sold": sold,
+    }
 
 
 def recorded_quantities(profile_id, business_date):
@@ -251,19 +319,21 @@ def stock_reconciliation(profile, business_date):
     result = []
     for product_id in sorted(product_ids, key=lambda pid: (products[pid].display_order, products[pid].name)):
         product = products[product_id]
-        opening, source, source_date, opening_rule_id = opening_stock(profile.id, product_id, business_date)
         close_line = closings.get(product_id)
-        rule_id = close_line.packaging_rule_id if close_line else opening_rule_id
+        figures = resolve_vehicle_stock(profile, business_date, product_id, close_line, dispatch, adjustments)
+        rule_id = close_line.packaging_rule_id if close_line else figures["opening_rule_id"]
         # db.session.get(Model, None) warns about a NULL primary key; skip the
         # lookup entirely when there is no recorded rule to load.
         rule = db.session.get(PackagingRule, rule_id) if rule_id else None
         rule = rule or _rule_for(product_id, business_date)
-        added_dispatch = dispatch.get(product_id, 0)
-        added_adjustment = adjustments.get(product_id, 0)
-        added = added_dispatch + added_adjustment
-        available = None if opening is None else opening + added
-        closing = close_line.base_unit_qty if close_line else None
-        derived = None if available is None or closing is None else available - closing
+        # The four Vehicle Stock figures are the salesperson's own working
+        # numbers: corrected means "today's row carries this figure", default
+        # means "the system figure still applies".
+        previous = figures["previous"]
+        issued = figures["issued"]
+        available = figures["total"]
+        closing = figures["closing"]
+        derived = figures["sold"]
         recorded_qty = recorded.get(product_id, 0)
         variance = None if derived is None else derived - recorded_qty
         result.append({
@@ -276,9 +346,9 @@ def stock_reconciliation(profile, business_date):
             # server still recalculates and validates the real figures.
             "pieces_per_carton": rule.pieces_per_carton,
             "pieces_per_pack": rule.pieces_per_pack,
-            "opening_source": source,
-            "opening_source_date": source_date,
-            "can_set_opening": day_open and source != "previous_closing" and not opening_locked,
+            "opening_source": figures["opening_source"],
+            "opening_source_date": figures["opening_source_date"],
+            "can_set_opening": day_open and figures["opening_source"] != "previous_closing" and not opening_locked,
             "rule": {
                 "cartons_to_packs": rule.cartons_to_packs,
                 "packs_to_pieces": rule.packs_to_pieces,
@@ -286,10 +356,24 @@ def stock_reconciliation(profile, business_date):
                 "pieces_per_pack": rule.pieces_per_pack,
                 "has_pack_tier": rule.has_pack_tier,
             },
-            "opening": quantity_dict(opening, rule),
-            "dispatch_loaded": quantity_dict(added_dispatch, rule),
-            "manual_adjustment": quantity_dict(added_adjustment, rule),
-            "added": quantity_dict(added, rule),
+            # Previous Return / Given Stock / Total Stock / Return Today: the
+            # editable Vehicle Stock card, plus the system figure each one
+            # falls back to and whether today overrides it.
+            "previous_return": quantity_dict(previous, rule),
+            "previous_return_default": quantity_dict(figures["previous_derived"], rule),
+            "previous_overridden": figures["previous_overridden"],
+            "issued_today": quantity_dict(issued, rule),
+            "issued_today_default": quantity_dict(figures["issued_derived"], rule),
+            "issued_overridden": figures["issued_overridden"],
+            "total_stock": quantity_dict(available, rule),
+            "total_stock_default": quantity_dict(figures["total_derived"], rule),
+            "total_overridden": figures["total_overridden"],
+            "return_counted": figures["return_counted"],
+            # Kept for every later step, export and historical reader.
+            "opening": quantity_dict(previous, rule),
+            "dispatch_loaded": quantity_dict(figures["dispatch"], rule),
+            "manual_adjustment": quantity_dict(figures["adjustment"], rule),
+            "added": quantity_dict(issued, rule),
             "available": quantity_dict(available, rule),
             "closing": quantity_dict(closing, rule),
             "derived_sold": quantity_dict(derived, rule),
@@ -298,6 +382,47 @@ def stock_reconciliation(profile, business_date):
             "reconciled": variance == 0 if variance is not None else False,
         })
     return result
+
+
+def vehicle_stock_options(profile, business_date):
+    """Every active product, with today's system Vehicle Stock figures.
+
+    This is what the Daily screen's Product dropdown is built from.  The rows
+    come straight from the product catalogue, so a product added to the
+    catalogue later is selectable with no frontend change.  ``on_vehicle`` says
+    which products already have a card, so the screen can offer one card per
+    product per day.
+    """
+    business_date = valid_date(business_date)
+    dispatch = dispatch_loads(profile, business_date)
+    adjustments = adjustment_loads(profile.id, business_date)
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=business_date).first()
+    lines = {line.product_id: line for line in day.closing_lines} if day else {}
+    on_vehicle = {row["product_id"] for row in stock_reconciliation(profile, business_date)}
+    products = []
+    for product in Product.query.filter_by(active=True).order_by(Product.display_order, Product.name):
+        try:
+            rule = _rule_for(product.id, business_date)
+        except SalesError:
+            # No packaging rule yet, so nothing can be counted in units for it.
+            continue
+        figures = resolve_vehicle_stock(profile, business_date, product.id, lines.get(product.id),
+                                        dispatch, adjustments)
+        products.append({
+            "id": product.id, "name": product.name,
+            "on_vehicle": product.id in on_vehicle,
+            "rule": {
+                "cartons_to_packs": rule.cartons_to_packs,
+                "packs_to_pieces": rule.packs_to_pieces,
+                "pieces_per_carton": rule.pieces_per_carton,
+                "pieces_per_pack": rule.pieces_per_pack,
+                "has_pack_tier": rule.has_pack_tier,
+            },
+            "units": ["carton", "pack", "piece"] if rule.has_pack_tier else ["carton", "piece"],
+            "previous_return": quantity_dict(figures["previous"], rule),
+            "issued_today": quantity_dict(figures["issued"], rule),
+        })
+    return {"business_date": business_date, "products": products}
 
 
 def invoice_total(invoice):
@@ -1009,47 +1134,159 @@ def debtors(profile_ids=None, as_of=None):
     return rows
 
 
-def set_closing_stock(day, payload, actor, elevated=False):
+def save_vehicle_stock(day, lines, actor, elevated=False, allow_new=True):
+    """Save the salesperson's own Vehicle Stock sheet for one day.
+
+    Each line is one product card: the unit it was counted in, plus Previous
+    Return, Given Stock, Total Stock and Return Today.  All four are the
+    salesperson's working figures and any of them may be corrected - it is
+    their own vehicle to reconcile, so no Manager approval is involved.
+
+    A correction is stored on TODAY's row (and audited).  Earlier days are read
+    from their own rows, so correcting today's Previous Return never rewrites
+    yesterday's counted return.
+
+    A product may be put on the vehicle here for the first time, and any active
+    product from the existing catalogue is eligible: a product added to the
+    catalogue later needs no frontend change.  ``allow_new=False`` keeps the
+    older single-product endpoint's rule that Return Today may only be saved
+    for a product the vehicle already has.
+    """
     if day.status == DAY_CLOSED:
         raise SalesError("A closed Sales Day must be reopened before it can be edited")
-    product = db.session.get(Product, payload.get("product_id"))
-    if product is None:
-        raise SalesError("product not found")
-    rule = _rule_for(product.id, day.business_date)
-    base_qty = unit_to_base(payload.get("quantity"), payload.get("unit"), rule) if payload.get("quantity") else 0
-    row = SalesVehicleClosingLine.query.filter_by(sales_day_id=day.id, product_id=product.id).first()
-    before = None if row is None else {"base_unit_qty": row.base_unit_qty}
-    rec = next((r for r in stock_reconciliation(day.profile, day.business_date)
-                if r["product_id"] == product.id), None)
-    if rec is None:
-        raise SalesError(f"{product.name} is not part of this vehicle's stock. "
-                         "Save its starting stock first.")
-    available = rec["available"]["base_unit_qty"] if rec["available"] else None
-    if available is None:
-        # The salesperson types the starting return themselves; nothing here
-        # needs a Manager's approval.
-        raise SalesError(f"Enter the starting stock for {product.name} first, then save today's return.")
-    if base_qty > available:
-        raise SalesError("Return today cannot exceed total stock.")
-    if row is None:
-        row = SalesVehicleClosingLine(sales_day_id=day.id, product_id=product.id, base_unit_qty=base_qty, packaging_rule_id=rule.id)
-        db.session.add(row)
-    else:
-        if row.base_unit_qty != base_qty:
-            reason = (payload.get("reason") or "").strip()
+    if not isinstance(lines, list) or not lines:
+        raise SalesError("Add at least one product to the vehicle stock.")
+    business_date = day.business_date
+    on_vehicle = {row["product_id"] for row in stock_reconciliation(day.profile, business_date)}
+    dispatch = dispatch_loads(day.profile, business_date)
+    adjustments = adjustment_loads(day.profile.id, business_date)
+    rows = {row.product_id: row for row in SalesVehicleClosingLine.query.filter_by(sales_day_id=day.id).all()}
+    # Validate every card before anything is written, so one bad line cannot
+    # leave half the sheet saved.
+    prepared, seen = [], set()
+    for item in lines:
+        if not isinstance(item, dict):
+            raise SalesError("Each vehicle stock card needs a product and a quantity.")
+        product = db.session.get(Product, item.get("product_id"))
+        if product is None:
+            raise SalesError("product not found")
+        if not product.active:
+            raise SalesError(f"{product.name} is not an active product.")
+        if product.id in seen:
+            # One card per product: two cards would split the same stock and
+            # the driver could never tell which one counts.
+            raise SalesError(f"{product.name} is already on the vehicle stock. Keep one card per product.")
+        seen.add(product.id)
+        if not allow_new and product.id not in on_vehicle:
+            raise SalesError(f"{product.name} is not part of this vehicle's stock. "
+                             "Add it to Vehicle stock first.")
+        rule = _rule_for(product.id, business_date)
+        unit = item.get("unit") or "carton"
+        if unit not in SALE_UNITS:
+            raise SalesError(f"unit must be one of {SALE_UNITS}")
+        row = rows.get(product.id)
+        # Older callers send quantity/unit (Return Today); the Vehicle Stock
+        # sheet sends all four figures explicitly.
+        previous = optional_base(item.get("previous_qty"), item.get("previous_unit") or unit, rule,
+                                 "Previous Return")
+        issued = optional_base(item.get("issued_qty"), item.get("issued_unit") or unit, rule, "Given Stock")
+        total = optional_base(item.get("total_qty"), item.get("total_unit") or unit, rule, "Total Stock")
+        returned = optional_base(item.get("return_qty", item.get("quantity")),
+                                 item.get("return_unit") or unit, rule, "Return Today")
+        figures = resolve_vehicle_stock(day.profile, business_date, product.id, row, dispatch, adjustments)
+        previous_working = figures["previous"] if previous is None else previous
+        if previous_working is None:
+            # Zero is never silently assumed for a vehicle that has never been
+            # counted: the salesperson says what they started with.
+            raise SalesError(f"Enter the starting stock (Previous Return) for {product.name} first: "
+                             "nothing has been counted for it on an earlier day.")
+        issued_working = figures["issued"] if issued is None else issued
+        total_working = total if total is not None else previous_working + issued_working
+        if returned is not None and returned > total_working:
+            raise SalesError(f"{product.name}: Return Today cannot exceed Total Stock "
+                             f"({_quantity_label(total_working, rule)}).")
+        prepared.append({
+            "product": product, "rule": rule, "row": row,
+            "previous": previous, "issued": issued, "total": total, "returned": returned,
+            "previous_default": figures["previous_derived"],
+            "issued_default": figures["issued_derived"],
+            "total_default": previous_working + issued_working,
+            "reason": (item.get("reason") or "").strip(),
+        })
+    saved = []
+    for card in prepared:
+        row, rule = card["row"], card["rule"]
+        # Keep a figure on "follow the system value" while it still equals it,
+        # so a corrected earlier day keeps carrying forward.  A different
+        # number is today's own correction and is stored as such.
+        previous_store = (None if card["previous"] is None or card["previous"] == card["previous_default"]
+                          else card["previous"])
+        issued_store = (None if card["issued"] is None or card["issued"] == card["issued_default"]
+                        else card["issued"])
+        total_store = (None if card["total"] is None or card["total"] == card["total_default"]
+                       else card["total"])
+        counted = card["returned"] is not None
+        base_qty = card["returned"] or 0
+        before = None if row is None else {
+            "base_unit_qty": row.base_unit_qty,
+            "previous_return_base_qty": row.previous_return_base_qty,
+            "issued_base_qty": row.issued_base_qty,
+            "total_stock_base_qty": row.total_stock_base_qty,
+            "return_counted": row.return_counted,
+        }
+        unchanged = row is not None and (
+            row.base_unit_qty == base_qty and row.return_counted == counted
+            and row.previous_return_base_qty == previous_store
+            and row.issued_base_qty == issued_store
+            and row.total_stock_base_qty == total_store
+        )
+        if unchanged:
+            saved.append(row)
+            continue
+        if row is None:
+            row = SalesVehicleClosingLine(sales_day_id=day.id, product_id=card["product"].id,
+                                          base_unit_qty=base_qty, packaging_rule_id=rule.id)
+            db.session.add(row)
+        else:
             if day.status != DAY_DRAFT and not elevated:
                 raise SalesError("A closed Sales Day must be reopened by a Manager or Super Administrator")
-            if elevated and not reason:
+            if elevated and not card["reason"]:
                 raise SalesError("A Manager/Super Administrator correction reason is required")
-            if reason:
+            if card["reason"]:
                 row.corrected_by = actor.id
-                row.correction_reason = reason
+                row.correction_reason = card["reason"]
         row.base_unit_qty = base_qty
+        row.return_counted = counted
+        row.previous_return_base_qty = previous_store
+        row.issued_base_qty = issued_store
+        row.total_stock_base_qty = total_store
         row.packaging_rule_id = rule.id
-    db.session.flush()
-    record_audit(actor, "correct" if before else "create", "sales_vehicle_closing", row.id,
-                 before=before, after={"base_unit_qty": base_qty, "reason": payload.get("reason")})
-    return row
+        db.session.flush()
+        record_audit(actor, "correct" if before else "create", "sales_vehicle_closing", row.id,
+                     before=before,
+                     after={"base_unit_qty": base_qty,
+                            "previous_return_base_qty": previous_store,
+                            "issued_base_qty": issued_store,
+                            "total_stock_base_qty": total_store,
+                            "return_counted": counted,
+                            "reason": card["reason"] or None})
+        saved.append(row)
+    return saved
+
+
+def set_closing_stock(day, payload, actor, elevated=False):
+    """Return Today for one product, through the same Vehicle Stock path.
+
+    Kept for the existing single-product and returns-today endpoints; the Daily
+    screen saves the whole sheet with ``save_vehicle_stock``.  An older caller
+    only ever supplies quantity/unit, so Return Today is always counted here.
+    """
+    quantity = payload.get("quantity")
+    line = dict(payload)
+    line["return_qty"] = quantity if quantity not in (None, "") else 0
+    line["return_unit"] = payload.get("unit") or payload.get("return_unit") or "carton"
+    line.setdefault("unit", payload.get("unit") or "carton")
+    return save_vehicle_stock(day, [line], actor, elevated=elevated, allow_new=False)[0]
 
 
 def save_returns_today(day, lines, actor, elevated=False):
