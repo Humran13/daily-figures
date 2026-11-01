@@ -21,12 +21,12 @@ from webapp.models.customer import CATEGORY_SALESPERSON, Customer
 from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
 from webapp.models.sales import (
-    SalesBaseline, SalesDay, SalesDebt, SalesDebtPayment, SalesExpense, SalesInvoice,
-    SalesOpeningStockLine, SalesProfile, SalesVehicleClosingLine,
+    SalesBaseline, SalesDay, SalesDebt, SalesDebtPayment, SalesDebtor, SalesExpense,
+    SalesInvoice, SalesOpeningStockLine, SalesProfile, SalesVehicleClosingLine,
 )
 from webapp.models.section import SECTION_SALES
 from webapp.models.user import ROLE_MANAGER, ROLE_OPERATOR, ROLE_VIEWER
-from webapp.services import section_access_service
+from webapp.services import sales_service, section_access_service
 
 
 def _grant(user):
@@ -401,3 +401,108 @@ def test_a_closed_day_cannot_be_saved_again(client, fd):
     assert second.status_code == 400
     assert "already closed" in second.get_json()["error"]
     assert _table_counts()["days"] == 1 and SalesInvoice.query.count() == 1
+
+
+# ---- A collection may never exceed what is still owed ------------------------
+def _credit_day(client, profile_id, product_id, date="2026-10-30", cartons=10, price=79_000):
+    """A day whose whole sale is credit, so the debtor owes exactly the sale."""
+    closed = _close(client, profile_id, date=date,
+                    lines=[_sheet(product_id, 50, 0, 50, 50 - cartons)],
+                    cards=[_card(product_id, (cartons, price))],
+                    debts=[{"name": "Darius", "amount_ugx": cartons * price}],
+                    actual_cash_count_ugx=0)
+    assert closed.status_code == 200, closed.get_json()
+    return closed
+
+
+def _balance(client, profile_id, date):
+    summary = client.get(f"/api/sales/days/{date}?sales_profile_id={profile_id}").get_json()
+    return [row["outstanding_ugx"] for row in summary["debtor_balances"]], summary
+
+
+def test_a_debtor_payment_cannot_exceed_the_remaining_balance(client, fd):
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+
+    # A. 790,000 owed, 400,000 paid on 31 October, so 390,000 remains.
+    _credit_day(client, profile_id, product_id)                       # 30 Oct
+    first = _close(client, profile_id, date="2026-10-31",
+                   lines=[_sheet(product_id, 40, 0, 40, 40)], cards=[],
+                   debt_payments=[{"name": "Darius", "amount_ugx": 400_000,
+                                   "payment_method": "cash"}],
+                   actual_cash_count_ugx=400_000)
+    assert first.status_code == 200, first.get_json()
+    assert [row["outstanding_ugx"] for row in first.get_json()["debtor_balances"]] == [390_000]
+
+    # B/E. 390,001 in cash and 750,000 by Mobile Money are both refused, and
+    # neither leaves a day, a payment, a receipt or any sales behind.
+    for method, amount, excess in (("cash", 390_001, "UGX 1"),
+                                   ("mobile_money", 750_000, "UGX 360,000")):
+        refused = _close(client, profile_id, date="2026-11-02",
+                         lines=[_sheet(product_id, 40, 0, 40, 40)], cards=[],
+                         debt_payments=[{"name": "Darius", "amount_ugx": amount,
+                                         "payment_method": method}],
+                         actual_cash_count_ugx=0)
+        assert refused.status_code == 400, refused.get_json()
+        assert "exceeds the outstanding balance by " + excess in refused.get_json()["error"]
+        assert SalesDay.query.filter_by(business_date="2026-11-02").count() == 0
+        assert SalesDebtPayment.query.count() == 1            # only the 400,000
+        outstanding, summary = _balance(client, profile_id, "2026-11-02")
+        assert outstanding == [390_000]                       # nothing was taken off
+        assert summary["day"] is None
+        assert summary["totals"]["total_sales_ugx"] == 0
+        assert summary["totals"]["old_debt_collections_ugx"] == 0
+        assert summary["totals"]["new_debt_ugx"] == 0
+
+    # C. Exactly the remaining 390,000 is accepted, and the debt is Paid.
+    paid = _close(client, profile_id, date="2026-11-02",
+                  lines=[_sheet(product_id, 40, 0, 40, 40)], cards=[],
+                  debt_payments=[{"name": "Darius", "amount_ugx": 390_000,
+                                  "payment_method": "mobile_money"}],
+                  actual_mobile_money_ugx=390_000, actual_cash_count_ugx=400_000)
+    assert paid.status_code == 200, paid.get_json()
+    assert paid.get_json()["debtor_balances"] == []
+    assert paid.get_json()["totals"]["old_debt_mobile_money_ugx"] == 390_000
+    assert sales_service.debtor_balance(SalesDebtor.query.one()) == 0
+    assert SalesDebtPayment.query.count() == 2
+
+    # D. Nothing is owed any more, so even one shilling is refused.
+    again = _close(client, profile_id, date="2026-11-03",
+                   lines=[_sheet(product_id, 40, 0, 40, 40)], cards=[],
+                   debt_payments=[{"name": "Darius", "amount_ugx": 1,
+                                   "payment_method": "cash"}],
+                   actual_cash_count_ugx=0)
+    assert again.status_code == 400
+    assert "exceeds the outstanding balance" in again.get_json()["error"]
+    assert SalesDay.query.filter_by(business_date="2026-11-03").count() == 0
+    assert SalesDebtPayment.query.count() == 2
+
+
+def test_a_close_day_with_an_excess_collection_rolls_back_everything(client, fd):
+    """F: the whole close is refused and no part of the attempted day survives."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    _credit_day(client, profile_id, product_id)                       # owes 790,000
+    before = _table_counts()
+
+    refused = _close(client, profile_id, date="2026-11-02",
+                     lines=[_sheet(product_id, 40, 0, 40, 39)],        # 1 carton sold
+                     cards=[_card(product_id, (1, 100_000))],
+                     expenses=[{"description": "Lunch", "amount_ugx": 10_000,
+                                "payment_method": "cash"}],
+                     debts=[{"name": "Musa", "amount_ugx": 20_000}],
+                     debt_payments=[{"name": "Darius", "amount_ugx": 800_000,
+                                     "payment_method": "cash"}],
+                     actual_cash_count_ugx=0)
+    assert refused.status_code == 400
+    assert "exceeds the outstanding balance" in refused.get_json()["error"]
+
+    after = _table_counts()
+    assert after == before, (before, after)                # day, line, card, expense, debt
+    assert SalesDebtPayment.query.count() == 0
+    assert SalesDebtor.query.filter_by(name="Musa").count() == 0
+    outstanding, summary = _balance(client, profile_id, "2026-11-02")
+    assert outstanding == [790_000]
+    assert summary["day"] is None
+    assert summary["totals"]["total_sales_ugx"] == 0
+    assert summary["expenses"] == [] and summary["debts"] == []

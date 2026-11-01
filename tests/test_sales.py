@@ -179,6 +179,8 @@ def test_a_full_day_is_stored_by_close_day(client, sales_setup):
     assert body["day"]["status"] == "closed"
     assert SalesDay.query.count() == 1
     assert SalesInvoice.query.count() == 2
+    # Closing is audited like every other Sales write.
+    assert AuditLog.query.filter_by(entity_type="sales_day", action="close").count() == 1
 
     # Reopening the date reproduces exactly what Close Day stored.
     assert _summary(client, s["profile"].id)["totals"] == totals
@@ -771,3 +773,198 @@ def test_reports_are_scoped_and_audited(client, sales_setup):
     assert foreign.status_code in (200, 403)
     if foreign.status_code == 200:
         assert "Lunch" not in foreign.data.decode()
+
+
+# ---- Coverage restored after the rewrite ------------------------------------
+# Each of these rules existed before the Close-Day refactor.  The old tests that
+# carried them were removed with the draft-persistence suite, so they are
+# restated here against the approved workflow.
+def test_total_stock_can_be_overridden_for_one_day(client, sales_setup):
+    """A physical Total Stock that disagrees with Previous + Given is allowed."""
+    s = sales_setup; _login(client, s["operator"])
+    closed = _close(client, s["profile"].id,
+                    lines=[_sheet(s["compact"].id, 50, 100, 145, 40),   # five short
+                           _sheet(s["napkin"].id, 10, 20, 30, 30)],
+                    cards=[_card(s["compact"].id, (105, 79_000))],
+                    actual_cash_count_ugx=105 * 79_000)
+    assert closed.status_code == 200, closed.get_json()
+    stock = _stock(closed.get_json(), s["compact"].id)
+    assert stock["total_stock"]["cartons"] == 145
+    assert stock["total_stock_default"]["cartons"] == 150
+    assert stock["total_overridden"] is True
+    assert stock["derived_sold"]["cartons"] == 105
+    assert stock["reconciled"] is True
+
+
+def test_a_product_cannot_appear_twice_on_the_vehicle(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    refused = _close(client, s["profile"].id,
+                     lines=[_sheet(s["compact"].id, 50, 100, 150, 40),
+                            _sheet(s["compact"].id, 50, 100, 150, 40)],
+                     cards=[], actual_cash_count_ugx=0)
+    assert refused.status_code == 400
+    assert "already on the vehicle stock" in refused.get_json()["error"]
+    assert SalesDay.query.count() == 0
+
+
+def test_a_card_must_price_everything_the_sheet_says_was_sold(client, sales_setup):
+    """An empty card while the stock says sold is refused, not silently balanced."""
+    s = sales_setup; _login(client, s["operator"])
+    refused = _close(client, s["profile"].id, lines=_acceptance_sheet(s),
+                     cards=[], actual_cash_count_ugx=0)
+    assert refused.status_code == 400
+    assert "stock says" in refused.get_json()["error"]
+    assert SalesDay.query.count() == 0
+
+
+def test_a_card_that_does_not_price_sold_today_is_refused_for_everyone(client, sales_setup):
+    """A card must price exactly what the sheet says was sold — no override.
+
+    The old screen let a Manager close with a stock-vs-sales mismatch and a
+    recorded reason.  Close Day is stricter: the card is refused before the day
+    is stored, for an operator and for a Manager, so a mismatch can never be
+    written in the first place.
+    """
+    s = sales_setup
+    cards = [_card(s["compact"].id, (100, 79_000)),          # 110 were sold
+             _card(s["napkin"].id, (25, 103_000))]
+    for user in (s["operator"], s["manager"]):
+        _login(client, user)
+        refused = _close(client, s["profile"].id, lines=_acceptance_sheet(s), cards=cards,
+                         actual_cash_count_ugx=10_475_000,
+                         override_reason="Ten cartons were damaged in the rain")
+        assert refused.status_code == 400, refused.get_json()
+        assert "the rows price 100 cartons but 110 cartons were sold" in refused.get_json()["error"]
+        assert SalesDay.query.count() == 0
+        assert SalesInvoice.query.count() == 0
+
+
+
+def test_an_opening_debt_is_historical_and_never_a_sale(client, sales_setup):
+    """A Manager's historical debt is collectable later and never current sales."""
+    s = sales_setup; _login(client, s["manager"])
+    created = client.post("/api/sales/opening-debts", json={
+        "sales_profile_id": s["profile"].id, "business_date": "2026-10-29",
+        "name": "Old Customer", "amount_ugx": 500_000, "idempotency_key": str(uuid4())})
+    assert created.status_code == 201, created.get_json()
+    assert created.get_json()["kind"] == "opening"
+    summary = sales_service.daily_summary(s["profile"], "2026-10-30")
+    assert summary["totals"]["total_sales_ugx"] == 0
+    assert summary["totals"]["new_debt_ugx"] == 0
+    assert [row["outstanding_ugx"] for row in summary["debtor_balances"]] == [500_000]
+    assert Customer.query.filter_by(name="Old Customer").count() == 0
+
+    # It is collected on the date the money arrives, through Close Day.
+    _login(client, s["operator"])
+    debtor_id = created.get_json()["debtor_id"]
+    closed = _close(client, s["profile"].id, lines=_acceptance_sheet(s),
+                    cards=_acceptance_cards(s),
+                    debt_payments=[{"debtor_id": debtor_id, "amount_ugx": 500_000,
+                                    "payment_method": "mobile_money"}],
+                    actual_mobile_money_ugx=500_000, actual_cash_count_ugx=11_280_000)
+    assert closed.status_code == 200, closed.get_json()
+    totals = closed.get_json()["totals"]
+    assert totals["total_sales_ugx"] == 11_280_000        # the collection is not a sale
+    assert totals["old_debt_mobile_money_ugx"] == 500_000
+    assert closed.get_json()["debtor_balances"] == []
+
+
+def test_correcting_a_closed_days_count_moves_only_that_day_and_later(client, sales_setup):
+    s = sales_setup; _login(client, s["manager"])
+    first = _close(client, s["profile"].id, lines=_acceptance_sheet(s),
+                   cards=_acceptance_cards(s), actual_cash_count_ugx=11_280_000)
+    assert first.status_code == 200, first.get_json()
+    assert client.post("/api/sales/days/2026-10-30/reopen",
+                       json={"sales_profile_id": s["profile"].id,
+                             "reason": "The return was 39, not 40"}).status_code == 200
+    corrected = client.put("/api/sales/days/2026-10-30/returns",
+                           json={"sales_profile_id": s["profile"].id,
+                                 "lines": [{"product_id": s["compact"].id,
+                                            "quantity": 39, "unit": "carton"}]})
+    assert corrected.status_code == 200, corrected.get_json()
+    # The sales that were already counted are not rewritten; only the count moves.
+    assert corrected.get_json()["totals"]["total_sales_ugx"] == 11_280_000
+    assert _stock(corrected.get_json(), s["compact"].id)["closing"]["cartons"] == 39
+    # ...and the next day opens from the corrected return.
+    tomorrow = _summary(client, s["profile"].id, "2026-10-31")
+    assert _stock(tomorrow, s["compact"].id)["previous_return"]["cartons"] == 39
+
+
+def test_the_carried_previous_return_can_be_corrected_for_one_day_only(client, sales_setup):
+    s = sales_setup; _login(client, s["operator"])
+    _closed_standard_day(client, s)
+    # The van actually carried 38: today says so, yesterday keeps its own count.
+    corrected = _close(client, s["profile"].id, date="2026-10-31",
+                       lines=[_sheet(s["compact"].id, 38, 0, 38, 38),
+                              _sheet(s["napkin"].id, 5, 0, 5, 5)],
+                       cards=[], actual_cash_count_ugx=11_280_000)
+    assert corrected.status_code == 200, corrected.get_json()
+    stock = _stock(corrected.get_json(), s["compact"].id)
+    assert stock["previous_return"]["cartons"] == 38
+    assert stock["previous_overridden"] is True
+    assert _stock(_summary(client, s["profile"].id), s["compact"].id)["closing"]["cartons"] == 40
+
+
+
+def test_reopening_a_closed_day_requires_a_reason_and_is_audited(client, sales_setup):
+    s = sales_setup; _login(client, s["manager"])
+    _closed_standard_day(client, s)
+    without = client.post("/api/sales/days/2026-10-30/reopen",
+                          json={"sales_profile_id": s["profile"].id})
+    assert without.status_code == 400
+    assert "reason" in without.get_json()["error"].lower()
+    assert _summary(client, s["profile"].id)["day"]["status"] == "closed"
+
+    reopened = client.post("/api/sales/days/2026-10-30/reopen",
+                           json={"sales_profile_id": s["profile"].id,
+                                 "reason": "Till slip was missing"})
+    assert reopened.status_code == 200
+    assert reopened.get_json()["day"]["status"] == "reopened"
+    audit = AuditLog.query.filter_by(entity_type="sales_day", action="reopen").one()
+    assert "Till slip was missing" in (audit.after_json or "")
+
+
+def test_expense_descriptions_are_remembered_for_later_days(client, sales_setup):
+    """History suggests descriptions, de-duplicated regardless of capitals."""
+    s = sales_setup; _login(client, s["operator"])
+    _closed_standard_day(client, s, expenses=[
+        {"description": "Lunch", "amount_ugx": 10_000, "payment_method": "cash"},
+        {"description": "LUNCH", "amount_ugx": 5_000, "payment_method": "cash"},
+        {"description": "Fahad", "amount_ugx": 20_000, "payment_method": "cash"},
+    ])
+    tomorrow = _summary(client, s["profile"].id, "2026-10-31")
+    assert tomorrow["expense_suggestions"] == ["Fahad", "LUNCH"]
+    # Nothing typed on an unfinished day becomes history before it is closed.
+    open_day = _summary(client, s["profile"].id, "2026-11-02")
+    assert "Fuel" not in open_day["expense_suggestions"]
+
+
+def test_stock_and_cash_adjustments_still_correct_a_saved_day(client, sales_setup):
+    """The audited exception path survives: Manager, reason, saved day only."""
+    s = sales_setup; _login(client, s["manager"])
+    _closed_standard_day(client, s)
+    assert client.post("/api/sales/days/2026-10-30/reopen",
+                       json={"sales_profile_id": s["profile"].id,
+                             "reason": "Stock was miscounted"}).status_code == 200
+    stock = client.post("/api/sales/stock-adjustments",
+                        json={"sales_profile_id": s["profile"].id,
+                              "business_date": "2026-10-30",
+                              "product_id": s["compact"].id, "direction": "remove",
+                              "quantity": 1, "unit": "carton", "reason": "Crushed"})
+    assert stock.status_code == 201, stock.get_json()
+    cash = client.post("/api/sales/cash-adjustments",
+                       json={"sales_profile_id": s["profile"].id,
+                             "business_date": "2026-10-30", "account": "cash",
+                             "amount_delta_ugx": -5_000, "reason": "Bank charges"})
+    assert cash.status_code == 201, cash.get_json()
+    summary = _summary(client, s["profile"].id)
+    assert _stock(summary, s["compact"].id)["manual_adjustment"]["base_unit_qty"] == -100
+    assert summary["totals"]["expected_cash_ugx"] == 11_280_000 - 5_000
+
+    # ...and refused on a date that was never closed.
+    unsaved = client.post("/api/sales/stock-adjustments",
+                          json={"sales_profile_id": s["profile"].id,
+                                "business_date": "2026-11-20",
+                                "product_id": s["compact"].id, "direction": "add",
+                                "quantity": 1, "unit": "carton", "reason": "Crushed"})
+    assert unsaved.status_code == 409
