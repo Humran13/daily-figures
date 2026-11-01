@@ -390,14 +390,21 @@ def vehicle_stock_options(date_str):
 @sales_bp.route("/days/<date_str>/products/<int:product_id>/sales", methods=["PUT"])
 @login_required
 def product_sales(date_str, product_id):
-    """Save one product's sales card (several price rows) in one action."""
+    """Save one product's sales card (several price rows) in one action.
+
+    The Vehicle stock sheet on screen may ride along as ``vehicle_stock``: the
+    card is then priced against the Sold Today the salesperson can see.  It is
+    validation context only and is never written here - Close day stores the
+    sheet, and re-checks this card against the figures it stores.
+    """
     if not _operational_writer(): return _error("This role cannot record sales", 403)
     data = request.get_json(silent=True) or {}
     profile, err = _profile_response(data.get("sales_profile_id"), write=True)
     if err: return err
     try:
         _require_editable_day(profile, date_str)
-        invoice, action = svc.save_product_sales(profile, date_str, product_id, data.get("rows"), current_user())
+        invoice, action = svc.save_product_sales(profile, date_str, product_id, data.get("rows"),
+                                                 current_user(), vehicle_stock=data.get("vehicle_stock"))
         db.session.commit()
         summary = svc.daily_summary(profile, date_str)
         summary["card"] = {"action": action, "invoice_id": invoice.id if invoice else None,
@@ -445,12 +452,12 @@ def close_day(date_str):
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
     if day is None: return _error("Create the Sales Day first")
     try:
-        # Closing the day is the Sales screen's one final save.  The Vehicle
-        # Stock sheet the salesperson can see is written first, through the same
-        # save_vehicle_stock() path the sheet has always used, and in this same
-        # transaction: the sold quantities Close Day checks are exactly the ones
-        # on screen, and a refused close rolls the sheet back too, so nothing is
-        # persisted twice and nothing typed is silently lost.
+        # Closing the day is the day's one save: the Vehicle Stock sheet on
+        # screen is written here and nowhere else, through the same
+        # save_vehicle_stock() path the sheet has always used, in this same
+        # transaction.  So the sold quantities validated below are exactly the
+        # ones the salesperson can see, the sales cards are checked against
+        # those stored figures, and a refused close writes nothing at all.
         if data.get("vehicle_stock") is not None and day.status != DAY_CLOSED:
             svc.save_vehicle_stock(day, data.get("vehicle_stock"), current_user(), elevated=_elevated())
             # save_vehicle_stock() adds rows by foreign key, so the day's loaded

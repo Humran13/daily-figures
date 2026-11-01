@@ -16,6 +16,15 @@ async function loginAsSalesOperator(page) {
 test('Salesperson reproduces the 30/10/2026 paper sheet alone', async ({ page }) => {
   await loginAsSalesOperator(page);
 
+  // Test 1 — nothing typed in Vehicle stock may reach the database except
+  // through Close day, so every non-GET request to the sheet is recorded.
+  const stockWrites = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/vehicle-stock') && request.method() !== 'GET') {
+      stockWrites.push(`${request.method()} ${request.url()}`);
+    }
+  });
+
   // Today's day is opened for the salesperson automatically and there is no
   // "who am I" selector: a driver only thinks about their own day.
   await expect(page.locator('#profileWrap')).toBeHidden();
@@ -100,6 +109,16 @@ test('Salesperson reproduces the 30/10/2026 paper sheet alone', async ({ page })
   const napkinCard = cards.filter({ hasText: 'Napkins Standard' });
   await expect(compactCard).toContainText('110 cartons sold today, from Vehicle stock');
   await expect(napkinCard).toContainText('25 cartons sold today, from Vehicle stock');
+  // Test 2 — the sheet is live before anything is saved: 150 − 17 = 133 sold,
+  // and 150 − 20 = 130 one keystroke later, on the card as well as the sheet.
+  await compactStock.locator('[data-stock-field="returned"]').fill('17');
+  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('133 cartons');
+  await expect(compactCard).toContainText('133 cartons sold today, from Vehicle stock');
+  await compactStock.locator('[data-stock-field="returned"]').fill('20');
+  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('130 cartons');
+  await expect(compactCard).toContainText('130 cartons sold today, from Vehicle stock');
+  await compactStock.locator('[data-stock-field="returned"]').fill('40');
+  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('110 cartons');
   await compactStock.locator('[data-stock-field="returned"]').fill('45');
   await expect(compactStock.locator('[data-stock-sold]')).toHaveText('105 cartons');
   await expect(compactCard).toContainText('105 cartons sold today, from Vehicle stock');
@@ -182,6 +201,19 @@ test('Salesperson reproduces the 30/10/2026 paper sheet alone', async ({ page })
   await expect(compactCard.locator('.price-row')).toHaveCount(2);
   // Total Sales is unchanged by saving: the same sale is never counted twice.
   await expect(page.locator('#summaryCards')).toContainText('UGX 8,700,000');
+  // Test 1 — the card was priced against the sheet on screen and the sheet
+  // itself was not written. The database still holds the day's untouched
+  // figures (Previous Return 50 as the system says, no return counted at all),
+  // no Vehicle stock request was made, and the typed figures stay on screen.
+  const storedAfterCardSave = await page.evaluate(async (date) => {
+    const day = await (await fetch(`/api/sales/days/${date}`)).json();
+    const row = day.stock.find((r) => r.product_name === 'Compact Standard');
+    return { closing: row.closing, previous: row.previous_return.cartons, counted: row.return_counted };
+  }, BUSINESS_DATE);
+  expect(storedAfterCardSave).toEqual({ closing: null, previous: 50, counted: false });
+  expect(stockWrites).toEqual([]);
+  await expect(compactStock.locator('[data-stock-field="previous"]')).toHaveValue('52');
+  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('40');
 
   // Napkins: 20 × 103,000 and 5 × 104,000 = UGX 2,580,000 for 25 cartons.
   await fillPriceRow(napkinCard, 0, 20, 103000);
@@ -289,12 +321,41 @@ test('Salesperson reproduces the 30/10/2026 paper sheet alone', async ({ page })
   await expect(nextStraw.locator('[data-stock-field="previous"]')).toHaveValue('12');
   await nextStraw.locator('[data-stock-field="returned"]').fill('12');
   await expect(nextStraw.locator('[data-stock-sold]')).toHaveText('0 pieces');
+  // Test 8 — at 375 x 812 the sheet still drives the figures live, nothing
+  // overflows, and the two controls that were removed stay removed.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
+    .toBeLessThanOrEqual(0);
+  await expect(page.locator('#soldList')).toHaveCount(0);
+  await expect(page.locator('.sold-row')).toHaveCount(0);
+  await expect(page.locator('#saveVehicleStock')).toHaveCount(0);
 
   await page.locator('#actualCash').fill('0');
   await Promise.all([
     page.waitForResponse(r => r.url().endsWith('/api/sales/days/2026-10-31') && r.request().method() === 'PATCH'),
     page.locator('#saveCounts').click(),
   ]);
+  // Test 4 — a close that fails writes nothing and keeps the sheet on screen.
+  // Compact carries 42 on the vehicle; saying 40 came back means stock says 2
+  // cartons sold while no card prices them, so the close is refused.
+  await nextCompact.locator('[data-stock-field="returned"]').fill('40');
+  await expect(nextCompact.locator('[data-stock-sold]')).toHaveText('2 cartons');
+  await Promise.all([
+    page.waitForResponse(r => r.url().endsWith('/close') && r.request().method() === 'POST'),
+    page.locator('#closeDay').click(),
+  ]);
+  await expect(page.locator('#message')).toContainText('stock says 2 cartons sold');
+  await expect(page.locator('#statusPill')).toHaveText('DRAFT');
+  const afterRefusedClose = await page.evaluate(async () => {
+    const day = await (await fetch('/api/sales/days/2026-10-31')).json();
+    const row = day.stock.find((r) => r.product_name === 'Compact Standard');
+    return { status: day.day.status, closing: row.closing, previous: row.previous_return.cartons };
+  });
+  expect(afterRefusedClose).toEqual({ status: 'draft', closing: null, previous: 40 });
+  // Nothing typed was lost and the day is still open: correct it and close.
+  await expect(nextCompact.locator('[data-stock-field="previous"]')).toHaveValue('42');
+  await expect(nextCompact.locator('[data-stock-field="returned"]')).toHaveValue('40');
+  await nextCompact.locator('[data-stock-field="returned"]').fill('42');
+  await expect(nextCompact.locator('[data-stock-sold]')).toHaveText('0 pieces');
   // Test F and Test G — Close day is the day's one save: it persists the sheet
   // that was typed (including today's corrected Previous Return) in the same
   // request, and yesterday's closed record is never touched.
@@ -331,4 +392,6 @@ test('Salesperson reproduces the 30/10/2026 paper sheet alone', async ({ page })
   await expect(closedCompact.locator('[data-stock-field="returned"]')).toHaveValue('40');
   await expect(closedCompact.locator('[data-stock-field="previous"]')).toHaveValue('52');
   await expect(closedCompact.locator('[data-stock-sold]')).toHaveText('110 cartons');
+  // Nothing in the whole session wrote the sheet outside Close day.
+  expect(stockWrites).toEqual([]);
 });

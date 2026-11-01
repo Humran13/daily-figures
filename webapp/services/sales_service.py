@@ -1383,7 +1383,69 @@ def product_sales_rows(profile_id, business_date, product_id):
     ]
 
 
-def save_product_sales(profile, business_date, product_id, rows, actor):
+def live_vehicle_stock(profile, business_date, lines):
+    """Sold Today taken from the Vehicle Stock sheet on the salesperson's screen.
+
+    A sales card has to price exactly the Sold Today the salesperson can see, but
+    the sheet is stored once - when the day is closed - so a card saved during
+    the day cannot read it back from the database.  This reads the submitted
+    figures the same way ``resolve_vehicle_stock`` reads a saved row, with the
+    same fallbacks, the same rounding and the same refusals, and writes nothing
+    at all.
+
+    Returns ``{product_id: {"rule", "total", "returned", "sold"}}`` in base units.
+    """
+    business_date = valid_date(business_date)
+    if not isinstance(lines, list) or not lines:
+        raise SalesError("Add at least one product to the vehicle stock.")
+    dispatch = dispatch_loads(profile, business_date)
+    adjustments = adjustment_loads(profile.id, business_date)
+    day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=business_date).first()
+    stored = {line.product_id: line for line in day.closing_lines} if day else {}
+    figures = {}
+    for item in lines:
+        if not isinstance(item, dict):
+            raise SalesError("Each vehicle stock card needs a product and a quantity.")
+        product = db.session.get(Product, item.get("product_id"))
+        if product is None:
+            raise SalesError("product not found")
+        if product.id in figures:
+            # One card per product: two cards would split the same stock.
+            raise SalesError(f"{product.name} is already on the vehicle stock. Keep one card per product.")
+        rule = _rule_for(product.id, business_date)
+        unit = item.get("unit") or "carton"
+        if unit not in SALE_UNITS:
+            raise SalesError(f"unit must be one of {SALE_UNITS}")
+        previous = optional_base(item.get("previous_qty"), item.get("previous_unit") or unit, rule,
+                                 "Previous Return")
+        issued = optional_base(item.get("issued_qty"), item.get("issued_unit") or unit, rule,
+                               "Given Stock")
+        total = optional_base(item.get("total_qty"), item.get("total_unit") or unit, rule,
+                              "Total Stock")
+        returned = optional_base(item.get("return_qty", item.get("quantity")),
+                                 item.get("return_unit") or unit, rule, "Return Today")
+        # A blank figure means "the day's own row still applies", exactly as
+        # save_vehicle_stock() treats it, so a half-typed sheet is validated
+        # against the same numbers it will be stored with.
+        working = resolve_vehicle_stock(profile, business_date, product.id,
+                                        stored.get(product.id), dispatch, adjustments)
+        previous_working = working["previous"] if previous is None else previous
+        if previous_working is None:
+            raise SalesError(f"Enter the starting stock (Previous Return) for {product.name} first: "
+                             "nothing has been counted for it on an earlier day.")
+        issued_working = working["issued"] if issued is None else issued
+        total_working = previous_working + issued_working if total is None else total
+        if returned is not None and returned > total_working:
+            raise SalesError(f"{product.name}: Return Today cannot exceed Total Stock "
+                             f"({_quantity_label(total_working, rule)}).")
+        figures[product.id] = {
+            "rule": rule, "total": total_working, "returned": returned,
+            "sold": None if returned is None else total_working - returned,
+        }
+    return figures
+
+
+def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_stock=None):
     """Save one product's sales card as a set of price rows.
 
     The card is authoritative for one product on one day.  It is replaced as a
@@ -1391,6 +1453,12 @@ def save_product_sales(profile, business_date, product_id, rows, actor):
     never be counted twice.  Quantities must add up to the stock sold exactly:
     an under- or over-priced card is refused with the difference spelled out
     rather than silently balanced.
+
+    ``vehicle_stock`` is the Vehicle Stock sheet the salesperson can see, sent
+    by the Sales screen so the card is priced against the Sold Today on screen
+    rather than a saved figure.  It is validated and never stored: Close Day is
+    the one action that writes the sheet, and it re-checks this card against the
+    figures it stores then.
     """
     business_date = valid_date(business_date)
     product = db.session.get(Product, product_id)
@@ -1401,17 +1469,30 @@ def save_product_sales(profile, business_date, product_id, rows, actor):
         raise SalesError("Create the Sales Day first.")
     if day.status == DAY_CLOSED:
         raise SalesError("A closed Sales Day must be reopened before it can be edited")
-    rec = next((r for r in stock_reconciliation(profile, business_date)
-                if r["product_id"] == product.id), None)
-    if rec is None:
-        raise SalesError(f"{product.name} is not part of this vehicle's stock for {business_date}.")
-    if rec["available"] is None:
-        raise SalesError(f"Save the starting stock for {product.name} first.")
-    if rec["derived_sold"] is None:
-        raise SalesError(f"Save the return today for {product.name} first, then its sold quantity is known.")
-    sold = rec["derived_sold"]["base_unit_qty"]
-    rule = (db.session.get(PackagingRule, rec["packaging_rule_id"])
-            if rec["packaging_rule_id"] else None) or _rule_for(product.id, business_date)
+    if vehicle_stock is not None:
+        # The Sales screen sends the sheet it is showing, so the card is priced
+        # against the Sold Today on screen.  Nothing is written here: Close Day
+        # stores the sheet and re-checks this card against those figures, so the
+        # rule that a card must price exactly what was sold is never weakened.
+        live = live_vehicle_stock(profile, business_date, vehicle_stock).get(product.id)
+        if live is None:
+            raise SalesError(f"{product.name} is not part of this vehicle's stock for {business_date}.")
+        sold, rule = live["sold"], live["rule"]
+        if sold is None:
+            raise SalesError(f"Enter the return today for {product.name} first, "
+                             "then its sold quantity is known.")
+    else:
+        rec = next((r for r in stock_reconciliation(profile, business_date)
+                    if r["product_id"] == product.id), None)
+        if rec is None:
+            raise SalesError(f"{product.name} is not part of this vehicle's stock for {business_date}.")
+        if rec["available"] is None:
+            raise SalesError(f"Save the starting stock for {product.name} first.")
+        if rec["derived_sold"] is None:
+            raise SalesError(f"Save the return today for {product.name} first, then its sold quantity is known.")
+        sold = rec["derived_sold"]["base_unit_qty"]
+        rule = (db.session.get(PackagingRule, rec["packaging_rule_id"])
+                if rec["packaging_rule_id"] else None) or _rule_for(product.id, business_date)
     if not isinstance(rows, list):
         raise SalesError("rows must be a list of price rows")
     parsed = []

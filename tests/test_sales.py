@@ -635,9 +635,16 @@ def _save_returns(client, profile_id, lines, date="2026-10-30"):
                       json={"sales_profile_id": profile_id, "lines": lines})
 
 
-def _save_card(client, profile_id, product_id, rows, date="2026-10-30"):
-    return client.put(f"/api/sales/days/{date}/products/{product_id}/sales",
-                      json={"sales_profile_id": profile_id, "rows": rows})
+def _save_card(client, profile_id, product_id, rows, date="2026-10-30", vehicle_stock=None):
+    """Save one sales card.
+
+    ``vehicle_stock`` is the sheet the Sales screen is showing: it is sent as the
+    context a card is priced against, and is never stored by this request.
+    """
+    body = {"sales_profile_id": profile_id, "rows": rows}
+    if vehicle_stock is not None:
+        body["vehicle_stock"] = vehicle_stock
+    return client.put(f"/api/sales/days/{date}/products/{product_id}/sales", json=body)
 
 
 def _day_summary(client, profile_id, date="2026-10-30"):
@@ -1527,3 +1534,211 @@ def test_third_catalogue_product_reaches_its_own_sales_card(client, sales_setup)
                       [{"quantity": 133, "unit": "carton", "unit_price_ugx": 79_000}]).status_code == 200
     totals = _day_summary(client, s["profile"].id)["totals"]
     assert totals["total_sales_ugx"] == 24 * 5_000 + 133 * 79_000
+
+
+# ---- Save everything at once ------------------------------------------------
+# The Vehicle stock sheet is the salesperson's working paper on screen.  It is
+# validated as often as needed, and stored exactly once: by Close day.
+
+def _closed_lines(date="2026-10-30"):
+    return (SalesVehicleClosingLine.query.join(SalesDay)
+            .filter(SalesDay.business_date == date).all())
+
+
+def _close_day(client, profile_id, lines=None, date="2026-10-30", **extra):
+    body = {"sales_profile_id": profile_id, **extra}
+    if lines is not None:
+        body["vehicle_stock"] = lines
+    return client.post(f"/api/sales/days/{date}/close", json=body)
+
+
+def test_saving_a_sales_card_never_persists_the_vehicle_stock_sheet(client, sales_setup):
+    """A card is priced against the sheet on screen; the sheet is not written.
+
+    Total Stock 150 less Return Today 17 is 133 sold, so the card can price 133
+    cartons with nothing saved first.  Correcting Return Today to 20 makes it
+    130 and the card follows in the same way.  The database keeps the day's
+    untouched figures throughout: Close day is the only write.
+    """
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    sheet = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+             "issued_qty": 100, "total_qty": 150, "return_qty": 17}
+    saved = _save_card(client, s["profile"].id, s["compact"].id,
+                       [{"quantity": 133, "unit": "carton", "unit_price_ugx": 79_000}],
+                       vehicle_stock=[sheet])
+    assert saved.status_code == 200, saved.get_json()
+    assert saved.get_json()["card"]["action"] == "created"
+    assert saved.get_json()["totals"]["total_sales_ugx"] == 133 * 79_000
+
+    # Nothing about Vehicle stock reached the database.
+    after = _day_summary(client, s["profile"].id)
+    row = _stock_row(after, s["compact"].id)
+    assert row["closing"] is None and row["return_counted"] is False
+    assert row["previous_return"]["cartons"] == 50      # the system figure, not 52
+    assert row["total_stock"]["cartons"] == 150
+    assert row["derived_sold"] is None
+    assert _closed_lines() == []
+
+    # 150 less 20 is 130 sold: the live sheet prices the card again, and again
+    # nothing is stored.
+    repriced = _save_card(client, s["profile"].id, s["compact"].id,
+                          [{"quantity": 130, "unit": "carton", "unit_price_ugx": 79_000}],
+                          vehicle_stock=[{**sheet, "return_qty": 20}])
+    assert repriced.status_code == 200, repriced.get_json()
+    assert repriced.get_json()["card"]["action"] == "created"
+    assert repriced.get_json()["totals"]["total_sales_ugx"] == 130 * 79_000
+    still = _day_summary(client, s["profile"].id)
+    assert _stock_row(still, s["compact"].id)["closing"] is None
+    assert _stock_row(still, s["compact"].id)["previous_return"]["cartons"] == 50
+    assert _closed_lines() == []
+
+
+
+def test_a_card_is_refused_when_it_does_not_price_the_live_sold_quantity(client, sales_setup):
+    """The rule is unchanged: rows must price exactly the Sold Today on screen."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    sheet = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+             "issued_qty": 100, "total_qty": 150, "return_qty": 17}
+    over = _save_card(client, s["profile"].id, s["compact"].id,
+                      [{"quantity": 150, "unit": "carton", "unit_price_ugx": 79_000}],
+                      vehicle_stock=[sheet])
+    assert over.status_code == 400
+    assert "but only 133 cartons were sold" in over.get_json()["error"]
+    under = _save_card(client, s["profile"].id, s["compact"].id,
+                       [{"quantity": 100, "unit": "carton", "unit_price_ugx": 79_000}],
+                       vehicle_stock=[sheet])
+    assert under.status_code == 400
+    assert "remaining 33 cartons" in under.get_json()["error"]
+    # A refusal writes neither a sale nor any part of the sheet.
+    assert SalesInvoice.query.filter_by(sales_profile_id=s["profile"].id).count() == 0
+    assert _closed_lines() == []
+    # A sheet that cannot describe a sold quantity is refused before pricing too.
+    invalid = _save_card(client, s["profile"].id, s["compact"].id,
+                         [{"quantity": 133, "unit": "carton", "unit_price_ugx": 79_000}],
+                         vehicle_stock=[{**sheet, "return_qty": 151}])
+    assert invalid.status_code == 400
+    assert "Return Today cannot exceed Total Stock" in invalid.get_json()["error"]
+    assert SalesInvoice.query.filter_by(sales_profile_id=s["profile"].id).count() == 0
+
+
+def test_close_day_saves_the_sheet_and_the_cards_in_one_action(client, sales_setup):
+    """Close day persists the sheet, derives Sold Today from it and closes.
+
+    Both cards were priced while the sheet was still on screen and nothing was
+    stored; the close request carries the complete sheet and commits it with the
+    day, so a reload reproduces every figure exactly.
+    """
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    compact = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+               "issued_qty": 100, "total_qty": 150, "return_qty": 17}
+    napkin = {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+              "issued_qty": 20, "return_qty": 5}
+    assert _save_card(client, s["profile"].id, s["compact"].id,
+                      [{"quantity": 133, "unit": "carton", "unit_price_ugx": 79_000}],
+                      vehicle_stock=[compact, napkin]).status_code == 200
+    assert _save_card(client, s["profile"].id, s["napkin"].id,
+                      [{"quantity": 25, "unit": "carton", "unit_price_ugx": 103_000}],
+                      vehicle_stock=[compact, napkin]).status_code == 200
+    assert _closed_lines() == []
+    total = 133 * 79_000 + 25 * 103_000
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={"sales_profile_id": s["profile"].id,
+                              "actual_cash_count_ugx": total}).status_code == 200
+
+    closed = _close_day(client, s["profile"].id, [compact, napkin])
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert body["day"]["status"] == "closed"
+    assert _stock_row(body, s["compact"].id)["previous_return"]["cartons"] == 52
+    assert _stock_row(body, s["compact"].id)["total_stock"]["cartons"] == 150
+    assert _stock_row(body, s["compact"].id)["closing"]["cartons"] == 17
+    assert _stock_row(body, s["compact"].id)["derived_sold"]["cartons"] == 133
+    assert _stock_row(body, s["napkin"].id)["derived_sold"]["cartons"] == 25
+    assert body["totals"]["total_sales_ugx"] == total
+
+    # Reloading reproduces exactly what was closed, from the stored sheet.
+    reloaded = _day_summary(client, s["profile"].id)
+    assert reloaded["day"]["status"] == "closed"
+    assert _stock_row(reloaded, s["compact"].id)["previous_return"]["cartons"] == 52
+    assert _stock_row(reloaded, s["compact"].id)["closing"]["cartons"] == 17
+    assert _stock_row(reloaded, s["napkin"].id)["total_stock"]["cartons"] == 30
+    assert _stock_row(reloaded, s["napkin"].id)["derived_sold"]["cartons"] == 25
+
+
+def test_a_close_refused_for_a_card_mismatch_writes_nothing(client, sales_setup):
+    """A genuine validation failure keeps the day open and the sheet unwritten."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    # Sold Today 25 on screen, and the card is priced for those 25 cartons.
+    compact = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+               "issued_qty": 100, "total_qty": 150, "return_qty": 125}
+    napkin = {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+              "issued_qty": 20, "return_qty": 30}
+    assert _save_card(client, s["profile"].id, s["compact"].id,
+                      [{"quantity": 25, "unit": "carton", "unit_price_ugx": 79_000}],
+                      vehicle_stock=[compact, napkin]).status_code == 200
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={"sales_profile_id": s["profile"].id,
+                              "actual_cash_count_ugx": 25 * 79_000}).status_code == 200
+
+    # The sheet submitted at Close day no longer agrees with the priced card:
+    # 150 less 120 is 30 sold, but only 25 were priced.
+    refused = _close_day(client, s["profile"].id, [{**compact, "return_qty": 120}, napkin])
+    assert refused.status_code == 400
+    error = refused.get_json()["error"]
+    assert "Compact Standard" in error and "difference" in error
+    assert "Correct the count or the sales before closing." in error
+    # The day is still open and nothing from the attempt was written.
+    after = _day_summary(client, s["profile"].id)
+    assert after["day"]["status"] == "draft"
+    row = _stock_row(after, s["compact"].id)
+    assert row["closing"] is None and row["return_counted"] is False
+    assert row["previous_return"]["cartons"] == 50      # not the 52 that was typed
+    assert row["total_stock"]["cartons"] == 150
+    assert _closed_lines() == []
+
+    # The corrected sheet closes, and then it is stored.
+    fixed = _close_day(client, s["profile"].id, [compact, napkin])
+    assert fixed.status_code == 200, fixed.get_json()
+    assert fixed.get_json()["day"]["status"] == "closed"
+    assert _stock_row(_day_summary(client, s["profile"].id),
+                      s["compact"].id)["closing"]["cartons"] == 125
+    assert len(_closed_lines()) == 2
+
+
+def test_a_catalogue_product_reaches_its_card_and_the_close_with_no_stock_save(client, sales_setup):
+    """Straws is in no code and in no saved sheet - only on the screen."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    straws = _add_straws(s)
+    compact = {"product_id": s["compact"].id, "unit": "carton", "previous_qty": 52,
+               "issued_qty": 100, "total_qty": 150, "return_qty": 150}
+    napkin = {"product_id": s["napkin"].id, "unit": "carton", "previous_qty": 10,
+              "issued_qty": 20, "return_qty": 30}
+    straw = {"product_id": straws.id, "unit": "carton", "previous_qty": 0,
+             "issued_qty": 26, "return_qty": 2}
+    priced = _save_card(client, s["profile"].id, straws.id,
+                        [{"quantity": 24, "unit": "carton", "unit_price_ugx": 5_000}],
+                        vehicle_stock=[compact, napkin, straw])
+    assert priced.status_code == 200, priced.get_json()
+    assert priced.get_json()["totals"]["total_sales_ugx"] == 24 * 5_000
+    # Straws has no stored row anywhere yet: only the sale it just priced is in
+    # the database, so the day still shows its own system figures for it.
+    assert _closed_lines() == []
+    untyped = _stock_row(_day_summary(client, s["profile"].id), straws.id)
+    assert untyped["total_stock"]["cartons"] == 0        # not the 26 on screen
+    assert untyped["derived_sold"] is None
+
+    assert client.patch("/api/sales/days/2026-10-30",
+                        json={"sales_profile_id": s["profile"].id,
+                              "actual_cash_count_ugx": 24 * 5_000}).status_code == 200
+    closed = _close_day(client, s["profile"].id, [compact, napkin, straw])
+    assert closed.status_code == 200, closed.get_json()
+    stored = _stock_row(_day_summary(client, s["profile"].id), straws.id)
+    assert stored["total_stock"]["cartons"] == 26
+    assert stored["closing"]["cartons"] == 2
+    assert stored["derived_sold"]["cartons"] == 24
+    assert len(_closed_lines()) == 3

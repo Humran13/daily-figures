@@ -114,7 +114,7 @@ function renderOpeningNotice(){
 // Given Stock, Total Stock and Return Today are all editable: they are the
 // driver's own physical figures. Sold Today is the only calculated value.
 // Nothing here is hard-coded - the products come from the database.
-let stockCards=[],stockKey='',stockOptions=null,stockDirty=false;
+let stockCards=[],stockKey='',stockOptions=null;
 const NO_RULE={pieces_per_carton:1,pieces_per_pack:0,has_pack_tier:false};
 function stockRule(card){return (card&&card.rule)||NO_RULE;}
 function unitFactor(unit,rule){
@@ -163,7 +163,7 @@ function liveFigures(productId){
 function syncStockDrafts(){
   const key=`${profileId()}|${dateVal()}`;
   if(key===stockKey)return;
-  stockKey=key;stockOptions=null;stockDirty=false;
+  stockKey=key;stockOptions=null;
   stockCards=((current&&current.stock)||[]).map(row=>{
     const rule=row.rule||NO_RULE;
     const previous=(row.previous_return||{}).base_unit_qty;
@@ -515,9 +515,9 @@ function bindStockEvents(){
       if(box)box.value=card.total;
     }
     if(field==='total')card.totalTouched=true;
-    stockDirty=true;
     // One edit here repaints Sold Today, this product's sales card and the
-    // page totals.  No server round trip, no save button.
+    // page totals.  No server round trip, no save button, and nothing is
+    // written: the sheet is committed once, at Close day.
     updateLive();
   });
   list.addEventListener('change',e=>{
@@ -564,7 +564,6 @@ function chooseStockProduct(index,value){
   card.previous=previous==null?'':String(previous/unitFactor(card.unit,rule));
   card.issued=issued==null?'':String(issued/unitFactor(card.unit,rule));
   card.total=autoTotal(card);card.totalTouched=false;card.returned='';
-  stockDirty=true;
   // A product added from the catalogue gets its own sales card immediately -
   // nothing has to be saved first.
   renderStock();
@@ -582,47 +581,60 @@ function changeStockUnit(index,unit){
     const base=Number(card[field])*from;
     card[field]=to&&base%to===0?String(base/to):'';
   });
-  stockDirty=true;
   renderStock();
   updateLive();
 }
 
 // ---- One persistence flow -------------------------------------------------
-// Vehicle stock is never written by a keystroke and there is no stock-only save
-// button.  The sheet on screen rides along with the day's own actions: saving a
-// sales card sends the current figures first (the card must price exactly what
-// Vehicle stock says) and Close day carries the sheet inside the same request,
-// so the server always validates the numbers the salesperson can see.
+// SAVE EVERYTHING AT ONCE.  The Vehicle Stock sheet is never written by a
+// keystroke, by a card save and there is no stock-only save button.  It lives on
+// screen while the day is open and is stored in exactly one place: Close day,
+// which sends the complete sheet with the day and commits the two together.
+// Saving a sales card sends the sheet only as the context that says how many
+// units were sold, so the card can be priced against the live Sold Today
+// without anything being committed.
+function stockLineValues(card){
+  // One card's four figures in the shape the server reads, or the first thing
+  // the salesperson has to fix.
+  const numbers={};let problem='';
+  ['previous','issued','total','returned'].forEach(field=>{
+    if(card[field]===''){numbers[field]=null;return;}
+    const value=Number(card[field]);
+    if(!Number.isFinite(value)||!Number.isInteger(value)||value<0){
+      problem=problem||`${card.name}: every quantity must be a whole number of zero or more.`;return;
+    }
+    numbers[field]=value;
+  });
+  return {numbers,problem};
+}
+function stockLineFor(productId){
+  // The live Sold Today one product's Sales Card is priced against.  It travels
+  // with the card save as context only: nothing is persisted until Close day.
+  const card=stockCardFor(productId);
+  if(!card||!card.productId)throw new Error('Choose the product in Vehicle stock first.');
+  if(['previous','issued','total','returned'].every(field=>card[field]===''))
+    throw new Error(`${card.name}: fill in Vehicle stock first - there is no sold quantity to price yet.`);
+  const {numbers,problem}=stockLineValues(card);
+  if(problem)throw new Error(problem);
+  if(!cardFigures(card).valid)throw new Error('Return Today cannot be greater than Total Stock.');
+  return {product_id:card.productId,unit:card.unit,previous_qty:numbers.previous,
+    issued_qty:numbers.issued,total_qty:numbers.total,return_qty:numbers.returned};
+}
 function stockPayload(){
+  // The complete sheet, exactly as it stands on screen.  Sent only by Close day.
   const lines=[];let problem='';
   stockCards.forEach(card=>{
     if(!card.productId)return;                          // nothing chosen, nothing to save
     if(['previous','issued','total','returned'].every(field=>card[field]===''))return;
-    const numbers={};
-    ['previous','issued','total','returned'].forEach(field=>{
-      if(card[field]===''){numbers[field]=null;return;}
-      const value=Number(card[field]);
-      if(!Number.isFinite(value)||!Number.isInteger(value)||value<0){
-        problem=problem||`${card.name}: every quantity must be a whole number of zero or more.`;return;
-      }
-      numbers[field]=value;
-    });
-    lines.push({product_id:card.productId,unit:card.unit,previous_qty:numbers.previous,
-      issued_qty:numbers.issued,total_qty:numbers.total,return_qty:numbers.returned});
+    const values=stockLineValues(card);
+    problem=problem||values.problem;
+    lines.push({product_id:card.productId,unit:card.unit,previous_qty:values.numbers.previous,
+      issued_qty:values.numbers.issued,total_qty:values.numbers.total,return_qty:values.numbers.returned});
   });
   if(!problem&&stockCards.some(card=>card.invalid))problem='Return Today cannot be greater than Total Stock.';
   if(problem)throw new Error(problem);
   if(!lines.length)throw new Error('Add at least one product to the vehicle stock.');
   return lines;
-}
-async function flushVehicleStock(){
-  // Only ever called by an existing save action - never by typing.
-  if(!stockDirty||!current||!current.day||current.day.status==='closed')return false;
-  const lines=stockPayload();
-  current=await api(`/api/sales/days/${dateVal()}/vehicle-stock`,{method:'PUT',
-    body:JSON.stringify({sales_profile_id:profileId(),lines})});
-  stockDirty=false;
-  return true;
 }
 async function saveCard(productId,button){
   await withBusy(button,async()=>{
@@ -637,11 +649,16 @@ async function saveCard(productId,button){
       if(!Number.isFinite(price)||price<=0){msg(`${name}: every row needs a selling price greater than zero.`);return;}
       rows.push({quantity,unit:line.unit||'carton',unit_price_ugx:price});
     }
+    let stock;
     try{
-      // The server prices this card against Vehicle stock, so the sheet on
-      // screen is written first - inside this same action, never per keystroke.
-      await flushVehicleStock();
-      current=await api(`/api/sales/days/${dateVal()}/products/${productId}/sales`,{method:'PUT',body:JSON.stringify({sales_profile_id:profileId(),rows})});
+      stock=stockLineFor(productId);
+    }catch(e){msg(e.message);return;}
+    try{
+      // The server prices this card against the Sold Today on screen, which
+      // travels with the request.  Saving a card never commits Vehicle stock:
+      // the whole day, sheet included, is saved once at Close day.
+      current=await api(`/api/sales/days/${dateVal()}/products/${productId}/sales`,{method:'PUT',
+        body:JSON.stringify({sales_profile_id:profileId(),rows,vehicle_stock:[stock]})});
       delete drafts[productId];
       render();
       msg(rows.length?`${name} sales card saved.`:`${name} sales card cleared.`,true);
@@ -668,15 +685,17 @@ async function closeDay(){
   const path=`/api/sales/days/${dateVal()}/close`;
   let lines;
   try{
-    // Closing the day is the day's one final save: the Vehicle stock sheet on
-    // screen is part of the same request, so nothing typed there is lost and
-    // nothing is persisted twice. A refused close writes nothing at all.
+    // Save everything at once.  Close day is the day's only save: the complete
+    // Vehicle stock sheet on screen goes in this single request, the server
+    // stores it, derives Sold Today from it, checks every sales card against
+    // those figures and closes the day in one transaction.  A refused close
+    // writes nothing and leaves every typed figure on screen to correct.
     lines=stockPayload();
   }catch(e){msg(e.message);return;}
   const body={sales_profile_id:profileId(),vehicle_stock:lines};
   try{
     current=await api(path,{method:'POST',body:JSON.stringify(body)});
-    stockKey='';stockDirty=false;
+    stockKey='';
     render();msg('Day closed.',true);
   }catch(e){
     if(meta.can_manage&&/override/i.test(e.message)){
@@ -684,7 +703,7 @@ async function closeDay(){
       if(!reason||!reason.trim())return;
       try{
         current=await api(path,{method:'POST',body:JSON.stringify({...body,override_reason:reason.trim()})});
-        stockKey='';stockDirty=false;
+        stockKey='';
         render();msg('Day closed with a recorded Manager override.',true);
       }catch(err){msg(err.message);}
       return;
