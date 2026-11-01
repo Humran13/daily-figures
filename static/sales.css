@@ -6,12 +6,12 @@
 .tag.ok{background:#e7f6ec;color:var(--green)}.tag.warn{background:#fdf1d6;color:var(--amber)}
 .starting-form{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;align-items:end}.starting-form .start-label{flex:1 1 100%;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--amber)}.starting-form input{width:110px}.starting-form select{width:120px}
 .sales-card{border:1px solid var(--line);border-radius:12px;padding:12px;background:#fcfdfd}.card-head{display:flex;justify-content:space-between;gap:10px;align-items:start;flex-wrap:wrap}.card-head strong{font-size:16px}.card-head small{display:block;color:var(--soft);margin-top:2px}
-.price-rows{display:grid;gap:10px;margin:10px 0}.price-row{display:grid;grid-template-columns:minmax(72px,1fr) minmax(96px,1fr) minmax(120px,1.4fr) auto auto;gap:8px;align-items:end;border-top:1px dashed var(--line);padding-top:9px}.price-row label{font-size:11px}.row-value{font-variant-numeric:tabular-nums;align-self:center;font-size:14px;font-weight:700;white-space:nowrap}.price-row [data-card-remove]{min-height:44px;padding:6px 10px;width:auto}
+.price-rows{display:grid;gap:10px;margin:10px 0}.price-row{display:grid;grid-template-columns:minmax(84px,1fr) minmax(130px,1.4fr) auto auto;gap:8px;align-items:end;border-top:1px dashed var(--line);padding-top:9px}.price-row label{font-size:11px}.row-value{font-variant-numeric:tabular-nums;align-self:center;font-size:14px;font-weight:700;white-space:nowrap}.price-row [data-card-remove]{min-height:44px;padding:6px 10px;width:auto}
 .card-status{margin:6px 0 0;font-size:13px;font-weight:800}.card-status.ok{color:var(--green)}.card-status.warn{color:var(--amber)}.card-status.bad{color:var(--red)}.card-status.off{color:var(--soft);font-weight:600}
 .card-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.card-actions button{min-height:44px;flex:1 1 46%}
 .sticky-actions{flex-wrap:wrap}.sticky-actions button{flex:1 1 46%;min-height:46px}
 .cash-equation{margin:0 0 6px;color:var(--soft);font-size:12px;font-variant-numeric:tabular-nums}
-@media(max-width:560px){.price-row{grid-template-columns:1fr 1fr}.price-row .price-amount{grid-column:1/3}.price-row .row-value{justify-self:start}.price-row [data-card-remove]{justify-self:end}.card-actions button,.sticky-actions button{flex:1 1 100%}}
+@media(max-width:560px){.price-row{grid-template-columns:1fr 1fr}.price-row .price-qty,.price-row .price-amount{grid-column:1/3}.price-row .row-value{justify-self:start}.price-row [data-card-remove]{justify-self:end}.card-actions button,.sticky-actions button{flex:1 1 100%}}
 .datum strong.short{color:var(--red)}
 /* Step 1 — Vehicle stock: one editable card per product on the vehicle. */
 .stock-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
@@ -32,3 +32,16 @@
 .datum strong.short{color:var(--red)}
 .vstock-error{margin:0;color:var(--red);font-size:12px;font-weight:750}
 @media(max-width:560px){.vstock-grid{grid-template-columns:1fr 1fr}.vstock-unit{flex:1 1 100%}.stock-actions button{flex:1 1 100%}}
+/* One compact X, shared by the extra Vehicle stock card and an expense row:
+   the same square target and look as the Sales Card's price-row remove. */
+.row-remove{min-height:44px;min-width:44px;padding:0 10px;border:1px solid #bac6c2;border-radius:8px;background:#fff;color:var(--ink);font-size:20px;font-weight:700;line-height:1;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+.row-remove:hover{background:#fdecea;border-color:#e3a5a0;color:var(--red)}
+.row-remove:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.vstock-flags{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.row-tail{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.row-tail strong{font-variant-numeric:tabular-nums}
+/* Previous expense descriptions, shown only while something is being typed. */
+.suggest-list{display:flex;flex-wrap:wrap;gap:6px;margin:-2px 0 8px}
+.suggest-chip{min-height:36px;padding:6px 12px;border-radius:99px;border:1px solid #cfe5e1;background:#eff8f6;color:var(--teal2);font-weight:750;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.suggest-chip:hover{background:#e1f2ef}
+@media(max-width:560px){.row-remove{min-width:44px}.suggest-chip{flex:0 1 auto}}

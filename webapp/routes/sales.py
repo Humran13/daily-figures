@@ -463,6 +463,14 @@ def close_day(date_str):
             # save_vehicle_stock() adds rows by foreign key, so the day's loaded
             # collection must be re-read before Close Day inspects the returns.
             db.session.expire(day, ["closing_lines"])
+        if data.get("sales_cards") is not None and day.status != DAY_CLOSED:
+            # The Sales Cards are browser state until now: Close day stores the
+            # price rows the salesperson is showing, priced against the same
+            # sheet, in this same transaction.  One card per product, checked
+            # against Sold Today exactly like a per-card save always was.
+            svc.save_sales_cards(profile, date_str, data.get("sales_cards"), current_user(),
+                                 vehicle_stock=data.get("vehicle_stock"))
+            db.session.flush()
         svc.close_day(day, current_user(), data.get("override_reason"), elevated=_elevated())
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
     except svc.SalesError as exc:

@@ -5,6 +5,7 @@ re-derived from immutable/safely-voided source rows on every read, which makes
 historical corrections propagate without rewriting unrelated transactions.
 """
 from datetime import date, datetime, time
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
 
 from sqlalchemy import func, or_
@@ -23,7 +24,6 @@ from webapp.models.sales import (
 )
 from webapp.services.audit_service import record_audit
 from webapp.services.business_calendar import business_today, utcnow
-from webapp.services.packaging import from_base_units
 
 
 class SalesError(ValueError):
@@ -89,30 +89,113 @@ def unit_to_base(quantity, unit, rule):
     return quantity
 
 
+# ---- Quantities -------------------------------------------------------------
+# Stock counts are whole base units.  A sales card, however, may price a part
+# of a unit ("0.5 cartons", "0.25", "1.5"), so card rows carry an exact
+# three-decimal Decimal instead of a float: comparing a card against Sold Today
+# must never depend on binary rounding.
+QTY_STEP = Decimal("0.001")
+
+
+def as_quantity(value, field="quantity", *, positive=False):
+    """One card quantity as an exact three-decimal Decimal.
+
+    A sales card may price a part of a unit ("0.5"), so decimals are accepted
+    here; the exact Decimal keeps every comparison against Sold Today exact.
+    """
+    message = f"{field} must be a positive whole number or a decimal fraction such as 0.5"
+    if isinstance(value, bool) or value is None:
+        raise SalesError(message)
+    try:
+        qty = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise SalesError(message)
+    if not qty.is_finite():
+        raise SalesError(message)
+    if -qty.as_tuple().exponent > 3:
+        raise SalesError(f"{field} can have at most three decimal places")
+    if qty < 0 or (positive and qty <= 0):
+        raise SalesError(message)
+    return qty.quantize(QTY_STEP)
+
+
+def quantity_number(value):
+    """A quantity as a JSON-safe number: whole values stay ints, fractions float."""
+    if value is None:
+        return None
+    qty = value if isinstance(value, Decimal) else Decimal(str(value))
+    if qty == qty.to_integral_value():
+        return int(qty)
+    return float(qty)
+
+
+def sales_row_base(quantity, unit, rule):
+    """Base units priced by one sales card row.  Decimals are allowed here."""
+    qty = as_quantity(quantity, "quantity", positive=True)
+    if unit not in SALE_UNITS:
+        raise SalesError(f"unit must be one of {SALE_UNITS}")
+    if unit == "carton":
+        return qty * rule.pieces_per_carton
+    if unit == "pack":
+        if not rule.has_pack_tier:
+            raise SalesError("This product does not support packs")
+        return qty * rule.pieces_per_pack
+    return qty
+
+
+def line_total_ugx(quantity, unit_price_ugx):
+    """Whole UGX for one priced row, rounded half-up from the exact Decimal."""
+    return int((Decimal(str(quantity)) * int(unit_price_ugx)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _quantity_text(value):
+    """A quantity as plain text: 3 stays '3', 0.5 stays '0.5'."""
+    qty = Decimal(str(value))
+    if qty == qty.to_integral_value():
+        return str(int(qty))
+    return format(qty.quantize(QTY_STEP).normalize(), "f")
+
+
+def _split_quantity(base_qty, rule):
+    """(negative, cartons, packs, pieces) for a base quantity, whole or fractional."""
+    total = Decimal(str(base_qty))
+    negative = total < 0
+    total = abs(total)
+    per_carton = Decimal(rule.pieces_per_carton or 1)
+    cartons = int(total // per_carton) if total >= per_carton else 0
+    rest = total - cartons * per_carton
+    packs = 0
+    if rule.has_pack_tier and rule.pieces_per_pack:
+        per_pack = Decimal(rule.pieces_per_pack)
+        packs = int(rest // per_pack) if rest >= per_pack else 0
+        rest -= packs * per_pack
+    return negative, cartons, packs, rest
+
+
 def quantity_dict(base_qty, rule):
     if base_qty is None:
         return None
-    cartons, packs, pieces = from_base_units(abs(base_qty), rule)
+    _, cartons, packs, pieces = _split_quantity(base_qty, rule)
     return {
-        "base_unit_qty": base_qty,
+        "base_unit_qty": quantity_number(base_qty),
         "cartons": cartons,
         "packs": packs,
-        "pieces": pieces,
-        "negative": base_qty < 0,
+        "pieces": quantity_number(pieces),
+        "negative": Decimal(str(base_qty)) < 0,
         "label": _quantity_label(base_qty, rule),
     }
 
 
 def _quantity_label(base_qty, rule):
-    sign = "-" if base_qty < 0 else ""
-    cartons, packs, pieces = from_base_units(abs(base_qty), rule)
+    negative, cartons, packs, pieces = _split_quantity(base_qty, rule)
+    sign = "-" if negative else ""
     parts = []
     if cartons:
         parts.append(f"{cartons} carton{'s' if cartons != 1 else ''}")
     if packs:
         parts.append(f"{packs} pack{'s' if packs != 1 else ''}")
     if pieces or not parts:
-        parts.append(f"{pieces} piece{'s' if pieces != 1 else ''}")
+        parts.append(f"{_quantity_text(pieces)} piece{'s' if pieces != 1 else ''}")
     return sign + " ".join(parts)
 
 
@@ -279,7 +362,7 @@ def recorded_quantities(profile_id, business_date):
         .group_by(SalesInvoiceLine.product_id)
         .all()
     )
-    return {product_id: int(total or 0) for product_id, total in rows}
+    return {product_id: Decimal(str(total or 0)).quantize(QTY_STEP) for product_id, total in rows}
 
 
 def stock_reconciliation(profile, business_date):
@@ -453,7 +536,8 @@ def invoice_dict(invoice, as_of=None, include_payments=True):
         "lines": [{
             "id": line.id, "product_id": line.product_id,
             "product_name": line.product.name if line.product else "Opening receivable",
-            "quantity": line.quantity, "unit": line.sale_unit, "base_unit_qty": line.base_unit_qty,
+            "quantity": quantity_number(line.quantity), "unit": line.sale_unit,
+            "base_unit_qty": quantity_number(line.base_unit_qty),
             "unit_price_ugx": line.unit_price_ugx, "line_total_ugx": line.line_total_ugx,
         } for line in invoice.lines],
     }
@@ -822,8 +906,9 @@ def daily_summary(profile, business_date):
             card = product_cards.setdefault(
                 line.product_id, {"product_id": line.product_id, "rows": [], "card_total_ugx": 0})
             card["rows"].append({
-                "quantity": line.quantity, "unit": line.sale_unit,
-                "base_unit_qty": line.base_unit_qty, "unit_price_ugx": line.unit_price_ugx,
+                "quantity": quantity_number(line.quantity), "unit": line.sale_unit,
+                "base_unit_qty": quantity_number(line.base_unit_qty),
+                "unit_price_ugx": line.unit_price_ugx,
                 "line_total_ugx": line.line_total_ugx,
             })
             card["card_total_ugx"] += line.line_total_ugx
@@ -842,13 +927,14 @@ def daily_summary(profile, business_date):
     ).order_by(SalesDebtPayment.id).all()
 
     # Previous descriptions for this salesperson make the expense form's
-    # suggestions useful without inventing any values: newest first, unique,
-    # and only ever descriptions this profile itself already recorded.
+    # suggestions useful without inventing any values: newest first, unique
+    # regardless of capitals, and only ever descriptions this profile itself
+    # already recorded.  A cancelled expense still remembers a real description,
+    # so voided rows count too: the memory is about the words, not the money.
     seen_descriptions = set()
     expense_suggestions = []
     for (description,) in db.session.query(SalesExpense.description).filter(
         SalesExpense.sales_profile_id == profile.id,
-        SalesExpense.status == ACTIVE,
         SalesExpense.business_date <= business_date,
     ).order_by(SalesExpense.business_date.desc(), SalesExpense.id.desc()).limit(200):
         label = (description or "").strip()
@@ -1496,20 +1582,27 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
     if not isinstance(rows, list):
         raise SalesError("rows must be a list of price rows")
     parsed = []
-    priced = 0
+    priced = Decimal(0)
     for index, item in enumerate(rows, start=1):
         if not isinstance(item, dict):
             raise SalesError(f"Row {index} is not a valid price row.")
         unit = item.get("unit")
         if unit not in SALE_UNITS:
             raise SalesError(f"Row {index}: unit must be one of {SALE_UNITS}.")
-        base_qty = unit_to_base(item.get("quantity"), unit, rule)
+        # A row may price a fraction of a unit (0.5 cartons), so the quantity is
+        # read as an exact Decimal and every comparison below stays exact.
+        try:
+            quantity = as_quantity(item.get("quantity"), "quantity", positive=True)
+        except SalesError as exc:
+            raise SalesError(f"Row {index}: {exc}")
+        base_qty = sales_row_base(quantity, unit, rule)
         price = whole_ugx(item.get("unit_price_ugx"), f"Row {index} selling price")
         if price <= 0:
             raise SalesError(f"Row {index}: the selling price must be greater than zero.")
         priced += base_qty
-        parsed.append({"product_id": product.id, "quantity": item.get("quantity"),
+        parsed.append({"product_id": product.id, "quantity": quantity,
                        "unit": unit, "unit_price_ugx": price})
+    sold = Decimal(str(sold))
     if priced != sold:
         if priced < sold:
             raise SalesError(
@@ -1550,17 +1643,52 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
     db.session.add(invoice)
     db.session.flush()
     for p in parsed:
-        base_qty = unit_to_base(p["quantity"], p["unit"], rule)
+        base_qty = sales_row_base(p["quantity"], p["unit"], rule)
         invoice.lines.append(SalesInvoiceLine(
             product_id=product.id, quantity=p["quantity"], sale_unit=p["unit"],
             base_unit_qty=base_qty, packaging_rule_id=rule.id,
-            unit_price_ugx=p["unit_price_ugx"], line_total_ugx=p["quantity"] * p["unit_price_ugx"],
+            unit_price_ugx=p["unit_price_ugx"],
+            line_total_ugx=line_total_ugx(p["quantity"], p["unit_price_ugx"]),
         ))
     db.session.flush()
     record_audit(actor, "create", "sales_card", invoice.id,
                  after={"product_id": product.id, "business_date": business_date, "rows": parsed,
                         "card_total_ugx": invoice_total(invoice)})
     return invoice, "created"
+
+
+def save_sales_cards(profile, business_date, cards, actor, vehicle_stock=None):
+    """Store every sales card the salesperson is holding, in this transaction.
+
+    Close Day is the day's one write, so it sends the complete working state:
+    the Vehicle stock sheet plus one card per product.  Each card is priced by
+    the same ``save_product_sales()`` path used before, against the same
+    submitted sheet, so the rule that a card must price exactly Sold Today is
+    unchanged.  Nothing here commits: the day close commits it all or nothing.
+    """
+    if cards is None:
+        return []
+    if not isinstance(cards, list):
+        raise SalesError("sales_cards must be a list of sales cards")
+    seen = set()
+    saved = []
+    for item in cards:
+        if not isinstance(item, dict):
+            raise SalesError("Each sales card needs a product and its price rows.")
+        product = db.session.get(Product, item.get("product_id"))
+        if product is None:
+            raise SalesError("product not found")
+        if product.id in seen:
+            raise SalesError(f"{product.name} appears twice in the sales cards. Keep one card per product.")
+        seen.add(product.id)
+        rows = item.get("rows") or []
+        if not isinstance(rows, list):
+            raise SalesError(f"{product.name}: rows must be a list of price rows.")
+        invoice, action = save_product_sales(profile, business_date, product.id, rows, actor,
+                                             vehicle_stock=vehicle_stock)
+        saved.append({"product_id": product.id, "action": action,
+                      "invoice_id": invoice.id if invoice else None})
+    return saved
 
 
 def close_day(day, actor, override_reason=None, elevated=False):

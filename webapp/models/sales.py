@@ -195,9 +195,12 @@ class SalesInvoiceLine(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     invoice_id = db.Column(db.Integer, db.ForeignKey("sales_invoices.id"), nullable=False, index=True)
     product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=True, index=True)
-    quantity = db.Column(db.Integer, nullable=False)
+    # A sales card may price a fraction of a unit ("0.5 cartons"), so the
+    # quantity is an exact three-decimal numeric rather than an integer.  Stock
+    # counts stay whole base units; only the pricing row carries decimals.
+    quantity = db.Column(db.Numeric(12, 3), nullable=False)
     sale_unit = db.Column(db.String(20), nullable=False)
-    base_unit_qty = db.Column(db.Integer, nullable=True)
+    base_unit_qty = db.Column(db.Numeric(12, 3), nullable=True)
     packaging_rule_id = db.Column(db.Integer, db.ForeignKey("packaging_rules.id"), nullable=True)
     unit_price_ugx = db.Column(db.Integer, nullable=False)
     line_total_ugx = db.Column(db.Integer, nullable=False)

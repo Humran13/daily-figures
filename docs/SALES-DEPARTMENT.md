@@ -114,10 +114,10 @@ correction.
 
 ## Priced sales and receivables
 
-An invoice has one or more server-calculated lines. Each line contains one product, one selling unit, a whole quantity and a unit price. The same product may appear repeatedly at different prices; lines are never merged. Carton, pack and piece quantities convert through the PackagingRule effective on the business date, and the rule ID/base quantity are stored on the line.
+An invoice has one or more server-calculated lines. Each line contains one product, one selling unit, a quantity and a unit price. The same product may appear repeatedly at different prices; lines are never merged. Carton, pack and piece quantities convert through the PackagingRule effective on the business date, and the rule ID/base quantity are stored on the line. A sales card quantity may be fractional (`0.5`, `0.25`, `1.5`), because a salesperson sometimes knows a part of a carton as a known equivalent amount; quantities are held as exact three-decimal values and every comparison against Sold Today is done on those exact values, never on binary floats.
 
 ```text
-Line Total = whole selling-unit quantity × whole UGX unit price
+Line Total = selling-unit quantity (whole or decimal) × whole UGX unit price, rounded half-up to whole UGX
 Invoice Total = sum of server-calculated line totals
 Current Outstanding = Invoice Total - all active allocated payments
 Outstanding as of date D = Invoice Total - active payments received on/before D
@@ -173,13 +173,13 @@ Every report and export page links to `csv`, `xlsx` and `pdf` for the currently 
 
 The Sales screen itself is a single mobile-first page with six numbered steps: vehicle stock (one editable card per product the salesperson put on the vehicle — Product, Previous Return, Given Stock / Issued Today, Total Stock, Return Today and a calculated Sold Today, with Add Product), one sales card per product that actually sold, total sales today, Mobile Money once for the whole day, expenses and money movement, and cash at hand ending in Close day. Sold Today is calculated once, inside its Vehicle stock card, and the same figure drives that product's sales card and the page totals as the salesperson types; there is no separate Sold today section and no separate Vehicle stock save.
 
-**Save everything at once.** Until Close day the Vehicle stock sheet exists only in the browser: a keystroke writes nothing, there is no autosave, no stock-only save button and no hidden save step. A sales card sends the sheet with its own request as *validation context* — the server derives Sold Today from those submitted figures, refuses rows that do not price exactly that quantity, and stores neither the sheet nor any derived stock figure while doing so (`vehicle_stock` on `PUT /api/sales/days/<date>/products/<id>/sales` is read and discarded). Close day (`POST /api/sales/days/<date>/close`) is the one write: it validates the submitted sheet, stores it through `save_vehicle_stock()`, derives Sold Today from the figures it just stored, re-checks every sales card against those figures, validates the cash/money side and closes the day — all in a single transaction. If any check fails nothing from that attempt is committed (no partial sheet, no partial close), the day stays open and the typed figures stay on screen to correct.
+**Save everything once, at Close day.** Until Close day both the Vehicle stock sheet and every Sales Card exist only in the browser: a keystroke writes nothing, there is no autosave, no stock-only save button and no per-product Save Sales button. Sales Cards are live — typing a quantity or a price repaints that product's card total, Total sales today and the money that depends on them immediately. A Sales Card has no unit selector of its own because its quantity is always a **carton-equivalent**: `1` is one carton, `0.5` half a carton, `0.25` a quarter and `1.5` one and a half, and the row label always reads cartons. Pieces and packs are only ever derived from the product's PackagingRule (`0.5` cartons of a 10-pack carton is 5 packs, of a 12-pack carton 6 packs), so the Vehicle stock "Counted in" selector — which may be Cartons, Packs or Pieces for the counts on the sheet — can never change what a number on a Sales Card means. A card added with "Add Another Product" can be cancelled with its own compact ×, which removes the extra browser card, frees the product in the dropdown again and writes nothing at all; products already on the vehicle carry no × and can never be deleted from the screen. Close day (`POST /api/sales/days/<date>/close`) is the one write: it validates the submitted sheet, stores it through `save_vehicle_stock()`, derives Sold Today from the figures it just stored, stores the complete Sales Cards it was handed (`sales_cards`, through `save_product_sales()`), re-checks every card against those figures, validates the cash/money side and closes the day — all in a single transaction. If any check fails nothing from that attempt is committed (no partial sheet, no partial card, no partial close), the day stays open and the typed figures stay on screen to correct. The per-card `PUT /api/sales/days/<date>/products/<id>/sales` endpoint still exists for API clients, but the Sales screen no longer uses it.
 
 A salesperson completes all six alone: no Manager or Super Administrator opens the day, approves a starting count or countersigns the return. Managers and Super Administrators keep the salesperson selector, historical dates, reopening, corrections and the Settings workspace for baselines, opening receivables, profile setup, stock adjustments and cash adjustments.
 
 ## Corrections, idempotency and audit
 
-Closed days require Manager/Super Admin reopening, with the reason recorded. Correcting the four Vehicle Stock figures on an open day (Previous Return, Given Stock, Total Stock, Return Today) is the salesperson's own ordinary work and asks for no approval; a reason supplied with a correction is still stored and audited. Manual stock and cash adjustments require reasons. Invoices, payments, expenses, transfers and stock adjustments are soft-voided with actor, timestamp and reason. Audit records capture before/after values without secrets. Unique idempotency keys prevent duplicate sale, payment, expense and transfer creation after double-clicks or network retries.
+Closed days require Manager/Super Admin reopening, with the reason recorded. Correcting the four Vehicle Stock figures on an open day (Previous Return, Given Stock, Total Stock, Return Today) is the salesperson's own ordinary work and asks for no approval; a reason supplied with a correction is still stored and audited. Manual stock and cash adjustments require reasons. Invoices, payments, expenses, transfers and stock adjustments are soft-voided with actor, timestamp and reason. The compact × on an expense cancels it without a prompt and without reloading the page: the row is soft-voided with the recorded reason "Removed from the Sales screen", it leaves the active list, the expense totals and Cash at Hand follow, and the browser-only Vehicle stock, Sales Card, Mobile Money and counted-cash values on screen are left exactly as typed. Expense descriptions are remembered from the expenses already recorded (newest first, de-duplicated case-insensitively) so the form can suggest them while typing; no separate table is needed, and a description stays remembered even after its expense was cancelled. Audit records capture before/after values without secrets. Unique idempotency keys prevent duplicate sale, payment, expense and transfer creation after double-clicks or network retries.
 
 The server validates dates, whole nonnegative values, account/method codes, packaging units, customer-credit identity, ownership, available stock and outstanding balances. Browser totals are display previews only; Python services are authoritative.
 
@@ -188,6 +188,8 @@ The server validates dates, whole nonnegative values, account/method codes, pack
 Revision `de22eee9674b` follows `a6c8e4922fbc`. It creates only new Sales tables and seeds the new department/section. It does not alter existing Products, Customers, Users or grants and does not grant Sales to ordinary users. Upgrade and downgrade are supported, leaving one Alembic head.
 
 Revision `a3d9f1c7b2e4` follows `19f4c7a2b8d1` and adds the editable Vehicle Stock figures to `sales_vehicle_closing_lines`: `previous_return_base_qty`, `issued_base_qty`, `total_stock_base_qty` (nullable — NULL means "follow the system figure") and `return_counted` (backfilled to true for every existing row). It is additive: no existing quantity is changed and no historical row is rewritten.
+
+Revision `c4f1a7d90b23` follows `a3d9f1c7b2e4` and widens the two quantity columns of `sales_invoice_lines` (`quantity`, `base_unit_qty`) from `Integer` to `Numeric(12, 3)`, so a Sales Card can price a fraction of a unit. It is a widening type change only: every existing value is a whole number and keeps it, money columns stay whole UGX integers, and no Vehicle Stock quantity changes. The CHECK constraints on the table are re-stated in the same migration because a SQLite batch rebuild cannot carry them across. Expense description suggestions need no table: they are read from `sales_expenses.description` (newest first, de-duplicated case-insensitively), so no new schema was added for them.
 
 Deployment is intentionally outside this feature task. Review and merge the feature branch separately, back up the production database using existing procedures, then run the normal migration/startup process. Never map Closing Vehicle Stock into warehouse Returns during deployment or data import.
 
@@ -217,23 +219,28 @@ itself with no salesperson selector. It then opens 30/10/2026 and asserts the si
 the order a salesperson works them, reproducing the paper sheet: Compact 50 carried + 100
 delivered by Finished Goods = 150, return 40 → 110 sold; Napkins 10 + 20 = 30, return 5 →
 25 sold. Sold Today is calculated live inside its Vehicle stock card and repaints that
-product's sales card while the return is typed — changing Compact's return to 45 shows 105
-cartons in both places with no save and no reload, and Napkins is untouched. Each product then
-gets one card with two price rows — 100 × 79,000 + 10 × 80,000 = UGX 8,700,000 and
-20 × 103,000 + 5 × 104,000 = UGX 2,580,000 — and a card claiming 30 napkin cartons is refused
-with the exact quantity to change. Total Sales follows the rows on screen before they are
-saved (UGX 8,700,000) and is UGX 11,280,000 once both cards are stored, Mobile Money is 0,
-three expenses total 40,000, and Cash at Hand is UGX 11,240,000 (Total Sales − Mobile Money −
-Cash expenses); the salesperson counts their own cash and Mobile Money, sees a zero difference
-and closes the day alone. That close is the day's only write: the test reads the day back from
-the server after each card save and finds the Vehicle stock figures untouched (Previous Return
-still the system's 50, no counted return) with no Vehicle stock request made at all, so the
-sheet it stores — typed figures included — comes with the close request. It then proves a
-refused close writes nothing and leaves the typed figures on screen, a closed day is
-read-only, that the ownership check returns 403 for a foreign profile
-ID, that there is no horizontal overflow, that every control is at least 36px tall at
-375×812, and that the next day carries the 40 counted back automatically, keeps today's own
-correction to 42, and leaves yesterday's closed record at 52 / 40 untouched.
+product's sales card while the return is typed, with no save and no reload. An extra card
+added with "Add Another Product" appears with its own ×, disappears when × is pressed, frees
+its product in the dropdown again (a catalogue-only product such as Straws can be picked,
+cancelled and picked again), and never touches the database. Each product then gets one live
+card with price rows — Compact 1.5 × 79,000 + 1.5 × 80,000 = UGX 238,500 for 3 cartons,
+Napkins 20 × 103,000 + 5 × 104,000 = UGX 2,580,000, Straws 0.5 + 0.5 × 5,000 — with no Save
+Sales button on any card and no Unit selector on any row: the row label always reads cartons,
+because a card quantity is always a carton-equivalent (0.5 / 0.25 / 1.5 are accepted and price
+the product's PackagingRule, whatever unit Vehicle stock is counted in), and an over-priced
+fractional card is refused with the exact quantity to change. Total Sales is UGX 2,823,500
+while nothing is stored yet. Three expenses are recorded, then the sheet is changed again and
+the middle expense is cancelled with its ×: only that expense leaves the list, Cash at Hand
+follows it, and the Vehicle stock figures, the Sales Card rows, the added Straws card and the
+typed Mobile Money/counted cash stay exactly as entered with no Vehicle stock request at all.
+A refused close (Napkins priced for 25 but 20 counted) writes nothing and leaves every typed
+figure on screen; the corrected close stores the sheet and all three cards in one request,
+reloading reproduces it exactly, and a closed day is read-only. It also proves the ownership
+check returns 403 for a foreign profile ID, that there is no horizontal overflow, that every
+control — the × buttons and the description suggestions included — is at least 36px tall at
+375×812, that "Lunch" recorded on 30/10 is offered as a tappable suggestion on 31/10 while
+"lunch" does not become a second suggestion, and that yesterday's closed record stays
+untouched.
 
 ## Operator workflow (corrected)
 
@@ -255,17 +262,21 @@ all six without a Manager or Super Administrator watching:
    return greater than total stock is refused with a plain-language warning.
 2. Sales cards. One card per product. The card already knows the counted quantity
    ("133 cartons sold today, from Vehicle stock"), so the salesperson just adds one or more
-   price rows and the card says whether they add up. Saving is atomic per product: a card
-   that under- or over-prices the counted quantity is refused with the exact quantity that
-   has to change ("... but only 10 cartons were sold"), and re-saving replaces that product's
-   lines in one transaction instead of duplicating them. Saving a card never writes Vehicle
-   stock: the sheet on screen travels with that request only so the server can price against
-   the quantity on screen, and the sheet itself is stored once, by Close day.
-3. Total sales today. One prominent figure for the day; it follows the cards on screen, so
-   unsaved price rows move it immediately and saving them never counts the same sale twice.
+   price rows and the card says whether they add up. Everything is live — there is no Save
+   Sales button: a row that under- or over-prices the counted quantity is called out with the
+   exact quantity that has to change ("... but only 10 cartons were sold") as the numbers are
+   typed, quantities may be fractional carton-equivalents, and switching the Vehicle stock
+   "Counted in" selector never changes what a card number means, so the card needs no Unit
+   selector. Close day stores every card, so a product's
+   lines are replaced in one transaction at the close instead of being saved per product.
+3. Total sales today. One prominent figure for the day; it is the live sum of the cards on
+   screen, so a changed quantity or price moves it immediately and the close never counts the
+   same sale twice.
 4. Mobile Money. One amount for the whole day, never one per row.
 5. Expenses and money movement. Description, amount and paid-from, plus money
-   transfers/handover, which stay collapsed until they are needed.
+   transfers/handover, which stay collapsed until they are needed. Descriptions already used
+   are offered as tappable suggestions while typing, and the compact × on a row cancels that
+   expense immediately — the totals follow and nothing else on the page is reloaded.
 6. Cash at hand. Opening cash (a declared baseline, or nothing from the salesperson's first
    Sales Day when no baseline has been declared), plus cash received on today's sales, plus
    old debts collected in cash, plus money transferred in, less cash expenses, less money
