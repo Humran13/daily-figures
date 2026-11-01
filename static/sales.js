@@ -270,27 +270,46 @@ function qtyLabel(base,rule){
   return parts.join(' ');
 }
 function savedCard(productId){return (current.product_cards||[]).find(c=>c.product_id===productId)||null;}
-// The unit a card row is priced in comes from the product's own Vehicle stock
-// card - "Counted in" - so the Sales Card needs no unit selector of its own.
+// A sales card is always priced in CARTONS.  Its quantity is a
+// carton-equivalent - 1 is one carton, 0.5 half a carton, 0.25 a quarter and
+// 1.5 one and a half - and that meaning never depends on the product's Vehicle
+// stock "Counted in" unit, which may be Cartons, Packs or Pieces.  That is why
+// the card has no unit selector: cartons are the only thing the number can
+// mean.  Pieces come out of the product's PackagingRule, so 0.5 cartons of a
+// 10-pack carton is 5 packs and of a 12-pack carton 6 packs.
+const CARD_UNIT='carton';
 const UNIT_LABEL={carton:'cartons',pack:'packs',piece:'pieces'};
-function rowUnit(productId){
-  const card=stockCardFor(productId);
-  return (card&&card.unit)||'carton';
-}
 function unitText(unit){return UNIT_LABEL[unit]||unit||'cartons';}
-function blankRow(productId){return {quantity:'',unit:rowUnit(productId),unit_price_ugx:''};}
+function blankRow(){return {quantity:'',unit:CARD_UNIT,unit_price_ugx:''};}
+// Quantities may be fractional (0.5 / 0.25 / 1.5), so they are compared in
+// exact thousandths instead of raw binary floats.
+const qtyMilli=n=>Math.round((Number(n)||0)*1000);
+// A card saved before cards were carton-only can still hold a row priced in
+// packs or pieces.  Such a row is re-expressed as the same number of cartons -
+// the same pieces and the same money - when that is exact to three decimals;
+// otherwise it is kept exactly as recorded, never silently re-read as cartons.
+function cartonRow(line,rule){
+  const unit=line.unit||CARD_UNIT;
+  const recorded={quantity:line.quantity,unit,unit_price_ugx:line.unit_price_ugx};
+  if(unit===CARD_UNIT)return {quantity:line.quantity,unit:CARD_UNIT,unit_price_ugx:line.unit_price_ugx};
+  const perCarton=Number(rule.pieces_per_carton)||1,factor=unitFactor(unit,rule);
+  const price=Number(line.unit_price_ugx);
+  if(!factor||perCarton%factor!==0)return recorded;
+  const baseMilli=qtyMilli(line.quantity)*factor;          // pieces x 1000
+  if(!baseMilli||baseMilli%perCarton!==0)return recorded;
+  const perCartonPrice=price*(perCarton/factor);
+  if(!Number.isInteger(perCartonPrice)||perCartonPrice<=0)return recorded;
+  return {quantity:baseMilli/perCarton/1000,unit:CARD_UNIT,unit_price_ugx:perCartonPrice};
+}
 function draftFor(productId){
   if(!drafts[productId]){
-    const card=savedCard(productId);
+    const card=savedCard(productId),rule=stockRule(stockCardFor(productId));
     drafts[productId]=card&&card.rows.length
-      ? card.rows.map(r=>({quantity:r.quantity,unit:r.unit||rowUnit(productId),unit_price_ugx:r.unit_price_ugx}))
-      : [blankRow(productId)];
+      ? card.rows.map(r=>cartonRow(r,rule))
+      : [blankRow()];
   }
   return drafts[productId];
 }
-// Quantities may be fractional (0.5 / 0.25 / 1.5), so equality is compared in
-// exact thousandths instead of raw binary floats.
-const qtyMilli=n=>Math.round((Number(n)||0)*1000);
 const rowTotal=(line)=>Math.round((Number(line.quantity)||0)*(Number(line.unit_price_ugx)||0));
 function priceRow(row,rule,line,index,closed){
   const value=rowTotal(line);
@@ -325,7 +344,7 @@ function updateCard(productId){
   const rule=figures.rule,draft=drafts[productId]||[];
   let priced=0,total=0;
   draft.forEach((line,index)=>{
-    priced+=toBase(line.quantity,line.unit||'carton',rule);
+    priced+=toBase(line.quantity,line.unit||CARD_UNIT,rule);
     const value=rowTotal(line);
     total+=value;
     const cell=$(`rowValue-${productId}-${index}`);
@@ -514,7 +533,7 @@ function bindCardEvents(){
     if(add){
       if(add.disabled)return;
       const productId=Number(add.dataset.cardAdd);
-      draftFor(productId).push(blankRow(productId));
+      draftFor(productId).push(blankRow());
       renderCards();
       return;
     }
@@ -524,7 +543,7 @@ function bindCardEvents(){
       const productId=Number(remove.dataset.cardRemove),index=Number(remove.dataset.cardIndex);
       const draft=draftFor(productId);
       draft.splice(index,1);
-      if(!draft.length)draft.push(blankRow(productId));
+      if(!draft.length)draft.push(blankRow());
       renderCards();
       paintMoney();
       return;
@@ -690,7 +709,9 @@ function cardPayload(){
         throw new Error(`${card.name}: every price row needs a quantity greater than zero.`);
       if(!Number.isFinite(price)||price<=0)
         throw new Error(`${card.name}: every price row needs a selling price greater than zero.`);
-      rows.push({quantity,unit:line.unit||card.unit||'carton',unit_price_ugx:Math.round(price)});
+      // Every row leaves as a carton-equivalent; only a row carried over from a
+      // card saved in packs or pieces keeps its recorded unit (cartonRow()).
+      rows.push({quantity,unit:line.unit||CARD_UNIT,unit_price_ugx:Math.round(price)});
     });
     if(!rows.length){
       const figures=liveFigures(card.productId);

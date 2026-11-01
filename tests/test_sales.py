@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -1908,6 +1909,139 @@ def test_decimal_rows_that_do_not_price_sold_today_are_refused(client, sales_set
                              vehicle_stock=[compact])
     assert too_precise.status_code == 400
     assert "three decimal places" in too_precise.get_json()["error"]
+
+
+# ---- A sales card quantity is always a carton-equivalent --------------------
+# The number typed on a Sales Card means cartons and nothing else: 1 is one
+# carton, 0.5 half a carton, 0.25 a quarter and 1.5 one and a half.  Pieces and
+# packs are always derived from the product's PackagingRule, so the meaning of
+# the number never changes with the Vehicle stock "Counted in" unit that the
+# same product happens to be counted in on the sheet.
+
+def _packing_product(name, packs_per_carton, pieces_per_pack, order=9):
+    product = Product(name=name, display_order=order, active=True)
+    db.session.add(product); db.session.flush()
+    rule = PackagingRule(product_id=product.id, cartons_to_packs=packs_per_carton,
+                         packs_to_pieces=pieces_per_pack,
+                         effective_from=datetime(2026, 1, 1))
+    db.session.add(rule); db.session.commit()
+    return product, rule
+
+
+def _sheet_line(product_id, unit, previous, issued, total, returned):
+    return {"product_id": product_id, "unit": unit, "previous_qty": previous,
+            "issued_qty": issued, "total_qty": total, "return_qty": returned}
+
+
+def _untouched_lines(s):
+    """The fixture's own two products, with nothing sold, so only the new
+    product's card is under test and the close has every return it needs."""
+    return [_sheet_line(s["compact"].id, "carton", 50, 100, 150, 150),
+            _sheet_line(s["napkin"].id, "carton", 10, 20, 30, 30)]
+
+
+def _count_cash(client, profile_id, amount, date="2026-10-30"):
+    response = client.patch(f"/api/sales/days/{date}",
+                           json={"sales_profile_id": profile_id, "actual_cash_count_ugx": amount})
+    assert response.status_code == 200, response.get_json()
+
+
+def _card_rows(summary, product_id):
+    card = next((c for c in summary["product_cards"] if c["product_id"] == product_id), None)
+    return [(r["quantity"], r["unit"], r["base_unit_qty"]) for r in card["rows"]] if card else []
+
+
+def test_half_a_carton_is_five_packs_on_a_ten_pack_carton(client, sales_setup):
+    """10 packs per carton: 0.5 on a card is 5 packs, never half a pack."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    product, rule = _packing_product("Ten Pack", 10, 6)          # 10 packs of 6 = 60 pieces
+    assert rule.pieces_per_carton == 60
+    # The vehicle counted this product in packs and sold 5 of them.
+    sheet = _untouched_lines(s) + [_sheet_line(product.id, "pack", 100, 0, 100, 95)]
+    cards = [{"product_id": product.id,
+              "rows": [{"quantity": 0.5, "unit": "carton", "unit_price_ugx": 90_000}]}]
+    _count_cash(client, s["profile"].id, 45_000)
+    closed = _close_with_cards(client, s["profile"].id, sheet, cards)
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    # 0.5 cartons is stored as half of a 60-piece carton: 30 pieces.
+    assert _card_rows(body, product.id) == [(0.5, "carton", 30)]
+    # 30 pieces is exactly 5 packs of 6, and half a pack would have been 3.
+    assert sales_service.quantity_dict(Decimal("30"), rule)["packs"] == 5
+    assert sales_service.sales_row_base(Decimal("0.5"), "pack", rule) == Decimal("3")
+    assert body["totals"]["total_sales_ugx"] == 45_000
+
+
+def test_half_a_carton_is_six_packs_on_a_twelve_pack_carton(client, sales_setup):
+    """12 packs per carton: the same 0.5 is 6 packs, still exactly half a carton."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    product, rule = _packing_product("Twelve Pack", 12, 5)       # 12 packs of 5 = 60 pieces
+    assert rule.pieces_per_carton == 60
+    sheet = _untouched_lines(s) + [_sheet_line(product.id, "pack", 100, 0, 100, 94)]   # 6 packs sold
+    cards = [{"product_id": product.id,
+              "rows": [{"quantity": 0.5, "unit": "carton", "unit_price_ugx": 90_000}]}]
+    _count_cash(client, s["profile"].id, 45_000)
+    closed = _close_with_cards(client, s["profile"].id, sheet, cards)
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert _card_rows(body, product.id) == [(0.5, "carton", 30)]
+    assert sales_service.quantity_dict(Decimal("30"), rule)["packs"] == 6
+    # Half a pack would have been 2.5 pieces - a different quantity entirely.
+    assert sales_service.sales_row_base(Decimal("0.5"), "pack", rule) == Decimal("2.5")
+    # The pack count differs from the ten-pack product, the carton does not.
+    assert body["stock_warnings"] == []
+
+
+def test_half_a_carton_does_not_follow_the_vehicle_stock_unit(client, sales_setup):
+    """Vehicle stock counted in pieces: 0.5 is still half a carton, not 0.5 piece."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    product, rule = _packing_product("Twelve Pack", 12, 5)
+    # Counted in pieces this time: 600 less 570 is 30 pieces sold.
+    sheet = _untouched_lines(s) + [_sheet_line(product.id, "piece", 600, 0, 600, 570)]
+    cards = [{"product_id": product.id,
+              "rows": [{"quantity": 0.5, "unit": "carton", "unit_price_ugx": 90_000}]}]
+    _count_cash(client, s["profile"].id, 45_000)
+    closed = _close_with_cards(client, s["profile"].id, sheet, cards)
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert _card_rows(body, product.id) == [(0.5, "carton", 30)]
+    # Had the card number followed "Counted in: pieces" it would have priced 0.5.
+    assert sales_service.sales_row_base(Decimal("0.5"), "piece", rule) == Decimal("0.5")
+    stock = _stock_row(body, product.id)
+    assert stock["derived_sold"]["base_unit_qty"] == 30
+    assert stock["variance"]["base_unit_qty"] == 0
+
+
+def test_quarter_and_one_and_a_half_cartons_convert_exactly(client, sales_setup):
+    """0.25 and 1.5 go through the rule exactly, on both packing shapes."""
+    s = sales_setup; _login(client, s["operator"])
+    _open_day(client, s["profile"].id)
+    ten, ten_rule = _packing_product("Ten Pack", 10, 6, order=9)
+    twelve, twelve_rule = _packing_product("Twelve Pack", 12, 5, order=10)
+    for rule in (ten_rule, twelve_rule):
+        assert sales_service.sales_row_base(Decimal("0.25"), "carton", rule) == Decimal("15")
+        assert sales_service.sales_row_base(Decimal("1.5"), "carton", rule) == Decimal("90")
+    # 0.25 + 1.5 = 1.75 cartons = 105 pieces sold on each product.
+    sheet = _untouched_lines(s) + [_sheet_line(ten.id, "piece", 600, 0, 600, 495),
+                                   _sheet_line(twelve.id, "piece", 600, 0, 600, 495)]
+    rows = [{"quantity": 0.25, "unit": "carton", "unit_price_ugx": 100_000},
+            {"quantity": 1.5, "unit": "carton", "unit_price_ugx": 100_000}]
+    cards = [{"product_id": ten.id, "rows": rows}, {"product_id": twelve.id, "rows": rows}]
+    _count_cash(client, s["profile"].id, 350_000)
+    closed = _close_with_cards(client, s["profile"].id, sheet, cards)
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    for product in (ten, twelve):
+        assert _card_rows(body, product.id) == [(0.25, "carton", 15), (1.5, "carton", 90)]
+    # The same 90 pieces reads as 1 carton 5 packs or 1 carton 6 packs: the
+    # carton is the only unit the card number itself ever means.
+    assert sales_service.quantity_dict(Decimal("90"), ten_rule)["label"] == "1 carton 5 packs"
+    assert sales_service.quantity_dict(Decimal("90"), twelve_rule)["label"] == "1 carton 6 packs"
+    assert body["totals"]["total_sales_ugx"] == 2 * (0.25 * 100_000 + 1.5 * 100_000)
+    assert body["stock_warnings"] == []
 
 
 def test_cancelling_an_expense_leaves_stock_sales_and_history_alone(client, sales_setup):

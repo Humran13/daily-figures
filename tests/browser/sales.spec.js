@@ -189,8 +189,8 @@ test('Salesperson works live during the day and saves everything at Close Day', 
   await expect(page.locator('[data-card-save]')).toHaveCount(0);
   await expect(page.getByText('Save Compact Standard sales', { exact: false })).toHaveCount(0);
   await expect(page.getByText('Save Napkins Standard sales', { exact: false })).toHaveCount(0);
-  // Test G — the Sales Card has no Unit selector at all; the unit comes from
-  // the product's Vehicle stock card and is shown as plain text.
+  // Test G — the Sales Card has no Unit selector at all: its quantity is always
+  // a carton-equivalent, shown as plain text.
   await expect(page.locator('.sales-card [data-card-field="unit"]')).toHaveCount(0);
   await expect(page.locator('.sales-card select')).toHaveCount(0);
   await expect(compactCard.locator('.price-row').first()).toContainText('Quantity (cartons)');
@@ -247,6 +247,78 @@ test('Salesperson works live during the day and saves everything at Close Day', 
   expect(stockWrites).toEqual([]);
   expect(cardWrites).toEqual([]);
 
+  // ---- TEST L: a card quantity is a carton, never a stock unit ------------
+  // Compact Standard is 10 packs of 10 pieces per carton and Straws is 12 packs
+  // of 100.  Vehicle stock may be counted in cartons, packs or pieces, and
+  // switching it must never change what the number on a card means: a card is
+  // always cartons, which is why it has no unit selector.
+  const strawsStock = stockRow(page, 'Straws');
+  const compactQtys = compactCard.locator('[data-card-field="quantity"]');
+  // Counted in packs: the sheet now reads 1500 packs for 150 cartons...
+  await compactStock.locator('[data-stock-unit]').selectOption('pack');
+  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('1500');
+  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('1470');
+  // ...while the card is untouched: same two 1.5 rows, still labelled cartons.
+  await expect(compactCard.locator('.price-row').first()).toContainText('Quantity (cartons)');
+  await expect(compactCard.locator('.price-row').first()).toContainText('Price per carton (UGX)');
+  await expect(compactQtys.nth(0)).toHaveValue('1.5');
+  await expect(compactQtys.nth(1)).toHaveValue('1.5');
+  await expect(page.locator('.sales-card [data-card-field="unit"]')).toHaveCount(0);
+  await expect(page.locator('.sales-card select')).toHaveCount(0);
+  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
+  // A row added while the sheet is counted in packs is still a carton row: the
+  // card never inherits the stock unit, however it is redrawn.
+  await compactCard.locator('[data-card-add]').click();
+  await expect(compactCard.locator('.price-row')).toHaveCount(3);
+  await expect(compactCard.locator('.price-row').nth(2)).toContainText('Quantity (cartons)');
+  await expect(compactCard.locator('.price-row').nth(2)).toContainText('Price per carton (UGX)');
+  await expect(compactQtys.nth(2)).toHaveValue('');
+  await expect(compactQtys.nth(0)).toHaveValue('1.5');
+  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
+  await compactCard.locator('.price-row').nth(2).locator('[data-card-remove]').click();
+  await expect(compactCard.locator('.price-row')).toHaveCount(2);
+
+  // 0.5 on a card is half a CARTON, so 5 packs of a 10-pack carton - never half
+  // a pack.  With 1 carton (10 packs) sold, one 0.5 row prices 5 packs and 5
+  // packs remain, even though the sheet is being counted in packs.
+  await compactStock.locator('[data-stock-field="returned"]').fill('1490');
+  await expect(compactStock.locator('[data-stock-sold]')).toHaveText('1 carton');
+  await compactQtys.nth(0).fill('0.5');
+  await compactQtys.nth(1).fill('');
+  await expect(compactCard.locator('.card-status')).toContainText('Priced 5 packs of 1 carton sold');
+  await expect(compactCard.locator('.card-status')).toContainText('5 packs still to price');
+
+  // Counted in pieces instead: the same 0.5 is still half a carton = 5 packs.
+  await compactStock.locator('[data-stock-unit]').selectOption('piece');
+  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('15000');
+  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('14900');
+  await expect(compactCard.locator('.price-row').first()).toContainText('Quantity (cartons)');
+  await expect(compactQtys.nth(0)).toHaveValue('0.5');
+  await expect(compactCard.locator('.card-status')).toContainText('Priced 5 packs of 1 carton sold');
+  await expect(compactCard.locator('.card-status')).toContainText('5 packs still to price');
+
+  // Straws is 12 packs per carton, so the same 0.5 is 6 packs.
+  await strawsStock.locator('[data-stock-unit]').selectOption('pack');
+  await expect(strawsStock.locator('[data-stock-field="returned"]')).toHaveValue('12');
+  await expect(strawCard.locator('.price-row').nth(1)).toContainText('Quantity (cartons)');
+  await strawCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]').fill('');
+  await expect(strawCard.locator('.card-status')).toContainText('Priced 6 packs of 1 carton sold');
+  await expect(strawCard.locator('.card-status')).toContainText('6 packs still to price');
+  await strawCard.locator('.price-row').nth(1).locator('[data-card-field="quantity"]').fill('0.5');
+  await expect(strawCard.locator('.card-status')).toContainText('matches the stock count');
+
+  // Back in cartons, every figure the salesperson typed is exactly as it was.
+  await compactStock.locator('[data-stock-unit]').selectOption('carton');
+  await strawsStock.locator('[data-stock-unit]').selectOption('carton');
+  await compactStock.locator('[data-stock-field="returned"]').fill('147');
+  await compactQtys.nth(0).fill('1.5');
+  await compactQtys.nth(1).fill('1.5');
+  await expect(compactStock.locator('[data-stock-field="total"]')).toHaveValue('150');
+  await expect(compactStock.locator('[data-stock-field="returned"]')).toHaveValue('147');
+  await expect(strawsStock.locator('[data-stock-field="returned"]')).toHaveValue('1');
+  await expect(compactCard.locator('.card-status')).toContainText('matches the stock count');
+  await expect(strawCard.locator('.card-status')).toContainText('matches the stock count');
+  expect(stockWrites).toEqual([]);
 
   // ---- TEST B: the expense X must not reset the page ---------------------
   await showExpenseForm(page);
