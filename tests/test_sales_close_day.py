@@ -17,6 +17,7 @@ from datetime import datetime
 import pytest
 
 from webapp.extensions import db
+from webapp.models.audit_log import AuditLog
 from webapp.models.customer import CATEGORY_SALESPERSON, Customer
 from webapp.models.packaging_rule import PackagingRule
 from webapp.models.product import Product
@@ -90,6 +91,13 @@ def _close(client, profile_id, date="2026-10-30", lines=None, cards=None, **extr
             "sales_cards": cards or []}
     body.update(extra)
     return client.post(f"/api/sales/days/{date}/close", json=body)
+
+
+def _save(client, profile_id, date="2026-10-30", lines=None, cards=None, **extra):
+    body = {"sales_profile_id": profile_id, "vehicle_stock": lines or [],
+            "sales_cards": cards or []}
+    body.update(extra)
+    return client.post(f"/api/sales/days/{date}/save", json=body)
 
 
 def _table_counts():
@@ -579,3 +587,351 @@ def test_a_close_day_with_an_excess_collection_rolls_back_everything(client, fd)
     assert summary["day"] is None
     assert summary["totals"]["total_sales_ugx"] == 0
     assert summary["expenses"] == [] and summary["debts"] == []
+
+
+# =============================================================================
+# SAVE vs CLOSE DAY: the approved new business rule.
+#
+#   UNSAVED  = browser-only; still discarded if nothing is ever Saved.
+#   SAVE     = persists the current working day even if it is not balanced.
+#   CLOSE DAY = finalises only once the same authoritative reconciliation
+#               Close Day has always required actually passes.
+# =============================================================================
+
+def test_first_save_creates_one_open_unbalanced_day_and_reloads_exactly(client, fd):
+    """B + C: Save persists an unfinished day; reloading reproduces it exactly."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    saved = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],            # 10 cartons sold
+        cards=[_card(product_id, (6, 79_000))],               # only 6 of 10 priced
+        expenses=[{"description": "Fuel", "amount_ugx": 5_000, "payment_method": "cash"}],
+    )
+    assert saved.status_code == 200, saved.get_json()
+    body = saved.get_json()
+    assert body["day"]["status"] == "draft"
+    assert body["status_code"] == "open"
+    assert body["balanced"] is False                         # cash not counted, card incomplete
+    assert SalesDay.query.one().status == "draft"
+    assert _table_counts() == {"days": 1, "lines": 1, "invoices": 1,
+                               "expenses": 1, "debts": 0, "payments": 0}
+
+    reloaded = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={profile_id}").get_json()
+    assert reloaded["day"]["status"] == "draft"
+    assert reloaded["status_code"] == "open"
+    assert reloaded["expenses"][0]["description"] == "Fuel"
+    assert [row["quantity"] for row in reloaded["product_cards"][0]["rows"]] == [6]
+    stock = next(r for r in reloaded["stock"] if r["product_id"] == product_id)
+    assert stock["derived_sold"]["cartons"] == 10
+
+
+def test_second_save_updates_the_same_day_in_place(client, fd):
+    """D: a later Save updates the row Save already created, not a new one."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    first = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (6, 79_000))],
+        expenses=[{"description": "Fuel", "amount_ugx": 5_000, "payment_method": "cash"}],
+    )
+    assert first.status_code == 200, first.get_json()
+    day_id = SalesDay.query.one().id
+
+    second = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (6, 79_000), (4, 80_000))],  # now fully priced
+        expenses=[{"description": "Fuel", "amount_ugx": 5_000, "payment_method": "cash"}],
+        actual_cash_count_ugx=789_000,
+    )
+    assert second.status_code == 200, second.get_json()
+    assert SalesDay.query.one().id == day_id
+    assert _table_counts()["days"] == 1
+    assert _table_counts()["expenses"] == 1                  # unchanged expense, not duplicated
+    body = second.get_json()
+    assert sorted(row["quantity"] for row in body["product_cards"][0]["rows"]) == [4, 6]
+    assert body["balanced"] is True
+    assert body["status_code"] == "open"                      # still not Closed
+
+
+def test_repeated_unchanged_save_writes_nothing_new(client, fd):
+    """E: pressing Save several times with the same figures creates no duplicates."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    payload = dict(
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (10, 79_000))],
+        expenses=[{"description": "Fuel", "amount_ugx": 5_000, "payment_method": "cash"}],
+        transfers=[{"from_account": "cash", "to_account": "mobile_money", "amount_ugx": 1_000}],
+        debts=[{"name": "Darius", "amount_ugx": 100_000}],
+    )
+    first = _save(client, profile_id, **payload)
+    assert first.status_code == 200, first.get_json()
+    before = _table_counts()
+    invoice_id, expense_id, debt_id = (
+        SalesInvoice.query.one().id, SalesExpense.query.one().id, SalesDebt.query.one().id,
+    )
+
+    for _ in range(4):
+        again = _save(client, profile_id, **payload)
+        assert again.status_code == 200, again.get_json()
+
+    assert _table_counts() == before
+    assert SalesInvoice.query.one().id == invoice_id
+    assert SalesExpense.query.one().id == expense_id
+    assert SalesDebt.query.one().id == debt_id
+
+
+def test_save_accepts_an_unbalanced_day_close_day_refuses_it_until_corrected(client, fd):
+    """F + G + H: Save tolerates what Close Day refuses, until it is fixed."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    saved = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],            # 10 cartons sold
+        cards=[_card(product_id, (6, 79_000))],               # only 6 priced
+    )
+    assert saved.status_code == 200, saved.get_json()
+    assert saved.get_json()["balanced"] is False
+
+    refused = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (6, 79_000))],
+        actual_cash_count_ugx=474_000,
+    )
+    assert refused.status_code == 400
+    assert "were sold" in refused.get_json()["error"]
+    day = SalesDay.query.one()
+    assert day.status == "draft"                             # still only Saved, not closed
+    assert SalesInvoice.query.filter_by(status="active").count() == 1
+
+    closed = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (6, 79_000), (4, 80_000))],  # corrected to fully priced
+        actual_cash_count_ugx=789_000,
+    )
+    assert closed.status_code == 200, closed.get_json()
+    assert SalesDay.query.one().status == "closed"
+
+
+def test_a_failed_save_rolls_back_completely(client, fd):
+    """I: a malformed row refuses the whole Save, and nothing from it persists."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    refused = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (6, 79_000))],
+        expenses=[{"description": "", "amount_ugx": 5_000, "payment_method": "cash"}],
+    )
+    assert refused.status_code == 400
+    assert _nothing_stored(), _table_counts()
+
+
+def test_a_failed_close_does_not_corrupt_the_last_saved_snapshot(client, fd):
+    """Save snapshot A; the browser moves to invalid B; Close(B) fails; DB keeps A."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    saved = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],            # A: 10 cartons sold
+        cards=[_card(product_id, (10, 79_000))],              # A: fully priced
+        actual_cash_count_ugx=790_000,
+    )
+    assert saved.status_code == 200, saved.get_json()
+    assert saved.get_json()["balanced"] is True
+
+    # The browser now shows unsaved edits B: Return Today changed to imply 20
+    # cartons sold, with the card still priced for only 10 - invalid.
+    refused = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 30)],            # B: 20 cartons sold
+        cards=[_card(product_id, (10, 79_000))],              # B: still priced for 10 - mismatch
+        actual_cash_count_ugx=790_000,
+    )
+    assert refused.status_code == 400
+    assert "were sold" in refused.get_json()["error"]
+
+    day = SalesDay.query.one()
+    assert day.status == "draft"
+    line = SalesVehicleClosingLine.query.filter_by(sales_day_id=day.id, product_id=product_id).one()
+    assert line.base_unit_qty == 4_000                        # A's counted return (40 cartons), not B's 30
+    stored = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={profile_id}").get_json()
+    stock = next(r for r in stored["stock"] if r["product_id"] == product_id)
+    assert stock["closing"]["cartons"] == 40
+    assert stock["derived_sold"]["cartons"] == 10
+
+
+def test_save_tolerates_what_close_day_would_refuse(client, fd):
+    """Save never requires the business reconciliation only Close Day enforces."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    underpriced_with_excess_debt = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],            # 10 cartons sold
+        cards=[_card(product_id, (3, 79_000))],               # only 3 priced
+        debts=[{"name": "Darius", "amount_ugx": 900_000}],    # far more than priced sales so far
+    )
+    assert underpriced_with_excess_debt.status_code == 200, underpriced_with_excess_debt.get_json()
+    body = underpriced_with_excess_debt.get_json()
+    assert body["balanced"] is False
+    assert [row["quantity"] for row in body["product_cards"][0]["rows"]] == [3]
+    assert body["debts"][0]["amount_ugx"] == 900_000
+
+    overpriced = _save(
+        client, profile_id, date="2026-10-31",
+        lines=[_sheet(product_id, 40, 0, 40, 30)],            # 10 cartons sold
+        cards=[_card(product_id, (15, 79_000))],              # 15 priced - overpriced
+    )
+    assert overpriced.status_code == 200, overpriced.get_json()
+    assert [row["quantity"] for row in overpriced.get_json()["product_cards"][0]["rows"]] == [15]
+
+
+def test_debtor_partial_payment_workflow_across_saves(client, fd):
+    """Debtor payments recorded later keep their own receipt date and never
+    become a second sale; overpayment and already-paid debts stay refused."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    saved = _save(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],            # 10 cartons sold
+        cards=[_card(product_id, (10, 79_000))],
+        debts=[{"name": "Darius", "amount_ugx": 79_000}],     # 1 of the 10 cartons unpaid
+    )
+    assert saved.status_code == 200, saved.get_json()
+    assert saved.get_json()["debts"][0]["amount_ugx"] == 79_000
+    debtor = SalesDebtor.query.one()
+    assert sales_service.debtor_balance(debtor) == 79_000
+
+    reloaded = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={profile_id}").get_json()
+    assert reloaded["debtor_balances"][0]["outstanding_ugx"] == 79_000
+
+    # On a LATER date, Darius pays part of it in cash - the receipt belongs to
+    # that later date, not the original sale date.
+    collection = _save(
+        client, profile_id, date="2026-10-31",
+        lines=[_sheet(product_id, 40, 0, 40, 40)],            # nothing sold today
+        debt_payments=[{"debtor_id": debtor.id, "amount_ugx": 40_000, "payment_method": "cash"}],
+    )
+    assert collection.status_code == 200, collection.get_json()
+    payment = SalesDebtPayment.query.one()
+    assert payment.payment_date == "2026-10-31"
+    assert sales_service.debtor_balance(debtor) == 39_000
+
+    # Pressing Save again, unchanged, does not create a second payment.
+    again = _save(
+        client, profile_id, date="2026-10-31",
+        lines=[_sheet(product_id, 40, 0, 40, 40)],
+        debt_payments=[{"debtor_id": debtor.id, "amount_ugx": 40_000, "payment_method": "cash"}],
+    )
+    assert again.status_code == 200, again.get_json()
+    assert SalesDebtPayment.query.count() == 1
+
+    # The collection on 2026-10-31 never becomes a second sale on either date.
+    day1 = client.get(f"/api/sales/days/2026-10-30?sales_profile_id={profile_id}").get_json()
+    assert day1["totals"]["total_sales_ugx"] == 790_000
+    day2 = client.get(f"/api/sales/days/2026-10-31?sales_profile_id={profile_id}").get_json()
+    assert day2["totals"]["total_sales_ugx"] == 0
+
+    # Collecting the rest by Mobile Money pays the debt off completely.
+    final = _save(
+        client, profile_id, date="2026-10-31",
+        lines=[_sheet(product_id, 40, 0, 40, 40)],
+        debt_payments=[{"debtor_id": debtor.id, "amount_ugx": 40_000, "payment_method": "cash"},
+                       {"debtor_id": debtor.id, "amount_ugx": 39_000, "payment_method": "mobile_money"}],
+    )
+    assert final.status_code == 200, final.get_json()
+    assert sales_service.debtor_balance(debtor) == 0
+
+    # A fully paid debt refuses any further payment (overpayment protection).
+    overpaid = _save(
+        client, profile_id, date="2026-10-31",
+        lines=[_sheet(product_id, 40, 0, 40, 40)],
+        debt_payments=[{"debtor_id": debtor.id, "amount_ugx": 40_000, "payment_method": "cash"},
+                       {"debtor_id": debtor.id, "amount_ugx": 39_000, "payment_method": "mobile_money"},
+                       {"debtor_id": debtor.id, "amount_ugx": 1, "payment_method": "cash"}],
+    )
+    assert overpaid.status_code == 400
+    assert "exceeds" in overpaid.get_json()["error"]
+    # The refused Save changed nothing: still exactly the two active payments
+    # "final" left behind (plus the one earlier payment it replaced, voided).
+    assert SalesDebtPayment.query.filter_by(status="active").count() == 2
+
+
+def test_a_closed_day_can_be_reopened_and_corrected_via_save_with_audit(client, fd):
+    """A closed date stays reachable: reopen, correct through Save, re-close."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    closed = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],
+        cards=[_card(product_id, (10, 79_000))],
+        actual_cash_count_ugx=790_000,
+    )
+    assert closed.status_code == 200, closed.get_json()
+    assert SalesDay.query.one().status == "closed"
+
+    denied = client.post("/api/sales/days/2026-10-30/reopen",
+                         json={"sales_profile_id": profile_id, "reason": "Count was wrong"})
+    assert denied.status_code == 403                          # an Operator cannot reopen their own day
+
+    _login(client, fd["manager"])
+    reopened = client.post("/api/sales/days/2026-10-30/reopen",
+                           json={"sales_profile_id": profile_id, "reason": "Count was wrong"})
+    assert reopened.status_code == 200
+    assert reopened.get_json()["day"]["status"] == "reopened"
+    assert AuditLog.query.filter_by(entity_type="sales_day", action="reopen").count() == 1
+
+    # The Manager corrects the return count and re-saves: Save also works on a
+    # reopened day, through the same atomic whole-day path.
+    corrected = _save(
+        client, profile_id,
+        lines=[{**_sheet(product_id, 50, 0, 50, 39),          # 11 cartons sold now, not 10
+               "reason": "Recount found one more carton sold"}],
+        cards=[_card(product_id, (10, 79_000))],              # still only 10 priced - unbalanced
+    )
+    assert corrected.status_code == 200, corrected.get_json()
+    assert corrected.get_json()["balanced"] is False
+    line = SalesVehicleClosingLine.query.filter_by(product_id=product_id).one()
+    assert line.corrected_by == fd["manager"].id
+    assert line.correction_reason == "Recount found one more carton sold"
+    stock = next(r for r in corrected.get_json()["stock"] if r["product_id"] == product_id)
+    assert stock["derived_sold"]["cartons"] == 11
+    assert stock["variance"]["base_unit_qty"] != 0
+    assert SalesDay.query.one().status == "reopened"          # Save never silently re-closes
+
+    reclosed = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 39)],
+        cards=[_card(product_id, (10, 79_000), (1, 79_000))],
+        actual_cash_count_ugx=869_000,
+    )
+    assert reclosed.status_code == 200, reclosed.get_json()
+    assert SalesDay.query.one().status == "closed"
+
+
+def test_reconciliation_distinguishes_saved_unbalanced_from_closed_balanced(client, fd):
+    """The Reconciliation history shows each date's authoritative server status."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    _save(client, profile_id, date="2026-10-30",
+          lines=[_sheet(product_id, 50, 0, 50, 40)],
+          cards=[_card(product_id, (6, 79_000))])              # saved, unbalanced
+    closed = _close(client, profile_id, date="2026-10-31",
+                    lines=[_sheet(product_id, 40, 0, 40, 30)],
+                    cards=[_card(product_id, (10, 80_000))],
+                    actual_cash_count_ugx=800_000)
+    assert closed.status_code == 200, closed.get_json()
+
+    history = client.get(
+        f"/api/sales/history?date_from=2026-10-30&date_to=2026-10-31&sales_profile_id={profile_id}"
+    ).get_json()
+    by_date = {row["business_date"]: row for row in history}
+    assert by_date["2026-10-30"]["status_code"] == "open"
+    assert by_date["2026-10-30"]["balanced"] is False
+    assert by_date["2026-10-31"]["status_code"] == "closed"
+    assert by_date["2026-10-31"]["balanced"] is True

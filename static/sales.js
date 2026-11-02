@@ -92,16 +92,44 @@ async function loadAdminUsers(){if(!meta.can_manage)return;try{const users=await
 // ---- The working day -------------------------------------------------------
 // An unfinished day is browser state and nothing else.  Selecting a date only
 // asks the server for that date's context - what carried forward, today's
-// Finished Goods load, the packaging rules, and (only if the day was really
-// closed) what was stored.  Nothing is written until Close day.
+// Finished Goods load, the packaging rules, and (if the day was Saved or
+// Closed) what was stored.  Nothing is written until Save or Close day.
 let work=null,workKey='';
 function blankWork(){
   return {expenses:[],transfers:[],debts:[],collections:[],
           mobile:'',cash:'',actualMobile:'',notes:''};
 }
+// A day that was Saved (open, maybe unbalanced) or Closed reloads exactly
+// what is stored for it, so the salesperson can pick up where they left off.
+function workFromSaved(){
+  const day=current.day||{};
+  return {
+    expenses:(current.expenses||[]).filter(e=>e.status==='active')
+      .map(e=>({description:e.description,amount_ugx:e.amount_ugx,payment_method:e.payment_method})),
+    transfers:(current.transfers||[]).filter(t=>t.status==='active')
+      .map(t=>({from_account:t.from_account,to_account:t.to_account,amount_ugx:t.amount_ugx,reference:t.reference})),
+    debts:(current.debts||[]).filter(d=>d.status==='active'&&d.kind==='sale')
+      .map(d=>({name:d.name,amount_ugx:d.amount_ugx,notes:null})),
+    // _persisted marks a row that is already part of the server's own
+    // debtor_balances for this date (it was Saved or Closed, not just typed
+    // this visit), so renderDayDebts() below never subtracts it a second time.
+    collections:(current.debt_payments||[]).filter(p=>p.status==='active')
+      .map(p=>({debtor_id:p.debtor_id,name:p.name,amount_ugx:p.amount_ugx,
+               payment_method:p.payment_method,_persisted:true})),
+    mobile:day.mobile_money_from_sales_ugx!=null?String(day.mobile_money_from_sales_ugx):'',
+    cash:day.actual_cash_count_ugx!=null?String(day.actual_cash_count_ugx):'',
+    actualMobile:day.actual_mobile_money_ugx!=null?String(day.actual_mobile_money_ugx):'',
+    notes:day.notes||'',
+  };
+}
 function syncWork(){
   const key=`${profileId()}|${dateVal()}`;
-  if(!work||key!==workKey){workKey=key;work=blankWork();}
+  if(!work||key!==workKey){
+    workKey=key;
+    // A date with nothing saved at all starts blank - that is still browser-only
+    // work the salesperson can simply discard by leaving the page.
+    work=current.day?workFromSaved():blankWork();
+  }
   return work;
 }
 function isClosed(){return !!(current&&current.day&&current.day.status==='closed');}
@@ -111,21 +139,28 @@ async function loadDay(){
   if(!dateVal()){msg('Choose a date.');return;}
   if(!profileId()){msg('Choose a salesperson.');return;}
   try{
-    // Read only.  POST /days used to create a draft day row; opening a date now
-    // writes nothing at all, so an unfinished day can never be left behind.
     current=await api(`/api/sales/days/${dateVal()}?${profileParam()}`);
-    work=blankWork();workKey=`${profileId()}|${dateVal()}`;
-    stockKey='';stockOptions=null;drafts={};draftsKey='';
+    // Force every working-state cache to rebuild from what was just loaded:
+    // syncWork()/syncStockDrafts()/syncDrafts() (called from render() below)
+    // then decide blank vs reloaded from current.day themselves.
+    workKey='';stockKey='';stockOptions=null;drafts={};draftsKey='';
     render();
   }catch(e){msg(e.message);}
+}
+function statusLabel(){
+  if(!current||!current.day)return 'NOT SAVED YET';
+  if(current.day.status==='closed')return 'CLOSED';
+  if(current.day.status==='reopened')return 'REOPENED';
+  return current.balanced?'SAVED · BALANCED':'SAVED · UNBALANCED';
 }
 function render(){
   if(!current)return;
   syncDrafts();syncWork();
   const closed=isClosed();
-  $('statusPill').textContent=current.day?current.day.status.toUpperCase():'NOT SAVED YET';
+  $('statusPill').textContent=statusLabel();
   renderOpeningNotice();
   $('reopenDay').classList.toggle('hidden',!closed||!meta.can_manage);
+  $('saveDay').classList.toggle('hidden',closed);
   $('closeDay').classList.toggle('hidden',closed);
   ['mobileFromSales','actualCash','actualMobile'].forEach(id=>{if($(id))$(id).disabled=closed;});
   ['addStockProduct','addExpense','addTransfer','addDebt','addCollection']
@@ -582,18 +617,33 @@ function renderDayDebts(){
   const debts=open?work.debts:(current.debts||[]);
   const collected=open?work.collections:(current.debt_payments||[]);
   const balances=current.debtor_balances||[];
-  const paidByName={};
-  collected.forEach(row=>{
+  // "Collected today" (for display) counts every collection for this date,
+  // whether or not it has been Saved yet.  Only a collection NOT yet Saved -
+  // typed this visit, still browser-only - is subtracted again from the
+  // server's own outstanding_ugx for the "remaining to collect" figure and
+  // the picker below; anything already Saved or Closed is already netted
+  // into that figure.  Paid/Partially Paid/Unpaid is the debtor's whole
+  // history, so it reads the server's own lifetime paid_ugx, never a
+  // reconstruction from what happens to be on screen today.
+  const collectedTodayByName={},pendingByName={};
+  work.collections.forEach(row=>{
     const key=String(row.name||'').trim().toLowerCase();
-    paidByName[key]=(paidByName[key]||0)+Number(row.amount_ugx||0);
+    collectedTodayByName[key]=(collectedTodayByName[key]||0)+Number(row.amount_ugx||0);
+    if(!row._persisted)pendingByName[key]=(pendingByName[key]||0)+Number(row.amount_ugx||0);
   });
   const rows=[];
   balances.forEach(row=>{
     const key=String(row.name||'').trim().toLowerCase();
-    const paid=paidByName[key]||0;
-    const remaining=Number(row.outstanding_ugx||0)-paid;
-    const status=remaining<=0?'Paid':(paid>0?'Partially Paid':'Unpaid');
-    rows.push(`<div class="list-row" data-debtor-balance="${row.debtor_id}"><div class="row-head"><strong>${esc(row.name)}</strong><strong>${ugx(Math.max(remaining,0))}</strong></div><small>Owed ${ugx(row.outstanding_ugx)}${paid?` · collected today ${ugx(paid)}`:''} · <strong>${status}</strong></small></div>`);
+    const collectedToday=collectedTodayByName[key]||0;
+    const pending=pendingByName[key]||0;
+    const remaining=Math.max(Number(row.outstanding_ugx||0)-pending,0);
+    // Paid/Partially Paid/Unpaid counts the debtor's whole history: every
+    // payment already Saved or Closed (row.paid_ugx) plus a collection typed
+    // this visit that has not been Saved yet (pending) - never only one or
+    // only the other.
+    const everPaid=Number(row.paid_ugx||0)+pending;
+    const status=remaining<=0?'Paid':(everPaid>0?'Partially Paid':'Unpaid');
+    rows.push(`<div class="list-row" data-debtor-balance="${row.debtor_id}"><div class="row-head"><strong>${esc(row.name)}</strong><strong>${ugx(remaining)}</strong></div><small>Owed ${ugx(row.outstanding_ugx)}${collectedToday?` · collected today ${ugx(collectedToday)}`:''} · <strong>${status}</strong></small></div>`);
   });
   debts.forEach((d,index)=>rows.push(`<div class="list-row"><div class="row-head"><strong>${esc(d.name)} owes today</strong><span class="row-tail"><strong>${ugx(d.amount_ugx)}</strong>${open?`<button type="button" class="row-remove" data-remove-debt="${index}" aria-label="Remove this unpaid sale">×</button>`:''}</span></div><small>Unpaid${d.kind==='opening'?' (historical)':''}</small></div>`));
   collected.forEach((p,index)=>rows.push(`<div class="list-row"><div class="row-head"><strong>${esc(p.name)} paid</strong><span class="row-tail"><strong>${ugx(p.amount_ugx)}</strong>${open?`<button type="button" class="row-remove" data-remove-collection="${index}" aria-label="Remove this collection">×</button>`:''}</span></div><small>${esc(METHOD_LABEL[p.payment_method]||p.payment_method)} · money received today, not a new sale</small></div>`));
@@ -605,8 +655,7 @@ function renderDayDebts(){
   const pick=$('collectionDebtor');
   if(pick){
     pick.innerHTML='<option value="">Choose a debtor</option>'+balances.map(row=>{
-      const paid=paidByName[String(row.name||'').trim().toLowerCase()]||0;
-      const remaining=Math.max(Number(row.outstanding_ugx||0)-paid,0);
+      const remaining=Math.max(Number(row.outstanding_ugx||0)-(pendingByName[String(row.name||'').trim().toLowerCase()]||0),0);
       return `<option value="${row.debtor_id}" data-name="${esc(row.name)}" data-outstanding="${remaining}">${esc(row.name)} — ${ugx(remaining)}</option>`;
     }).join('');
   }
@@ -835,10 +884,11 @@ function stockPayload(){
   if(!lines.length)throw new Error('Add at least one product to the vehicle stock.');
   return lines;
 }
-function cardPayload(){
-  // The complete Sales Cards, exactly as they stand on screen.  Also sent only
-  // by Close day: no per-product save exists any more, so the rows a salesperson
-  // is looking at are what the day is closed with.
+function cardPayload(forClose){
+  // The complete Sales Cards, exactly as they stand on screen.  Save and
+  // Close day both send this; only Close day (forClose=true) requires every
+  // sold quantity to already have a price row - Save stores an unfinished
+  // card exactly as it stands.
   const cards=[];
   stockCards.forEach(card=>{
     if(!card.productId)return;
@@ -846,6 +896,10 @@ function cardPayload(){
     const rows=[];
     draft.forEach(line=>{
       if(line.quantity===''||line.quantity==null)return;
+      // Save tolerates a row the salesperson has only half finished typing
+      // (a quantity with no price yet) by simply leaving it out; Close day
+      // still requires every started row to be complete.
+      if(!forClose&&(line.unit_price_ugx===''||line.unit_price_ugx==null))return;
       const quantity=Number(line.quantity),price=Number(line.unit_price_ugx);
       if(!Number.isFinite(quantity)||quantity<=0)
         throw new Error(`${card.name}: every price row needs a quantity greater than zero.`);
@@ -856,9 +910,11 @@ function cardPayload(){
       rows.push({quantity,unit:line.unit||CARD_UNIT,unit_price_ugx:Math.round(price)});
     });
     if(!rows.length){
-      const figures=liveFigures(card.productId);
-      if(figures.valid&&figures.sold>0)
-        throw new Error(`${card.name}: ${qtyLabel(figures.sold,figures.rule)} sold — add a price row for it before closing.`);
+      if(forClose){
+        const figures=liveFigures(card.productId);
+        if(figures.valid&&figures.sold>0)
+          throw new Error(`${card.name}: ${qtyLabel(figures.sold,figures.rule)} sold — add a price row for it before closing.`);
+      }
       return;                                            // nothing sold, nothing to price
     }
     cards.push({product_id:card.productId,rows});
@@ -883,7 +939,11 @@ function workPayload(){
     notes:work.notes||null,
   };
 }
-function validateWork(){
+// Basic data integrity only - malformed rows, not business reconciliation.
+// Both Save and Close day require this; only Close day additionally requires
+// the cash-from-sales check below, since sales may still be unpriced when a
+// debt or Mobile Money amount is typed and Save must tolerate that.
+function validateWorkBasics(){
   work.expenses.forEach(row=>{
     if(!String(row.description||'').trim())throw new Error('Every expense needs a description.');
     if(!(Number(row.amount_ugx)>0))throw new Error(`${row.description}: the amount must be greater than zero.`);
@@ -896,26 +956,47 @@ function validateWork(){
     if(!row.debtor_id)throw new Error('Choose the debtor the money came from.');
     if(!(Number(row.amount_ugx)>0))throw new Error('Enter the amount collected.');
   });
+}
+function validateWork(){
+  validateWorkBasics();
   const totals=liveTotals();
   if(totals.cash_from_sales_ugx<0)
     throw new Error('Mobile Money and unpaid amounts cannot exceed total sales.');
+}
+async function saveWorkingDay(){
+  // Save persists exactly the current screen, even unbalanced: only basic
+  // data integrity is checked here, never the business reconciliation Close
+  // day requires.  Nothing on screen is cleared or rebuilt afterwards - the
+  // salesperson keeps working from exactly where they were.
+  const path=`/api/sales/days/${dateVal()}/save`;
+  let body;
+  try{
+    validateWorkBasics();
+    body={sales_profile_id:profileId(),vehicle_stock:stockPayload(),
+      sales_cards:cardPayload(false),...workPayload()};
+  }catch(e){msg(e.message);return;}
+  try{
+    current=await api(path,{method:'POST',body:JSON.stringify(body)});
+    render();msg('Day saved.',true);
+  }catch(e){msg(e.message);}
 }
 async function closeDay(){
   const path=`/api/sales/days/${dateVal()}/close`;
   let body;
   try{
-    // Close day is the day's only save: the complete Vehicle Stock sheet, every
+    // Close day validates and stores the complete Vehicle Stock sheet, every
     // Sales Card, the expenses, the money movements, Mobile Money, the counted
-    // cash, the unpaid part of today's sales and the collections of older ones.
-    // The server validates and stores all of it in one transaction; a refusal
-    // writes nothing and leaves every typed figure on screen.
+    // cash, the unpaid part of today's sales and the collections of older ones,
+    // in one transaction - the same way Save does, plus the full business
+    // reconciliation.  A refusal writes nothing and leaves every typed figure
+    // on screen (it does not even touch what the last Save already stored).
     validateWork();
     body={sales_profile_id:profileId(),vehicle_stock:stockPayload(),
-      sales_cards:cardPayload(),...workPayload()};
+      sales_cards:cardPayload(true),...workPayload()};
   }catch(e){msg(e.message);return;}
   try{
     current=await api(path,{method:'POST',body:JSON.stringify(body)});
-    // The day is stored now, so the working state is emptied and the screen is
+    // The day is closed now, so the working state is emptied and the screen is
     // rebuilt from what was stored.
     work=blankWork();workKey=`${profileId()}|${dateVal()}`;
     stockKey='';stockOptions=null;drafts={};draftsKey='';
@@ -1056,7 +1137,18 @@ async function loadHistory(){
     const q=new URLSearchParams({date_from:$('historyFrom').value,date_to:$('historyTo').value});
     if(profileId())q.set('sales_profile_id',profileId());
     const rows=await api('/api/sales/history?'+q);
-    $('historyList').innerHTML=rows.map(s=>`<div class="list-row"><div class="row-head"><strong>${esc(s.business_date)} · ${esc(s.profile.display_name)}</strong><span class="tag ${s.needs_reconciliation?'bad':''}">${s.needs_reconciliation?'Needs reconciliation':'Balanced'}</span></div><div class="metrics"><div class="metric"><span>Sales</span><strong>${ugx(s.totals.total_sales_ugx)}</strong></div><div class="metric"><span>Expected cash</span><strong>${ugx(s.totals.expected_cash_ugx)}</strong></div><div class="metric"><span>Cash counted</span><strong>${ugx(s.totals.actual_cash_ugx)}</strong></div><div class="metric"><span>Difference</span><strong>${ugx(s.totals.cash_variance_ugx)}</strong></div></div><a href="/api/sales/reports/reconciliation.csv?date_from=${s.business_date}&date_to=${s.business_date}&sales_profile_id=${s.profile.id}">Reconciliation CSV</a> · <a href="/api/sales/reports/reconciliation.pdf?date_from=${s.business_date}&date_to=${s.business_date}&sales_profile_id=${s.profile.id}">PDF</a></div>`).join('')||'<p class="empty">No days in this range.</p>';
+    // The workflow status is the server's own authoritative word, never
+    // frontend arithmetic: Closed is always balanced by construction; an open
+    // (Saved but not yet Closed) day may already reconcile or may not.
+    const workflowTag=s=>{
+      if(s.status_code==='closed')return ['ok','Closed'+(s.balanced?' · Balanced':'')];
+      if(s.status_code==='open')return s.balanced?['ok','Saved · Balanced']:['bad','Saved · Unbalanced'];
+      return ['warn','Not saved'];
+    };
+    $('historyList').innerHTML=rows.map(s=>{
+      const [tagClass,tagText]=workflowTag(s);
+      return `<div class="list-row"><div class="row-head"><strong>${esc(s.business_date)} · ${esc(s.profile.display_name)}</strong><span class="tag ${tagClass}">${esc(tagText)}</span></div><div class="metrics"><div class="metric"><span>Sales</span><strong>${ugx(s.totals.total_sales_ugx)}</strong></div><div class="metric"><span>Expected cash</span><strong>${ugx(s.totals.expected_cash_ugx)}</strong></div><div class="metric"><span>Cash counted</span><strong>${ugx(s.totals.actual_cash_ugx)}</strong></div><div class="metric"><span>Difference</span><strong>${ugx(s.totals.cash_variance_ugx)}</strong></div></div><a href="/api/sales/reports/reconciliation.csv?date_from=${s.business_date}&date_to=${s.business_date}&sales_profile_id=${s.profile.id}">Reconciliation CSV</a> · <a href="/api/sales/reports/reconciliation.pdf?date_from=${s.business_date}&date_to=${s.business_date}&sales_profile_id=${s.profile.id}">PDF</a></div>`;
+    }).join('')||'<p class="empty">No days in this range.</p>';
     renderReportLinks();
   }catch(e){msg(e.message);}
 }
@@ -1179,6 +1271,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       paintMoney();
     });
   });
+  $('saveDay').onclick=saveWorkingDay;
   $('closeDay').onclick=closeDay;
   $('reopenDay').onclick=reopenDay;
   $('addDebt').onclick=e=>addDebt(e.currentTarget);
