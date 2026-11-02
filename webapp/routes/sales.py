@@ -90,19 +90,24 @@ def _product_meta(product, business_date):
 
 
 def _require_editable_day(profile, business_date):
-    """The day a correction endpoint may edit: one Close Day already saved.
+    """The day a separate correction endpoint may edit: a day already Saved.
 
-    An unfinished working day exists in the browser and nowhere else, so there
-    is nothing here to edit: a caller that has not closed the day is told to use
-    Close Day, and a closed day must be reopened by a Manager first.  This is
-    what keeps the separate endpoints from quietly becoming draft persistence
-    again.
+    Save and Close Day are the only two ways a day's figures are written, so
+    an unsaved date has nothing here to edit: a caller that has neither Saved
+    nor Closed the day is told to use one of those.  A Saved-but-open day is
+    edited by Saving it again with the complete current state, not through
+    these separate endpoints; a closed day must be reopened by a Manager
+    first.  This is what keeps these endpoints from quietly becoming
+    per-field persistence again.
     """
     day = SalesDay.query.filter_by(sales_profile_id=profile.id,
                                    business_date=svc.valid_date(business_date)).first()
-    if day is None or day.status == DAY_DRAFT:
+    if day is None:
         raise svc.DayNotSaved("Nothing is saved before Close Day. "
-                              "Enter the whole day and press Close day to save it.")
+                              "Enter the whole day and press Save or Close day to save it.")
+    if day.status == DAY_DRAFT:
+        raise svc.DayNotSaved("This Sales Day is saved but not yet closed. "
+                              "Use Save to update it, or Close day once it balances.")
     if day.status == DAY_CLOSED:
         raise svc.SalesError("A closed Sales Day must be reopened before it can be edited")
     return day
@@ -309,7 +314,7 @@ def closing_stock(date_str):
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=date_str).first()
     if day is None or day.status == DAY_DRAFT:
         return _error(svc.DayNotSaved("Nothing is saved before Close Day. "
-                                      "Enter the whole day and press Close day to save it."))
+                                      "Enter the whole day and press Save or Close day to save it."))
     try:
         svc.set_closing_stock(day, data, current_user(), elevated=_elevated())
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
@@ -362,7 +367,7 @@ def returns_today(date_str):
     day = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=svc.valid_date(date_str)).first()
     if day is None or day.status == DAY_DRAFT:
         return _error(svc.DayNotSaved("Nothing is saved before Close Day. "
-                                      "Enter the whole day and press Close day to save it."))
+                                      "Enter the whole day and press Save or Close day to save it."))
     try:
         svc.save_returns_today(day, data.get("lines"), current_user(), elevated=_elevated())
         db.session.commit(); return jsonify(svc.daily_summary(profile, date_str))
@@ -484,6 +489,30 @@ def closing_stock_preview(date_str):
             "next_sales_day": next_day.business_date if next_day else None,
             "next_opening": svc.quantity_dict(new_closing, rule) if next_day else None})
     except svc.SalesError as exc: return _error(exc)
+
+
+@sales_bp.route("/days/<date_str>/save", methods=["POST"])
+@login_required
+def save_day(date_str):
+    """Persist the current working day even if it is not balanced yet.
+
+    Save carries the same complete day Close Day does, and writes it the same
+    way - the Vehicle Stock sheet, every Sales Card, expenses, money
+    movements, Mobile Money, the counted cash, new unpaid amounts and the
+    collections of older ones, atomically.  It skips the business
+    reconciliation Close Day requires, so an unfinished day can be stored and
+    reloaded exactly as it stands, and Saved again as many times as needed.
+    """
+    if not _operational_writer(): return _error("This role cannot save Sales Days", 403)
+    data = request.get_json(silent=True) or {}
+    profile, err = _profile_response(data.get("sales_profile_id"), write=True)
+    if err: return err
+    try:
+        svc.save_working_day(profile, date_str, data, current_user(), elevated=_elevated())
+        db.session.commit()
+        return jsonify(svc.daily_summary(profile, date_str))
+    except svc.SalesError as exc:
+        db.session.rollback(); return _error(exc)
 
 
 @sales_bp.route("/days/<date_str>/close", methods=["POST"])
@@ -880,6 +909,15 @@ def reconciliation_export(fmt):
                     "cash_variance": totals["cash_variance_ugx"],
                     "stock_status": "Needs reconciliation" if summary["needs_reconciliation"] else "Balanced",
                     "day_status": summary["day"]["status"] if summary["day"] else "",
+                    # The workflow status a human reads at a glance: Closed days are
+                    # always balanced by construction; an open day may already
+                    # reconcile (Saved · Balanced) or may still need work.
+                    "workflow_status": (
+                        "Closed" if summary["status_code"] == "closed"
+                        else "Saved · Balanced" if summary["balanced"]
+                        else "Saved · Unbalanced" if summary["status_code"] == "open"
+                        else "Not saved"
+                    ),
                 })
         columns = [("date", "Date"), ("salesperson", "Salesperson"), ("sales_category", "Sales Channel"),
                    ("total_sales", "Sales UGX"), ("cash_from_sales", "Cash From Sales UGX"),
@@ -887,7 +925,8 @@ def reconciliation_export(fmt):
                    ("new_debt", "New Debts UGX"), ("expenses", "Expenses UGX"),
                    ("net_sales", "Sales Less Expenses UGX"), ("expected_cash", "Expected Cash UGX"),
                    ("actual_cash", "Cash in Hand UGX"), ("cash_variance", "Difference UGX"),
-                   ("stock_status", "Stock Reconciliation"), ("day_status", "Day Status")]
+                   ("stock_status", "Stock Reconciliation"), ("day_status", "Day Status"),
+                   ("workflow_status", "Workflow Status")]
         content = build_export(fmt, title="Sales Reconciliation History",
             filters={"date_from": date_from, "date_to": date_to, "sales_profile_id": request.args.get("sales_profile_id")},
             generated_by=current_user().username, columns=columns, rows=rows,

@@ -59,20 +59,16 @@ def whole_ugx(value, field, *, positive=False, nonnegative=True):
     return value
 
 
-def saved_day(profile_id, business_date, *, include_draft=False):
-    """The stored Sales Day for a date, when it is a real (closed) day.
+def saved_day(profile_id, business_date):
+    """The stored Sales Day for a date, or ``None`` if nothing was ever saved.
 
-    Close Day creates the row and closes it in one transaction, so a ``draft``
-    row can only be a leftover from the old per-keystroke workflow.  Such a row
-    is never read: an abandoned working day must not come back, so everything
-    that reads a day - the vehicle stock sheet, tender, money, the daily
-    summary - sees a date with no day at all.
+    Save and Close Day are the only two ways this row is created, so any row
+    found here is real, whichever status it is in - including an open,
+    unbalanced day a salesperson Saved and has not yet closed.  Only a date
+    where neither action has ever been taken has no day at all.
     """
-    day = SalesDay.query.filter_by(sales_profile_id=profile_id,
-                                   business_date=valid_date(business_date)).first()
-    if day is None or (day.status == DAY_DRAFT and not include_draft):
-        return None
-    return day
+    return SalesDay.query.filter_by(sales_profile_id=profile_id,
+                                    business_date=valid_date(business_date)).first()
 
 
 def _rule_for(product_id, business_date):
@@ -918,14 +914,15 @@ def carried_money_balance(profile_id, business_date, account):
     return money_balance(profile_id, business_date, account, upto=previous)
 
 
-def daily_summary(profile, business_date, *, day=None, include_draft=False):
+def daily_summary(profile, business_date, *, day=None):
     business_date = valid_date(business_date)
-    day = day if day is not None else saved_day(profile.id, business_date, include_draft=include_draft)
-    # Nothing exists for a date until Close Day has saved it.  A date with no
-    # closed day therefore reports an empty ledger - no invoices, no expenses, no
-    # debts, no counted money - instead of whatever an abandoned working day may
-    # have left behind.  The Vehicle Stock context below is still real: it is the
-    # carry-forward and Finished Goods load the salesperson must work from.
+    day = day if day is not None else saved_day(profile.id, business_date)
+    # Nothing exists for a date until Save or Close Day has stored it.  A date
+    # with no saved day therefore reports an empty ledger - no invoices, no
+    # expenses, no debts, no counted money - instead of whatever an abandoned,
+    # never-saved working day may have left in the browser.  The Vehicle Stock
+    # context below is still real: it is the carry-forward and Finished Goods
+    # load the salesperson must work from.
     invoices = (SalesInvoice.query.filter_by(
         sales_profile_id=profile.id, business_date=business_date, status=ACTIVE).all()
         if day else [])
@@ -966,6 +963,19 @@ def daily_summary(profile, business_date, *, day=None, include_draft=False):
     actual_mobile = day.actual_mobile_money_ugx if day else None
     stock = stock_reconciliation(profile, business_date, day=day)
     stock_variance = any(r["variance"] is not None and r["variance"]["base_unit_qty"] != 0 for r in stock)
+    uncounted = any(r["closing"] is None for r in stock)
+    # The same three conditions Close Day itself requires (every product
+    # counted, the stock count matches the sales entered, cash counted),
+    # computed here so a day's status is never guessed from client arithmetic.
+    # A day that already passes this is "balanced" whether or not it has been
+    # closed yet; one that does not is "unbalanced" even if it was Saved.
+    balanced = (not uncounted) and (not stock_variance) and actual_cash is not None
+    if day is None:
+        status_code = "not_saved"
+    elif day.status == DAY_CLOSED:
+        status_code = "closed"
+    else:
+        status_code = "open"      # Saved/open (draft) or reopened for correction
     baseline = baseline_for(profile.id, business_date)
     # The starting return is the salesperson's own entry, never an approval.
     # This block only says whether there is still something for them to type;
@@ -1051,6 +1061,12 @@ def daily_summary(profile, business_date, *, day=None, include_draft=False):
             "actual_cash_count_ugx": actual_cash, "actual_mobile_money_ugx": actual_mobile,
             "close_override_reason": day.close_override_reason,
         },
+        # "not_saved": no row exists yet (browser-only, discarded on leave).
+        # "open": Saved (a draft row) or reopened for correction - editable.
+        # "closed": Close Day succeeded.  ``balanced`` is the same reconciliation
+        # Close Day itself requires, so it is meaningful for an open day too.
+        "status_code": status_code,
+        "balanced": balanced,
         "stock": stock,
         "stock_warnings": stock_warnings,
         "invoices": [invoice_dict(i, as_of=business_date) for i in invoices],
@@ -1205,8 +1221,14 @@ def _aging_bucket(age):
     return "0-30" if age <= 30 else "31-60" if age <= 60 else "61-90" if age <= 90 else "90+"
 
 
-def create_debt(profile, payload, actor, *, kind=DEBT_SALE, day=None):
-    """Record an unpaid amount against a free-text debtor name."""
+def create_debt(profile, payload, actor, *, kind=DEBT_SALE, day=None, enforce_tender=True):
+    """Record an unpaid amount against a free-text debtor name.
+
+    ``enforce_tender=False`` skips the check that this debt (with every other
+    debt and Mobile Money amount already counted today) cannot exceed Total
+    Sales.  Save uses this: sales may still be partly unpriced when a debt is
+    typed, so that check can only be authoritative at Close Day.
+    """
     if kind not in DEBT_KINDS:
         raise SalesError(f"kind must be one of {DEBT_KINDS}")
     key = str(payload.get("idempotency_key") or "").strip()
@@ -1219,7 +1241,7 @@ def create_debt(profile, payload, actor, *, kind=DEBT_SALE, day=None):
         return existing, False
     business_date = valid_date(payload.get("business_date") or business_today())
     amount = whole_ugx(payload.get("amount_ugx"), "amount_ugx", positive=True)
-    if kind == DEBT_SALE:
+    if kind == DEBT_SALE and enforce_tender:
         # The sale is already counted; the debt may only explain money that was
         # not collected in cash today.  It can never create extra sales.
         assert_tender_within_sales(profile.id, business_date, extra_debt=amount, day=day)
@@ -1637,14 +1659,21 @@ def live_vehicle_stock(profile, business_date, lines):
     return figures
 
 
-def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_stock=None):
+def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_stock=None,
+                       require_balance=True):
     """Save one product's sales card as a set of price rows.
 
     The card is authoritative for one product on one day.  It is replaced as a
     whole, so re-saving the same numbers changes nothing and an edited card can
-    never be counted twice.  Quantities must add up to the stock sold exactly:
-    an under- or over-priced card is refused with the difference spelled out
-    rather than silently balanced.
+    never be counted twice.
+
+    ``require_balance=True`` (Close Day) still requires the rows to add up to
+    the stock sold exactly: an under- or over-priced card is refused with the
+    difference spelled out rather than silently balanced.  ``require_balance=
+    False`` (Save) skips that comparison - and the requirement that Sold Today
+    even be known yet - so an unfinished card is simply stored as it stands;
+    only the shape of each row (a valid unit, a positive quantity, a positive
+    price) is still checked either way.
 
     ``vehicle_stock`` is the Vehicle Stock sheet the salesperson can see, sent
     by the Sales screen so the card is priced against the Sold Today on screen
@@ -1661,6 +1690,7 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
         raise SalesError("Create the Sales Day first.")
     if day.status == DAY_CLOSED:
         raise SalesError("A closed Sales Day must be reopened before it can be edited")
+    sold = None
     if vehicle_stock is not None:
         # The Sales screen sends the sheet it is showing, so the card is priced
         # against the Sold Today on screen.  Nothing is written here: Close Day
@@ -1670,7 +1700,7 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
         if live is None:
             raise SalesError(f"{product.name} is not part of this vehicle's stock for {business_date}.")
         sold, rule = live["sold"], live["rule"]
-        if sold is None:
+        if sold is None and require_balance:
             raise SalesError(f"Enter the return today for {product.name} first, "
                              "then its sold quantity is known.")
     else:
@@ -1680,11 +1710,13 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
             raise SalesError(f"{product.name} is not part of this vehicle's stock for {business_date}.")
         if rec["available"] is None:
             raise SalesError(f"Save the starting stock for {product.name} first.")
-        if rec["derived_sold"] is None:
-            raise SalesError(f"Save the return today for {product.name} first, then its sold quantity is known.")
-        sold = rec["derived_sold"]["base_unit_qty"]
         rule = (db.session.get(PackagingRule, rec["packaging_rule_id"])
                 if rec["packaging_rule_id"] else None) or _rule_for(product.id, business_date)
+        if rec["derived_sold"] is None:
+            if require_balance:
+                raise SalesError(f"Save the return today for {product.name} first, then its sold quantity is known.")
+        else:
+            sold = rec["derived_sold"]["base_unit_qty"]
     if not isinstance(rows, list):
         raise SalesError("rows must be a list of price rows")
     parsed = []
@@ -1708,19 +1740,20 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
         priced += base_qty
         parsed.append({"product_id": product.id, "quantity": quantity,
                        "unit": unit, "unit_price_ugx": price})
-    sold = Decimal(str(sold))
-    if priced != sold:
-        if priced < sold:
+    if require_balance:
+        sold = Decimal(str(sold))
+        if priced != sold:
+            if priced < sold:
+                raise SalesError(
+                    f"{product.name}: the rows price {_quantity_label(priced, rule)} "
+                    f"but {_quantity_label(sold, rule)} were sold. "
+                    f"Add another row for the remaining {_quantity_label(sold - priced, rule)}."
+                )
             raise SalesError(
                 f"{product.name}: the rows price {_quantity_label(priced, rule)} "
-                f"but {_quantity_label(sold, rule)} were sold. "
-                f"Add another row for the remaining {_quantity_label(sold - priced, rule)}."
+                f"but only {_quantity_label(sold, rule)} were sold. "
+                f"Remove {_quantity_label(priced - sold, rule)}."
             )
-        raise SalesError(
-            f"{product.name}: the rows price {_quantity_label(priced, rule)} "
-            f"but only {_quantity_label(sold, rule)} were sold. "
-            f"Remove {_quantity_label(priced - sold, rule)}."
-        )
     existing = product_sales_rows(profile.id, business_date, product.id)
     signature = [(p["quantity"], p["unit"], p["unit_price_ugx"]) for p in parsed]
     if len(existing) == 1:
@@ -1763,14 +1796,15 @@ def save_product_sales(profile, business_date, product_id, rows, actor, vehicle_
     return invoice, "created"
 
 
-def save_sales_cards(profile, business_date, cards, actor, vehicle_stock=None):
+def save_sales_cards(profile, business_date, cards, actor, vehicle_stock=None, require_balance=True):
     """Store every sales card the salesperson is holding, in this transaction.
 
-    Close Day is the day's one write, so it sends the complete working state:
-    the Vehicle stock sheet plus one card per product.  Each card is priced by
-    the same ``save_product_sales()`` path used before, against the same
-    submitted sheet, so the rule that a card must price exactly Sold Today is
-    unchanged.  Nothing here commits: the day close commits it all or nothing.
+    Save and Close Day both send the complete working state this way: the
+    Vehicle stock sheet plus one card per product.  Each card is priced by the
+    same ``save_product_sales()`` path, against the same submitted sheet, so
+    the rule that a card must price exactly Sold Today (``require_balance``)
+    is unchanged for Close Day and relaxed only for Save.  Nothing here
+    commits: the caller's transaction commits it all or nothing.
     """
     if cards is None:
         return []
@@ -1791,7 +1825,7 @@ def save_sales_cards(profile, business_date, cards, actor, vehicle_stock=None):
         if not isinstance(rows, list):
             raise SalesError(f"{product.name}: rows must be a list of price rows.")
         invoice, action = save_product_sales(profile, business_date, product.id, rows, actor,
-                                             vehicle_stock=vehicle_stock)
+                                             vehicle_stock=vehicle_stock, require_balance=require_balance)
         saved.append({"product_id": product.id, "action": action,
                       "invoice_id": invoice.id if invoice else None})
     return saved
@@ -1918,14 +1952,8 @@ def create_transfer(day, payload, actor):
     return row
 
 
-def record_collection(profile, business_date, payload, actor):
-    """Money received today against a debt that already exists.
-
-    The receipt date is the day being closed, which is the date the money
-    actually arrived; the debt keeps the date it was created.  A collection is
-    never a product sale, so it never touches today's Total Sales.
-    """
-    business_date = valid_date(business_date)
+def _resolve_debtor_reference(profile, payload):
+    """The debtor a collection names, by id or by free-text name."""
     debtor = None
     debtor_id = payload.get("debtor_id")
     if debtor_id:
@@ -1939,6 +1967,18 @@ def record_collection(profile, business_date, payload, actor):
         raise SalesError("Choose the debtor this money came from.")
     if debtor.sales_profile_id != profile.id:
         raise SalesError("That debtor belongs to another salesperson.")
+    return debtor
+
+
+def record_collection(profile, business_date, payload, actor):
+    """Money received today against a debt that already exists.
+
+    The receipt date is the day being closed, which is the date the money
+    actually arrived; the debt keeps the date it was created.  A collection is
+    never a product sale, so it never touches today's Total Sales.
+    """
+    business_date = valid_date(business_date)
+    debtor = _resolve_debtor_reference(profile, payload)
     payment, _created = record_debt_payment(
         debtor, {**payload, "payment_date": business_date,
                  "idempotency_key": payload.get("idempotency_key") or f"close-{uuid4().hex}"},
@@ -1946,35 +1986,184 @@ def record_collection(profile, business_date, payload, actor):
     return payment
 
 
-def close_working_day(profile, business_date, payload, actor, elevated=False):
-    """Turn the browser's working day into the day's one database transaction.
+# ---------------------------------------------------------------------------
+# Replacing a day's expenses, transfers, debts and collections as a whole.
+#
+# Save and Close Day both send the complete list for each of these sections
+# every time, exactly like a Sales Card's price rows.  Each helper compares
+# that list against what is already stored for the day and only touches the
+# database when something is actually different, so pressing Save repeatedly
+# with no changes writes nothing new and a later Save or Close Day replaces
+# the set rather than ever appending a duplicate.
+# ---------------------------------------------------------------------------
+
+def _clean_expense_item(item):
+    if not isinstance(item, dict):
+        raise SalesError("Each expense needs a description and an amount.")
+    description = " ".join(str(item.get("description") or "").split())
+    if not description:
+        raise SalesError("Every expense needs a description.")
+    if len(description) > 160:
+        raise SalesError("Expense descriptions must be 160 characters or fewer.")
+    method = item.get("payment_method") or "cash"
+    if method not in ("cash", "mobile_money", "other"):
+        raise SalesError("invalid expense payment method")
+    amount = whole_ugx(item.get("amount_ugx"), "amount_ugx", positive=True)
+    return {"description": description, "amount_ugx": amount, "payment_method": method,
+            "notes": (item.get("notes") or "").strip() or None}
+
+
+def replace_day_expenses(day, items, actor):
+    if not isinstance(items, list):
+        raise SalesError("expenses must be a list.")
+    cleaned = [_clean_expense_item(item) for item in items]
+    new_sig = sorted((c["description"], c["amount_ugx"], c["payment_method"], c["notes"]) for c in cleaned)
+    existing_rows = SalesExpense.query.filter_by(
+        sales_profile_id=day.sales_profile_id, business_date=day.business_date, status=ACTIVE).all()
+    old_sig = sorted((r.description, r.amount_ugx, r.payment_method, r.notes) for r in existing_rows)
+    if new_sig == old_sig:
+        return existing_rows
+    for row in existing_rows:
+        void_record(row, actor, f"Replaced by Save on {day.business_date}")
+    db.session.flush()
+    return [create_expense(day, c, actor) for c in cleaned]
+
+
+def _clean_transfer_item(item):
+    if not isinstance(item, dict):
+        raise SalesError("Each money transfer needs two accounts and an amount.")
+    source, target = item.get("from_account"), item.get("to_account")
+    if source not in MONEY_ACCOUNTS or target not in MONEY_ACCOUNTS:
+        raise SalesError("invalid money account")
+    if source == target:
+        raise SalesError("Choose two different accounts for a money transfer.")
+    amount = whole_ugx(item.get("amount_ugx"), "amount_ugx", positive=True)
+    return {"from_account": source, "to_account": target, "amount_ugx": amount,
+            "reference": (item.get("reference") or "").strip() or None,
+            "notes": (item.get("notes") or "").strip() or None}
+
+
+def replace_day_transfers(day, items, actor):
+    if not isinstance(items, list):
+        raise SalesError("transfers must be a list.")
+    cleaned = [_clean_transfer_item(item) for item in items]
+    new_sig = sorted((c["from_account"], c["to_account"], c["amount_ugx"], c["reference"], c["notes"])
+                     for c in cleaned)
+    existing_rows = SalesMoneyTransfer.query.filter_by(
+        sales_profile_id=day.sales_profile_id, business_date=day.business_date, status=ACTIVE).all()
+    old_sig = sorted((r.from_account, r.to_account, r.amount_ugx, r.reference, r.notes) for r in existing_rows)
+    if new_sig == old_sig:
+        return existing_rows
+    for row in existing_rows:
+        void_record(row, actor, f"Replaced by Save on {day.business_date}")
+    db.session.flush()
+    return [create_transfer(day, c, actor) for c in cleaned]
+
+
+def _clean_debt_item(item):
+    if not isinstance(item, dict):
+        raise SalesError("Each unpaid sale needs a name and an amount.")
+    name = clean_debtor_name(item.get("name"))
+    amount = whole_ugx(item.get("amount_ugx"), "amount_ugx", positive=True)
+    return {"name": name, "amount_ugx": amount, "notes": (item.get("notes") or "").strip() or None}
+
+
+def replace_day_debts(profile, day, items, actor, require_balance=True):
+    if not isinstance(items, list):
+        raise SalesError("debts must be a list.")
+    cleaned = [_clean_debt_item(item) for item in items]
+    new_sig = sorted((debtor_name_key(c["name"]), c["amount_ugx"], c["notes"]) for c in cleaned)
+    existing_rows = SalesDebt.query.filter_by(
+        sales_profile_id=profile.id, business_date=day.business_date, kind=DEBT_SALE, status=ACTIVE).all()
+    old_sig = sorted((debtor_name_key(r.debtor.name) if r.debtor else "", r.amount_ugx, r.notes)
+                     for r in existing_rows)
+    if new_sig == old_sig:
+        return existing_rows
+    for row in existing_rows:
+        void_record(row, actor, f"Replaced by Save on {day.business_date}")
+    db.session.flush()
+    created = []
+    for c in cleaned:
+        debt, _created = create_debt(
+            profile, {**c, "business_date": day.business_date, "idempotency_key": f"save-{uuid4().hex}"},
+            actor, kind=DEBT_SALE, day=day, enforce_tender=require_balance)
+        created.append(debt)
+    return created
+
+
+def replace_day_debt_payments(profile, day, items, actor):
+    if not isinstance(items, list):
+        raise SalesError("debt_payments must be a list.")
+    resolved = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise SalesError("Each collection needs a debtor and an amount.")
+        amount = whole_ugx(item.get("amount_ugx"), "amount_ugx", positive=True)
+        method = item.get("payment_method")
+        if method not in PAYMENT_METHODS:
+            raise SalesError(f"payment_method must be one of {PAYMENT_METHODS}")
+        debtor = _resolve_debtor_reference(profile, item)
+        reference = (item.get("reference") or "").strip() or None
+        resolved.append((debtor, amount, method, reference, item))
+    new_sig = sorted((debtor.id, amount, method, reference)
+                     for debtor, amount, method, reference, _item in resolved)
+    existing_rows = SalesDebtPayment.query.filter_by(
+        sales_profile_id=profile.id, payment_date=day.business_date, status=ACTIVE).all()
+    old_sig = sorted((r.debtor_id, r.amount_ugx, r.payment_method, r.reference) for r in existing_rows)
+    if new_sig == old_sig:
+        return existing_rows
+    for row in existing_rows:
+        void_record(row, actor, f"Replaced by Save on {day.business_date}")
+    db.session.flush()
+    created = []
+    for debtor, amount, method, reference, item in resolved:
+        payment = record_collection(profile, day.business_date, {
+            **item, "debtor_id": debtor.id, "amount_ugx": amount,
+            "payment_method": method, "reference": reference,
+            "idempotency_key": f"save-{uuid4().hex}",
+        }, actor)
+        created.append(payment)
+    return created
+
+
+def _open_or_create_working_day(profile, business_date, actor, *, action):
+    """The Sales Day row Save or Close Day is about to write.
+
+    Both actions share one rule: a day that is genuinely closed can only be
+    written again after a Manager reopens it.  Everything else - a brand new
+    date, or one already Saved as an open, unbalanced day - is writable by the
+    salesperson themselves, by either action.
+    """
+    existing = SalesDay.query.filter_by(sales_profile_id=profile.id, business_date=business_date).first()
+    if existing is not None and existing.status == DAY_CLOSED:
+        raise SalesError(
+            f"This Sales Day is already closed. A Manager must reopen it before it can be {action} again."
+        )
+    day = existing if existing is not None else SalesDay(
+        sales_profile_id=profile.id, business_date=business_date, status=DAY_DRAFT, created_by=actor.id)
+    if existing is None:
+        db.session.add(day)
+    return day, existing is None
+
+
+def _write_working_day(day, is_new, profile, business_date, payload, actor, elevated, require_balance, source):
+    """Write the complete working day payload onto ``day``, in one transaction.
 
     Everything the salesperson can see arrives together - the Vehicle Stock
-    sheet, every Sales Card, expenses, money movements, Mobile Money, the counted
-    cash, new unpaid amounts and the collections of older ones - and is written
-    here and nowhere else.  The row this creates is a draft only inside this
-    transaction: it is marked closed before the single commit, so a refused close
-    leaves no day, no sheet, no card, no expense, no debt and no collection.
+    sheet, every Sales Card, expenses, money movements, Mobile Money, the
+    counted cash, new unpaid amounts and the collections of older ones.  Save
+    and Close Day both call this; only ``require_balance`` tells it whether a
+    Sales Card must price exactly Sold Today.  Nothing here commits: the
+    caller's transaction (and, for Close Day, ``close_day()`` below it) commits
+    it all together, so a refusal leaves nothing written.
     """
-    business_date = valid_date(business_date)
-    payload = payload or {}
-    existing = SalesDay.query.filter_by(sales_profile_id=profile.id,
-                                        business_date=business_date).first()
-    if existing is not None and existing.status == DAY_CLOSED:
-        raise SalesError("This Sales Day is already closed. "
-                         "A Manager must reopen it before it can be saved again.")
     lines = payload.get("vehicle_stock")
     if not isinstance(lines, list) or not lines:
-        raise SalesError("Add at least one product to the vehicle stock before closing.")
+        verb = "closing" if require_balance else "saving"
+        raise SalesError(f"Add at least one product to the vehicle stock before {verb}.")
     cards = payload.get("sales_cards")
     if cards is not None and not isinstance(cards, list):
         raise SalesError("sales_cards must be a list of product cards.")
-    # 1. the day itself - still a draft, and only ever inside this transaction
-    day = existing if existing is not None else SalesDay(
-        sales_profile_id=profile.id, business_date=business_date,
-        status=DAY_DRAFT, created_by=actor.id)
-    if existing is None:
-        db.session.add(day)
     if "mobile_money_from_sales_ugx" in payload:
         raw = payload.get("mobile_money_from_sales_ugx")
         day.mobile_money_from_sales_ugx = (None if raw in (None, "")
@@ -1990,41 +2179,62 @@ def close_working_day(profile, business_date, payload, actor, elevated=False):
     if "notes" in payload:
         day.notes = (payload.get("notes") or "").strip() or None
     db.session.flush()
-    record_audit(actor, "create" if existing is None else "save", "sales_day", day.id,
-                 after={"business_date": business_date, "source": "close_day"})
-    # 2. the Vehicle Stock sheet, then every Sales Card priced against exactly
-    #    the Sold Today that sheet produces
+    record_audit(actor, "create" if is_new else "save", "sales_day", day.id,
+                 after={"business_date": business_date, "source": source})
+    # 1. the Vehicle Stock sheet, then every Sales Card priced against exactly
+    #    the Sold Today that sheet produces (or, for Save, as it stands)
     save_vehicle_stock(day, lines, actor, elevated=elevated)
     db.session.flush()
     db.session.expire(day, ["closing_lines"])
-    save_sales_cards(profile, business_date, cards or [], actor, vehicle_stock=lines)
+    save_sales_cards(profile, business_date, cards or [], actor, vehicle_stock=lines,
+                     require_balance=require_balance)
     db.session.flush()
-    # 3. expenses and money movements
-    for item in payload.get("expenses") or []:
-        if not isinstance(item, dict):
-            raise SalesError("Each expense needs a description and an amount.")
-        create_expense(day, item, actor)
-    for item in payload.get("transfers") or []:
-        if not isinstance(item, dict):
-            raise SalesError("Each money transfer needs two accounts and an amount.")
-        create_transfer(day, item, actor)
-    # 4. the unpaid part of today's sales, then money collected on older debts.
+    # 2. expenses and money movements - replaced as a whole, so pressing Save
+    #    again with the same list writes nothing new
+    replace_day_expenses(day, payload.get("expenses") or [], actor)
+    replace_day_transfers(day, payload.get("transfers") or [], actor)
+    # 3. the unpaid part of today's sales, then money collected on older debts.
     #    A debt may only explain sales already counted, so it is validated
     #    against the invoices written above.
-    for item in payload.get("debts") or []:
-        if not isinstance(item, dict):
-            raise SalesError("Each unpaid sale needs a name and an amount.")
-        create_debt(profile, {**item, "business_date": business_date,
-                              "idempotency_key": item.get("idempotency_key")
-                              or f"close-{uuid4().hex}"},
-                    actor, kind=DEBT_SALE, day=day)
-    for item in payload.get("debt_payments") or []:
-        if not isinstance(item, dict):
-            raise SalesError("Each collection needs a debtor and an amount.")
-        record_collection(profile, business_date, item, actor)
+    replace_day_debts(profile, day, payload.get("debts") or [], actor, require_balance=require_balance)
+    replace_day_debt_payments(profile, day, payload.get("debt_payments") or [], actor)
     db.session.flush()
-    # 5. validate the finished day and mark it closed - still uncommitted, so a
-    #    refusal leaves every one of the rows above unpersisted
+
+
+def save_working_day(profile, business_date, payload, actor, elevated=False):
+    """Persist the current working day even if it is not balanced yet.
+
+    Save never requires the business reconciliation Close Day requires -
+    priced quantity against Sold Today, counted cash, stock variance - only
+    the basic shape of each row.  The row this creates (or updates) stays
+    open, so the salesperson can leave and come back to find exactly what they
+    Saved, still editable, and Save it again as many times as they like.
+    """
+    business_date = valid_date(business_date)
+    payload = payload or {}
+    day, is_new = _open_or_create_working_day(profile, business_date, actor, action="saved")
+    _write_working_day(day, is_new, profile, business_date, payload, actor, elevated,
+                       require_balance=False, source="save_day")
+    return day
+
+
+def close_working_day(profile, business_date, payload, actor, elevated=False):
+    """Turn the browser's working day into the day's one database transaction.
+
+    Everything the salesperson can see arrives together, exactly as Save
+    writes it, and is additionally validated and marked closed in the same
+    transaction.  Whether or not this date was Saved first, Close Day writes
+    the latest values on screen, never an older Saved snapshot: a refused
+    close leaves the day exactly as it was last Saved (or not saved at all),
+    and never partially closed.
+    """
+    business_date = valid_date(business_date)
+    payload = payload or {}
+    day, is_new = _open_or_create_working_day(profile, business_date, actor, action="closed")
+    _write_working_day(day, is_new, profile, business_date, payload, actor, elevated,
+                       require_balance=True, source="close_day")
+    # validate the finished day and mark it closed - still uncommitted, so a
+    # refusal leaves every row above exactly as it was before this call
     close_day(day, actor, payload.get("override_reason"), elevated=elevated)
     db.session.flush()
     return day

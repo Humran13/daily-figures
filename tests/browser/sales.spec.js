@@ -77,6 +77,18 @@ async function closeDay(page) {
   return response;
 }
 
+async function saveWorkingDay(page) {
+  const waiter = page
+    .waitForResponse(r => r.url().endsWith('/save') && r.request().method() === 'POST', { timeout: 5000 })
+    .catch(() => null);
+  await page.locator('#saveDay').click();
+  const response = await waiter;
+  if (!response) {
+    throw new Error(`Save sent no request. On-screen message: "${await page.locator('#message').textContent()}"`);
+  }
+  return response;
+}
+
 async function showForm(page, id) {
   const form = page.locator('#' + id);
   if (!(await form.isVisible())) await page.locator(`[data-toggle-form="${id}"]`).click();
@@ -591,4 +603,214 @@ test('S: Total Sales Today is the single final summary card, live at desktop and
   await expect(card.locator('[data-card-remove]').last()).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test('T: Save persists an unbalanced day; Close Day refuses it until corrected; Save sits beside Close Day, bottom-right', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-26');
+
+  // The final card is still "Total sales today", and Save/Close day now live
+  // inside it, bottom-right, in that order.
+  const headings = (await page.locator('#dailyView > section.card h2').allTextContents())
+    .map((t) => t.replace(/\s+/g, ' ').trim());
+  expect(headings[headings.length - 1]).toContain('Total sales today');
+  const finalCard = page.locator('#dailyView > section.card').last();
+  await expect(finalCard.locator('#saveDay')).toBeVisible();
+  await expect(finalCard.locator('#closeDay')).toBeVisible();
+  const saveBox = await finalCard.locator('#saveDay').boundingBox();
+  const closeBox = await finalCard.locator('#closeDay').boundingBox();
+  expect(saveBox.x).toBeLessThan(closeBox.x);
+  // An Operator has no reopen/correction authority on this (never-closed) day.
+  await expect(page.locator('#reopenDay')).toBeHidden();
+
+  // Enter an unbalanced day: a sales card priced for less than Sold Today,
+  // and no cash counted yet.  Every other product is counted back in full so
+  // only the one priced card is what keeps this day from balancing.
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('6');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+
+  const saved = await saveWorkingDay(page);
+  expect(saved.status(), await saved.text()).toBe(200);
+  await expect(page.locator('#message')).toContainText('Day saved.');
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · UNBALANCED');
+
+  // Navigate away and back: the saved, unbalanced figures reload exactly.
+  await openDay(page, '2026-11-27');
+  await openDay(page, '2026-11-26');
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · UNBALANCED');
+  await expect(stockRow(page, 'Compact Standard').locator('[data-stock-field="returned"]')).toHaveValue('40');
+  await expect(salesCard(page, 'Compact Standard').locator('[data-card-field="quantity"]').first())
+    .toHaveValue('6');
+
+  // A full page reload (not just a date change) reproduces it too.
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Daily accountability' })).toBeVisible();
+  await openDay(page, '2026-11-26');
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · UNBALANCED');
+  await expect(salesCard(page, 'Compact Standard').locator('[data-card-field="quantity"]').first())
+    .toHaveValue('6');
+
+  // Close Day still refuses while the day is unbalanced.
+  const refused = await closeDay(page);
+  expect(refused.status()).toBe(400);
+  await expect(page.locator('#message')).toContainText('were sold');
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · UNBALANCED');
+
+  // Correct the card (100 @ 79,000 + 10 @ 80,000 = the full 110 sold) and
+  // count the cash, Save again, then Close Day succeeds.
+  const cardAgain = salesCard(page, 'Compact Standard');
+  await cardAgain.locator('[data-card-field="quantity"]').first().fill('100');
+  await cardAgain.locator('[data-card-add]').click();
+  await cardAgain.locator('[data-card-field="quantity"]').nth(1).fill('10');
+  await cardAgain.locator('[data-card-field="unit_price_ugx"]').nth(1).fill('80000');
+  await page.locator('#actualCash').fill('8700000');
+  const savedAgain = await saveWorkingDay(page);
+  expect(savedAgain.status(), await savedAgain.text()).toBe(200);
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · BALANCED');
+  const closed = await closeDay(page);
+  expect(closed.status(), await closed.text()).toBe(200);
+  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
+
+  // The closed date stays reachable and its data remains available.
+  await openDay(page, '2026-11-27');
+  await openDay(page, '2026-11-26');
+  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
+  await expect(salesCard(page, 'Compact Standard').locator('.price-row')).toHaveCount(2);
+
+  // No horizontal overflow at 375 × 812, with everything above still showing.
+  await page.setViewportSize({ width: 375, height: 812 });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+  await expect(page.locator('#statusPill')).toHaveText('CLOSED');
+  await expect(finalCard.locator('#saveDay')).toBeHidden();
+  await expect(finalCard.locator('#closeDay')).toBeHidden();
+});
+
+test('U: pressing Save repeatedly with the same figures writes no duplicate rows', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-28');
+  await sellOneTenCartons(page);
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('10');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await showForm(page, 'expenseForm');
+  await page.locator('#expenseDescription').fill('Fuel');
+  await page.locator('#expenseAmount').fill('5000');
+  await page.locator('#addExpense').click();
+
+  const first = await saveWorkingDay(page);
+  expect(first.status(), await first.text()).toBe(200);
+  const firstStored = await dayJson(page, '2026-11-28');
+  expect(firstStored.expenses.length).toBe(1);
+  expect(firstStored.invoices.length).toBe(1);
+  const firstExpenseId = firstStored.expenses[0].id;
+  const firstInvoiceId = firstStored.invoices[0].id;
+
+  for (let i = 0; i < 3; i += 1) {
+    const again = await saveWorkingDay(page);
+    expect(again.status(), await again.text()).toBe(200);
+  }
+
+  const afterStored = await dayJson(page, '2026-11-28');
+  expect(afterStored.expenses.length).toBe(1);
+  expect(afterStored.invoices.length).toBe(1);
+  expect(afterStored.expenses[0].id).toBe(firstExpenseId);
+  expect(afterStored.invoices[0].id).toBe(firstInvoiceId);
+});
+
+test('V: the Reconciliation data reports a saved-unbalanced date distinctly from a closed-balanced one', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-29');
+  await sellOneTenCartons(page);
+  const unbalancedCard = salesCard(page, 'Compact Standard');
+  await unbalancedCard.locator('[data-card-field="quantity"]').first().fill('6');
+  await unbalancedCard.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  const saved = await saveWorkingDay(page);
+  expect(saved.status(), await saved.text()).toBe(200);
+
+  await openDay(page, '2026-11-30');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);                           // 110 cartons sold
+  const balancedCard = salesCard(page, 'Compact Standard');
+  await balancedCard.locator('[data-card-field="quantity"]').first().fill('110');
+  await balancedCard.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await page.locator('#actualCash').fill('8690000');
+  const closed = await closeDay(page);
+  expect(closed.status(), await closed.text()).toBe(200);
+
+  // The Reconciliation history is server-authoritative, never frontend
+  // arithmetic: the same session's own fetch is what a Reconciliation list
+  // reads from.
+  const history = await page.evaluate(async () => {
+    const res = await fetch('/api/sales/history?date_from=2026-11-29&date_to=2026-11-30');
+    return res.json();
+  });
+  const byDate = Object.fromEntries(history.map((row) => [row.business_date, row]));
+  expect(byDate['2026-11-29'].status_code).toBe('open');
+  expect(byDate['2026-11-29'].balanced).toBe(false);
+  expect(byDate['2026-11-30'].status_code).toBe('closed');
+  expect(byDate['2026-11-30'].balanced).toBe(true);
+});
+
+test('W: a debtor partial payment is collected on a later, still-unbalanced Saved day', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-12-01');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);                           // 110 cartons sold
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('110');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await page.locator('#debtorName').fill('Grace');
+  await page.locator('#debtAmount').fill('79000');          // one carton's worth, left unpaid
+  await page.locator('#addDebt').click();
+  await page.locator('#actualCash').fill('8611000');        // 8,690,000 total − 79,000 debt
+  const closed = await closeDay(page);
+  expect(closed.status(), await closed.text()).toBe(200);
+  await expect(page.locator('#debtList')).toContainText('Unpaid');
+
+  // A later date: part of the debt arrives in cash.  Save it without
+  // balancing the day (nothing sold today, cash not counted yet).
+  await openDay(page, '2026-12-02');
+  await chooseDebtor(page, 'Grace');
+  await page.locator('#collectionAmount').fill('30000');
+  await page.locator('#collectionMethod').selectOption('cash');
+  await page.locator('#addCollection').click();
+  await expect(page.locator('#debtList')).toContainText('Partially Paid');
+  const saved = await saveWorkingDay(page);
+  expect(saved.status(), await saved.text()).toBe(200);
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · UNBALANCED');
+
+  // Navigate away and back: the collection and the remaining balance both
+  // reload exactly, with no double-counting against the server's own balance.
+  await openDay(page, '2026-12-03');
+  await openDay(page, '2026-12-02');
+  await expect(page.locator('#debtList')).toContainText('Partially Paid');
+  await expect(page.locator('#debtList')).toContainText('UGX 49,000');  // 79,000 − 30,000 still owed
+
+  // Finish collecting the rest by Mobile Money: fully paid, live, before Save.
+  await chooseDebtor(page, 'Grace');
+  await page.locator('#collectionAmount').fill('49000');
+  await page.locator('#collectionMethod').selectOption('mobile_money');
+  await page.locator('#addCollection').click();
+  await expect(page.locator('[data-debtor-balance]').filter({ hasText: 'Grace' })).toContainText('Paid');
+  await page.locator('#actualCash').fill('30000');
+  await page.locator('#actualMobile').fill('49000');
+  const finalSave = await saveWorkingDay(page);
+  expect(finalSave.status(), await finalSave.text()).toBe(200);
+  // Fully settled: Grace drops off the outstanding list entirely, exactly
+  // like an existing closed debt that reaches zero (no debtor stays listed
+  // as "Paid" forever - there is simply nothing left to collect).
+  await expect(page.locator('[data-debtor-balance]').filter({ hasText: 'Grace' })).toHaveCount(0);
+  const balances = (await dayJson(page, '2026-12-02')).debtor_balances || [];
+  expect(balances.filter((row) => row.name === 'Grace')).toEqual([]);
+
+  // The collection never becomes a second sale, on either date.
+  const day1 = await dayJson(page, '2026-12-01');
+  expect(day1.totals.total_sales_ugx).toBe(8690000);
+  const day2 = await dayJson(page, '2026-12-02');
+  expect(day2.totals.total_sales_ugx).toBe(0);
 });

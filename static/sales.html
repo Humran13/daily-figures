@@ -97,16 +97,18 @@
         <div><span>Mobile Money Counted</span><input id="actualMobile" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your Mobile Money"></div>
         <div><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
       </div>
-      <div class="actions">
-        <button id="closeDay" class="primary">Close day</button>
-        <button id="reopenDay" class="hidden">Reopen day</button>
-      </div>
-      <p class="hint">Nothing on this page is saved until Close day. Close day stores the vehicle stock, every sales card, the expenses, the money movements, Mobile Money, these counted figures, today's unpaid sales and today's collections in one transaction — if anything is wrong, none of it is stored and your figures stay on screen to correct.</p>
+      <p class="hint">Nothing here is final until Close day. Save keeps everything typed so far — even if it does not balance yet — so you can come back and finish it later.</p>
     </section>
 
     <section class="card money-card"><h2><span class="step">7</span> Total sales today</h2>
       <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
       <p class="hint" id="tenderHint"></p>
+      <p class="hint">Save stores the whole working day exactly as it stands, even unbalanced, and you can Save it again as many times as you like. Close day stores it the same way and additionally checks that the vehicle stock, the sales cards and the counted cash all reconcile — if anything is wrong, Close day changes nothing and your figures stay on screen to correct.</p>
+      <div class="actions">
+        <button id="saveDay">Save</button>
+        <button id="closeDay" class="primary">Close day</button>
+        <button id="reopenDay" class="hidden">Reopen day</button>
+      </div>
     </section>
   </section>
 
