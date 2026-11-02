@@ -194,8 +194,8 @@ test('D: Close day stores the whole day and reloading reproduces it', async ({ p
   // Total Sales = 110 × 79,000 + 25 × 100,000 = 11,190,000, and the allocation
   // Cash + Mobile Money + New Debt must add up to exactly that.
   await expect(page.locator('#summaryCards')).toContainText('UGX 11,190,000');
-  await expect(page.locator('#tenderHint')).toContainText('Cash from today\'s sales: UGX 10,790,000');
-  await expect(page.locator('#cashEquation')).toContainText('Cash at Hand UGX 10,780,000');
+  await expect(page.locator('#summaryCards .metric', { hasText: 'Cash from sales' })).toContainText('UGX 10,790,000');
+  await expect(page.locator('#expectedCashBig')).toHaveText('UGX 10,780,000');
 
   const closed = await closeDay(page);
   expect(closed.status(), await closed.text()).toBe(200);
@@ -340,7 +340,8 @@ test('H/I/J/K: an unpaid sale, then collections on later dates', async ({ page }
   await page.locator('#actualCash').fill('0');
   // Cash 0 + Mobile 0 + New Debt 100,000 = Total Sales 100,000.
   await expect(page.locator('#summaryCards')).toContainText('UGX 100,000');
-  await expect(page.locator('#tenderHint')).toContainText('Cash from today\'s sales: UGX 0');
+  await expect(page.locator('#summaryCards')).toContainText('Cash from sales');
+  await expect(page.locator('#summaryCards .metric', { hasText: 'Cash from sales' })).toContainText('UGX 0');
   expect((await closeDay(page)).status()).toBe(200);
   await expect(page.locator('#debtList')).toContainText('Unpaid');
 
