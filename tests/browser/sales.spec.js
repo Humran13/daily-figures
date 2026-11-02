@@ -377,3 +377,218 @@ test('H/I/J/K: an unpaid sale, then collections on later dates', async ({ page }
   const stock = (ten.stock || []).find((row) => row.product_name === 'Compact Standard');
   expect(stock.derived_sold.cartons).toBe(1);
 });
+
+// Put Compact Standard's four Vehicle Stock figures into a known state by typing
+// into the boxes directly, independent of whatever a date happened to carry
+// forward. Previous 50 + Given 100 = Total 150, Return 40 -> Sold 110 cartons,
+// matching the paper sheet this feature was built around.
+async function sellOneTenCartons(page) {
+  const compact = stockRow(page, 'Compact Standard');
+  await compact.locator('select[data-stock-unit]').selectOption('carton');
+  await compact.locator('[data-stock-field="previous"]').fill('50');
+  await compact.locator('[data-stock-field="issued"]').fill('100');
+  await compact.locator('[data-stock-field="returned"]').fill('40');
+  await expect(compact.locator('[data-stock-sold]')).toHaveText('110 cartons');
+  return compact;
+}
+
+test('N: a default-zero Vehicle Stock field lets typing replace the zero, decimals unaffected', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-20');
+
+  // Given Stock / Issued Today starts at a literal "0" whenever nothing was
+  // dispatched today - exactly the field from the bug report.
+  const compact = stockRow(page, 'Compact Standard');
+  const issued = compact.locator('[data-stock-field="issued"]');
+  await expect(issued).toHaveValue('0');
+  await issued.click();
+  await issued.pressSequentially('100');
+  await expect(issued).toHaveValue('100');
+  // Never "0100".
+  await expect(issued).not.toHaveValue('0100');
+
+  // A second Vehicle Stock field: Previous Return, deliberately set to zero,
+  // then focused and typed into the same way.
+  const previous = compact.locator('[data-stock-field="previous"]');
+  await previous.fill('0');
+  await previous.blur();                 // a fresh focus, like a salesperson tapping back in
+  await previous.click();
+  await previous.pressSequentially('45');
+  await expect(previous).toHaveValue('45');
+  await expect(previous).not.toHaveValue('045');
+
+  // A legitimate non-zero value is left alone by merely focusing it again.
+  await issued.click();
+  await expect(issued).toHaveValue('100');
+
+  // Decimal Sales Card quantities (0.5 of a carton) still work normally.
+  const qty = salesCard(page, 'Compact Standard').locator('[data-card-field="quantity"]').first();
+  await qty.click();
+  await qty.pressSequentially('0.5');
+  await expect(qty).toHaveValue('0.5');
+});
+
+test('O: no yellow stock-vs-sales banner, but Close Day still enforces the exact match', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-21');
+  await countEverythingBack(page);                 // every other product: nothing sold
+  await sellOneTenCartons(page);
+
+  const compact = salesCard(page, 'Compact Standard');
+  await compact.locator('[data-card-field="quantity"]').first().fill('100');
+  await compact.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+
+  // The Sales Card says what is left to price...
+  await expect(compact.locator('.card-status')).toContainText('10 cartons still to price');
+  // ...and the removed yellow banner is nowhere in the DOM, not merely hidden.
+  await expect(page.locator('#stockWarnings')).toHaveCount(0);
+  await expect(page.locator('.warning:visible')).toHaveCount(0);
+
+  // The authoritative mismatch check still lives on the server: Close Day is
+  // refused while 10 cartons remain unpriced, and nothing is stored.
+  const refused = await closeDay(page);
+  expect(refused.status()).toBe(400);
+  await expect(page.locator('#message')).toContainText('were sold');
+  const stored = await dayJson(page, '2026-11-21');
+  expect(stored.day).toBeNull();
+});
+
+test('P: Add another price stays usable and multiple prices sum to Sold Today', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-22');
+
+  const addBtn = salesCard(page, 'Compact Standard').locator('[data-card-add]');
+  // Before Sold Today is known (Return Today not counted yet), the control is
+  // correctly unusable...
+  await expect(addBtn).toBeDisabled();
+
+  // ...and becomes usable the moment Sold Today is known, without a full page
+  // reload or re-opening the card - the exact regression this fixes.
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+  await expect(addBtn).toBeEnabled();
+
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('100');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await expect(card.locator('.card-status')).toContainText('10 cartons still to price');
+  await expect(addBtn).toBeEnabled();              // still usable with only 100 of 110 priced
+
+  await addBtn.click();
+  await expect(card.locator('.price-row')).toHaveCount(2);
+  await card.locator('[data-card-field="quantity"]').nth(1).fill('10');
+  await card.locator('[data-card-field="unit_price_ugx"]').nth(1).fill('80000');
+  await expect(card.locator('.card-status')).toContainText('matches the stock count');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 8,700,000');
+
+  // Removing the second row recalculates everything immediately.
+  await card.locator('[data-card-remove]').nth(1).click();
+  await expect(card.locator('.price-row')).toHaveCount(1);
+  await expect(card.locator('.card-status')).toContainText('10 cartons still to price');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 7,900,000');
+
+  // Re-adding and completing it again works the same way.
+  await addBtn.click();
+  await card.locator('[data-card-field="quantity"]').nth(1).fill('10');
+  await card.locator('[data-card-field="unit_price_ugx"]').nth(1).fill('80000');
+  await expect(card.locator('.card-status')).toContainText('matches the stock count');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 8,700,000');
+
+  await page.locator('#actualCash').fill('8700000');
+  const closed = await closeDay(page);
+  expect(closed.status(), await closed.text()).toBe(200);
+  const stored = await dayJson(page, '2026-11-22');
+  expect(stored.product_cards[0].rows.map((r) => r.quantity).sort()).toEqual([10, 100]);
+});
+
+test('Q: decimal multi-price rows sum exactly, with no floating-point drift', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-23');
+  await countEverythingBack(page);
+
+  // 15 packs issued and none returned: 1.5 cartons sold, same packaging rule
+  // used on the server side of this fix (10 packs per carton).
+  const compact = stockRow(page, 'Compact Standard');
+  await compact.locator('select[data-stock-unit]').selectOption('pack');
+  await compact.locator('[data-stock-field="previous"]').fill('0');
+  await compact.locator('[data-stock-field="issued"]').fill('15');
+  await compact.locator('[data-stock-field="returned"]').fill('0');
+
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('1');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await card.locator('[data-card-add]').click();
+  await card.locator('[data-card-field="quantity"]').nth(1).fill('0.5');
+  await card.locator('[data-card-field="unit_price_ugx"]').nth(1).fill('80000');
+  await expect(card.locator('.card-status')).toContainText('matches the stock count');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 119,000');
+
+  await page.locator('#actualCash').fill('119000');
+  const closed = await closeDay(page);
+  expect(closed.status(), await closed.text()).toBe(200);
+  const stored = await dayJson(page, '2026-11-23');
+  expect(stored.totals.total_sales_ugx).toBe(119000);
+  const stock = (stored.stock || []).find((row) => row.product_name === 'Compact Standard');
+  expect(stock.derived_sold.base_unit_qty).toBe(150);
+});
+
+test('R: an overpriced card is refused at Close Day, nothing persists, no silent clamp', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-24');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);                   // 110 cartons sold
+
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('100');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await card.locator('[data-card-add]').click();
+  await card.locator('[data-card-field="quantity"]').nth(1).fill('20');  // 120 total, 10 too many
+  await card.locator('[data-card-field="unit_price_ugx"]').nth(1).fill('80000');
+  await expect(card.locator('.card-status')).toContainText('remove');
+  await expect(card.locator('.tag').first()).toHaveText('Too much');
+
+  const refused = await closeDay(page);
+  expect(refused.status()).toBe(400);
+  await expect(page.locator('#message')).toContainText('only');
+
+  const stored = await dayJson(page, '2026-11-24');
+  expect(stored.day).toBeNull();
+  // The rows on screen were never silently clamped to 110.
+  await expect(card.locator('[data-card-field="quantity"]').nth(1)).toHaveValue('20');
+});
+
+test('S: Total Sales Today is the single final summary card, live at desktop and mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-11-25');
+
+  // Exactly one summary card, and it is the last "step" section on the page.
+  await expect(page.getByRole('heading', { name: 'Total sales today' })).toHaveCount(1);
+  const headings = (await page.locator('#dailyView > section.card h2').allTextContents())
+    .map((t) => t.replace(/\s+/g, ' ').trim());
+  expect(headings[headings.length - 1]).toContain('Total sales today');
+  expect(headings.indexOf('7 Total sales today'))
+    .toBeGreaterThan(headings.indexOf('6 Cash at hand'));
+
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('110');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  // 110 x 79,000, live, at desktop width.
+  await expect(page.locator('#summaryCards')).toContainText('UGX 8,690,000');
+
+  // Same page, mobile viewport: still one card, still last, no horizontal
+  // overflow, no yellow banner, and the live total survives the resize.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(page.getByRole('heading', { name: 'Total sales today' })).toHaveCount(1);
+  await expect(page.locator('#summaryCards')).toContainText('UGX 8,690,000');
+  await expect(page.locator('#stockWarnings')).toHaveCount(0);
+  const addBtn = card.locator('[data-card-add]');
+  await expect(addBtn).toBeEnabled();
+  await addBtn.click();
+  await expect(card.locator('.price-row')).toHaveCount(2);
+  await expect(card.locator('[data-card-remove]').last()).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

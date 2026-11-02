@@ -241,6 +241,79 @@ def test_a_refused_close_writes_absolutely_nothing(client, fd):
     assert _table_counts()["days"] == 1
 
 
+# ---- One product, more than one price on the same day -----------------------
+def test_multiple_price_rows_can_represent_one_sold_quantity(client, fd):
+    """One product sold at two prices: both rows together must equal Sold Today."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    closed = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],           # 10 cartons sold
+        cards=[_card(product_id, (8, 79000), (2, 80000))],
+        actual_cash_count_ugx=792000,
+    )
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert body["totals"]["total_sales_ugx"] == 8 * 79000 + 2 * 80000
+    rows = body["product_cards"][0]["rows"]
+    assert sorted(row["quantity"] for row in rows) == [2, 8]
+    stock = next(row for row in body["stock"] if row["product_id"] == product_id)
+    assert stock["reconciled"] is True
+
+
+def test_underpriced_multi_row_card_is_refused_at_close(client, fd):
+    """Rows that sum to less than Sold Today are refused, and nothing persists."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    refused = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],           # 10 cartons sold
+        cards=[_card(product_id, (8, 79000), (1, 80000))],   # only 9 priced
+        actual_cash_count_ugx=712000,
+    )
+    assert refused.status_code == 400
+    assert "were sold" in refused.get_json()["error"]
+    assert _nothing_stored(), _table_counts()
+
+
+def test_overpriced_multi_row_card_is_refused_at_close(client, fd):
+    """Rows that sum to more than Sold Today are refused, and nothing persists."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    refused = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 50, 0, 50, 40)],           # 10 cartons sold
+        cards=[_card(product_id, (8, 79000), (4, 80000))],   # 12 priced, 2 too many
+        actual_cash_count_ugx=952000,
+    )
+    assert refused.status_code == 400
+    assert "only" in refused.get_json()["error"]
+    assert _nothing_stored(), _table_counts()
+
+
+def test_decimal_multi_row_card_sums_exactly(client, fd):
+    """Fractional carton rows (1 + 0.5) must sum to exactly 1.5 with no float drift."""
+    _login(client, fd["operator"])
+    profile_id, product_id = fd["profile"].id, fd["product"].id
+    # 15 packs issued and none returned: 15 packs x 10 pieces = 150 pieces,
+    # and this product's 100 pieces per carton makes that 1.5 cartons sold.
+    closed = _close(
+        client, profile_id,
+        lines=[_sheet(product_id, 0, 15, 15, 0, unit="pack")],
+        cards=[_card(product_id, (1, 79000), (0.5, 80000))],
+        actual_cash_count_ugx=119000,
+    )
+    assert closed.status_code == 200, closed.get_json()
+    body = closed.get_json()
+    assert body["totals"]["total_sales_ugx"] == 79000 + 40000
+    stock = next(row for row in body["stock"] if row["product_id"] == product_id)
+    # 1.5 cartons = 1 whole carton + 5 packs (half of the 10-pack carton).
+    assert stock["derived_sold"]["base_unit_qty"] == 150
+    assert stock["derived_sold"]["cartons"] == 1
+    assert stock["derived_sold"]["packs"] == 5
+    assert stock["reconciled"] is True
+
+
 def test_close_requires_the_cash_count_unless_a_manager_overrides(client, fd):
     _login(client, fd["operator"])
     profile_id, product_id = fd["profile"].id, fd["product"].id

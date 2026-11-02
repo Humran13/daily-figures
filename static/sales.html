@@ -25,7 +25,6 @@
     <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
       <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today, and that sold quantity feeds the product's sales card straight away. Every quantity is yours to correct — no approval needed, and nothing to save here: closing the day stores the sheet with the rest of the day. A product you added by mistake can be taken off the sheet with its × — that only cancels the extra card.</p>
       <div id="stockList" class="stack empty">Open a day to begin.</div>
-      <div id="stockWarnings" class="warning hidden"></div>
       <div class="stock-actions">
         <button id="addStockProduct">Add Product</button>
       </div>
@@ -37,19 +36,14 @@
       <div id="invoiceList" class="stack"></div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">3</span> Total sales today</h2>
-      <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
-      <p class="hint" id="tenderHint"></p>
-    </section>
-
-    <section class="card money-card"><h2><span class="step">4</span> Mobile Money</h2>
+    <section class="card money-card"><h2><span class="step">3</span> Mobile Money</h2>
       <div class="form-grid">
         <label>Received on Mobile Money today (UGX)<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
       </div>
       <p class="hint">Recorded once for the whole day, never per sale row, and saved with the rest of the day at Close day. Mobile Money explains how today's sales were paid — it is never added on top of Total Sales. Cash at Hand is Total Sales minus this Mobile Money minus the unpaid sales below minus cash expenses.</p>
     </section>
 
-    <section class="card"><h2><span class="step">5</span> Expenses and money movement</h2>
+    <section class="card"><h2><span class="step">4</span> Expenses and money movement</h2>
       <div class="quick-actions">
         <button data-toggle-form="expenseForm">Add expense</button>
         <button data-toggle-form="transferForm">Record money transfer / handover</button>
@@ -72,7 +66,7 @@
       </div>
     </section>
 
-    <section class="card"><h2><span class="step">6</span> Debtors — unpaid sales and collections</h2>
+    <section class="card"><h2><span class="step">5</span> Debtors — unpaid sales and collections</h2>
       <p class="hint">A customer who took goods without paying in full still bought them: the stock is sold, the sale is part of Total Sales and the money owed is a debtor. Record the unpaid part here. Money collected today on an older debt is money received today — it reduces that debt and never becomes a second sale. Everything here is saved by Close day.</p>
       <div class="form-grid">
         <label>Customer<input id="debtorName" list="debtorNames" maxlength="120" autocomplete="off" placeholder="e.g. Darius"></label><datalist id="debtorNames"></datalist>
@@ -89,7 +83,7 @@
       <div id="debtList" class="stack"></div>
     </section>
 
-    <section class="card money-card"><h2><span class="step">7</span> Cash at hand</h2>
+    <section class="card money-card"><h2><span class="step">6</span> Cash at hand</h2>
       <p class="hint">What you should physically be holding once today's money is settled.</p>
       <div class="cash-focus">
         <div><span>Cash at Hand</span><strong id="expectedCashBig">—</strong></div>
@@ -108,6 +102,11 @@
         <button id="reopenDay" class="hidden">Reopen day</button>
       </div>
       <p class="hint">Nothing on this page is saved until Close day. Close day stores the vehicle stock, every sales card, the expenses, the money movements, Mobile Money, these counted figures, today's unpaid sales and today's collections in one transaction — if anything is wrong, none of it is stored and your figures stay on screen to correct.</p>
+    </section>
+
+    <section class="card money-card"><h2><span class="step">7</span> Total sales today</h2>
+      <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
+      <p class="hint" id="tenderHint"></p>
     </section>
   </section>
 
