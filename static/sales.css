@@ -11,7 +11,7 @@
 .card-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.card-actions button{min-height:44px;flex:1 1 46%}
 .sticky-actions{flex-wrap:wrap}.sticky-actions button{flex:1 1 46%;min-height:46px}
 .cash-equation{margin:0 0 6px;color:var(--soft);font-size:12px;font-variant-numeric:tabular-nums}
-@media(max-width:560px){.price-row{grid-template-columns:1fr 1fr}.price-row .price-qty,.price-row .price-amount{grid-column:1/3}.price-row .row-value{justify-self:start}.price-row [data-card-remove]{justify-self:end}.card-actions button,.sticky-actions button{flex:1 1 100%}}
+@media(max-width:560px){.price-row{grid-template-columns:1fr 1fr}.price-row .price-qty,.price-row .price-amount{grid-column:1/3}.price-row .row-value{justify-self:start}.price-row [data-card-remove]{justify-self:end}.card-actions button,.sticky-actions button{flex:1 1 100%}.sales-card{position:relative}.sales-card .card-head{padding-right:52px}.sales-card .price-rows .price-row:first-child [data-card-remove]{position:absolute;top:12px;right:12px}}
 .datum strong.short{color:var(--red)}
 /* Step 1 — Vehicle stock: one editable card per product on the vehicle. */
 .stock-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
