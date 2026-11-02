@@ -415,7 +415,7 @@ function renderCards(){
     const open=figures.valid&&!closed;
     const hint=figures.valid
       ?`${esc(qtyLabel(figures.sold,rule))} sold today, from Vehicle stock`
-      :'Sold today appears once Total Stock and Return Today are filled in Vehicle stock';
+      :'';
     const savedText=saved&&saved.rows.length?` · ${ugx(saved.card_total_ugx)} saved`:'';
     return `<article class="sales-card" data-card-product="${productId}"><div class="card-head"><div><strong>${esc(card.name)}</strong><small id="cardHint-${productId}">${hint}${savedText}</small></div><span class="tag" id="cardTag-${productId}"></span></div><div class="price-rows">${draft.map((line,index)=>priceRow({product_id:productId},rule,line,index,closed)).join('')}</div><p class="card-status off" id="cardStatus-${productId}"></p><div class="card-actions"><button id="cardAdd-${productId}" data-card-add="${productId}"${open?'':' disabled'}>Add another price</button></div></article>`;
   }).join('')||'<p class="empty">No products in this vehicle balance yet.</p>';
@@ -448,7 +448,7 @@ function updateCard(productId){
     const recorded=savedCard(productId);
     const soldText=figures.valid
       ?`${qtyLabel(figures.sold,rule)} sold today, from Vehicle stock`
-      :'Sold today appears once Total Stock and Return Today are filled in Vehicle stock';
+      :'';
     hint.textContent=soldText+(recorded&&recorded.rows.length?` · ${ugx(recorded.card_total_ugx)} saved`:'');
   }
   // The sold quantity is the one calculated in Vehicle stock - never a saved
@@ -462,7 +462,7 @@ function updateCard(productId){
   const sold=figures.valid?figures.sold:null;
   if(sold===null){
     status.className='card-status off';
-    status.textContent='Fill in Total Stock and Return Today in Vehicle stock and the sold quantity appears here.';
+    status.textContent='';
     if(tag){tag.className='tag warn';tag.textContent='Waiting';}
     return;
   }
@@ -571,8 +571,6 @@ function paintMoney(totals){
   $('expectedMobileBig').textContent=ugx(t.expected_mobile_money_ugx);
   $('mobileDifferenceBig').textContent=ugx(t.mobile_variance_ugx);
   $('mobileDifferenceBig').className=t.mobile_variance_ugx?'short':'ok';
-  $('cashEquation').textContent=`Total Sales ${ugx(t.total_sales_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)} − Cash expenses ${ugx(t.cash_expenses_ugx)} = Cash at Hand ${ugx(t.cash_at_hand_ugx)}.`;
-  $('tenderHint').textContent=`Cash from today's sales: ${ugx(t.cash_from_sales_ugx)} = Total Sales ${ugx(t.total_sales_ugx)} − Debtors ${ugx(t.new_debt_ugx)} − Mobile Money ${ugx(t.mobile_money_from_sales_ugx)}.`;
 }
 function renderMoney(){
   const t=liveTotals();

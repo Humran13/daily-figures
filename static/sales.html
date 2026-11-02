@@ -23,7 +23,6 @@
     <div id="openingNotice" class="warning hidden"></div>
 
     <section class="card"><h2><span class="step">1</span> Vehicle stock</h2>
-      <p class="hint">Pick the products that are actually on the vehicle today. Previous Return + Given Stock = Total Stock. Total Stock − Return Today = Sold Today, and that sold quantity feeds the product's sales card straight away. Every quantity is yours to correct — no approval needed, and nothing to save here: closing the day stores the sheet with the rest of the day. A product you added by mistake can be taken off the sheet with its × — that only cancels the extra card.</p>
       <div id="stockList" class="stack empty">Open a day to begin.</div>
       <div class="stock-actions">
         <button id="addStockProduct">Add Product</button>
@@ -31,7 +30,6 @@
     </section>
 
     <section class="card"><h2><span class="step">2</span> Sales cards</h2>
-      <p class="hint">One card per product. Each card already knows how many were sold from Vehicle stock — add a row for every price you sold at and the rows must add up to that sold quantity. Quantities are always in cartons, whole or fractional: 1 is one carton, 0.5 half a carton, 0.25 a quarter and 1.5 one and a half, whatever unit Vehicle stock is counted in. That is why there is no unit selector here — the pieces are worked out from the product's packaging. Everything here is live: totals update as you type and Close day saves the whole day once. No customer is needed.</p>
       <div id="cardList" class="stack empty">Open a day to price today's sales.</div>
       <div id="invoiceList" class="stack"></div>
     </section>
@@ -40,7 +38,6 @@
       <div class="form-grid">
         <label>Received on Mobile Money today (UGX)<input id="mobileFromSales" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
       </div>
-      <p class="hint">Recorded once for the whole day, never per sale row, and saved with the rest of the day at Close day. Mobile Money explains how today's sales were paid — it is never added on top of Total Sales. Cash at Hand is Total Sales minus this Mobile Money minus the unpaid sales below minus cash expenses.</p>
     </section>
 
     <section class="card"><h2><span class="step">4</span> Expenses and money movement</h2>
@@ -67,7 +64,6 @@
     </section>
 
     <section class="card"><h2><span class="step">5</span> Debtors — unpaid sales and collections</h2>
-      <p class="hint">A customer who took goods without paying in full still bought them: the stock is sold, the sale is part of Total Sales and the money owed is a debtor. Record the unpaid part here. Money collected today on an older debt is money received today — it reduces that debt and never becomes a second sale. Everything here is saved by Close day.</p>
       <div class="form-grid">
         <label>Customer<input id="debtorName" list="debtorNames" maxlength="120" autocomplete="off" placeholder="e.g. Darius"></label><datalist id="debtorNames"></datalist>
         <label>Amount owed today (UGX)<input id="debtAmount" type="number" min="1" step="1" inputmode="numeric" placeholder="Unpaid part of today's sale"></label>
@@ -84,26 +80,21 @@
     </section>
 
     <section class="card money-card"><h2><span class="step">6</span> Cash at hand</h2>
-      <p class="hint">What you should physically be holding once today's money is settled.</p>
       <div class="cash-focus">
         <div><span>Cash at Hand</span><strong id="expectedCashBig">—</strong></div>
         <div><span>Cash Counted</span><input id="actualCash" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your cash"></div>
         <div><span>Difference</span><strong id="cashDifferenceBig">—</strong></div>
       </div>
-      <p class="hint" id="cashEquation"></p>
       <h3 class="block-title">Mobile Money counted</h3>
       <div class="cash-focus mobile-focus">
         <div><span>Mobile Money Expected</span><strong id="expectedMobileBig">—</strong></div>
         <div><span>Mobile Money Counted</span><input id="actualMobile" type="number" min="0" step="1" inputmode="numeric" placeholder="Count your Mobile Money"></div>
         <div><span>Difference</span><strong id="mobileDifferenceBig">—</strong></div>
       </div>
-      <p class="hint">Nothing here is final until Close day. Save keeps everything typed so far — even if it does not balance yet — so you can come back and finish it later.</p>
     </section>
 
     <section class="card money-card"><h2><span class="step">7</span> Total sales today</h2>
       <div id="summaryCards" class="metrics"><span class="empty">Open a day to see today's money.</span></div>
-      <p class="hint" id="tenderHint"></p>
-      <p class="hint">Save stores the whole working day exactly as it stands, even unbalanced, and you can Save it again as many times as you like. Close day stores it the same way and additionally checks that the vehicle stock, the sales cards and the counted cash all reconcile — if anything is wrong, Close day changes nothing and your figures stay on screen to correct.</p>
       <div class="actions">
         <button id="saveDay">Save</button>
         <button id="closeDay" class="primary">Close day</button>
