@@ -64,13 +64,32 @@ def user_has_section_access(user, section):
     explicit set is authoritative and this fallback no longer applies —
     so revoking finished_goods from such a user actually takes effect.
     """
-    from webapp.models.user import ROLE_SUPER_ADMIN
+    from webapp.models.user import ROLE_SALESPERSON, ROLE_SUPER_ADMIN
     if user.role == ROLE_SUPER_ADMIN:
         # Global section access: a Super Admin may enter every active
         # section regardless of UserSectionAccess rows — a role check,
         # never a username check, so this applies identically to any
         # current or future super_admin account.
         return True
+    if user.role == ROLE_SALESPERSON:
+        # A Sales Person role implies full access to the Sales section on
+        # its own — the one deliberate exception to "every non-Super-Admin
+        # role needs an explicit per-section grant." For any OTHER section
+        # it is held to an explicit grant like anyone else, and — unlike
+        # every other role below — never falls back to "no grant rows at
+        # all means finished_goods": that legacy fallback exists for
+        # accounts that predate section access entirely, which a newly
+        # created Sales Person never does, so defaulting it into
+        # Finished Goods would silently hand it a second section nobody
+        # granted.
+        if section.code == SECTION_SALES:
+            return True
+        return (
+            db.session.query(UserSectionAccess.id)
+            .filter_by(user_id=user.id, section_id=section.id)
+            .first()
+            is not None
+        )
 
     has_any_grant = db.session.query(UserSectionAccess.id).filter_by(user_id=user.id).first() is not None
     if not has_any_grant:
