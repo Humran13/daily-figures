@@ -815,3 +815,187 @@ test('W: a debtor partial payment is collected on a later, still-unbalanced Save
   const day2 = await dayJson(page, '2026-12-02');
   expect(day2.totals.total_sales_ugx).toBe(0);
 });
+
+// ---- No-scroll-jump and automatic date loading -----------------------------
+
+test('X: Add another price does not jump the page to the top', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-12-10');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+
+  const card = salesCard(page, 'Compact Standard');
+  const addBtn = card.locator('[data-card-add]');
+  await addBtn.scrollIntoViewIfNeeded();
+  const before = await page.evaluate(() => window.scrollY);
+  expect(before).toBeGreaterThan(50);
+
+  await addBtn.click();
+  await expect(card.locator('.price-row')).toHaveCount(2);
+  await expect(card).toBeInViewport();
+  const after = await page.evaluate(() => window.scrollY);
+  expect(after).toBeGreaterThan(before - 150);
+  expect(after).toBeGreaterThan(100);
+
+  // The new row still contributes to the totals correctly.
+  await card.locator('[data-card-field="quantity"]').first().fill('100');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await card.locator('[data-card-field="quantity"]').nth(1).fill('10');
+  await card.locator('[data-card-field="unit_price_ugx"]').nth(1).fill('80000');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 8,700,000');
+});
+
+test('Y: Record expense does not jump the page to the top', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-12-11');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+
+  await showForm(page, 'expenseForm');
+  await page.locator('#expenseDescription').fill('Fuel');
+  await page.locator('#expenseAmount').fill('5000');
+  await page.locator('#addExpense').scrollIntoViewIfNeeded();
+  const before = await page.evaluate(() => window.scrollY);
+  expect(before).toBeGreaterThan(50);
+
+  await page.locator('#addExpense').click();
+  await expect(page.locator('#expenseList')).toContainText('Fuel');
+  const after = await page.evaluate(() => window.scrollY);
+  expect(after).toBeGreaterThan(before - 150);
+  expect(after).toBeGreaterThan(100);
+  await expect(page.locator('#summaryCards')).toContainText('Total expenses');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 5,000');
+});
+
+test('Z: Add unpaid sale does not jump the page to the top', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-12-12');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+
+  await page.locator('#debtorName').fill('Kato');
+  await page.locator('#debtAmount').fill('25000');
+  await page.locator('#addDebt').scrollIntoViewIfNeeded();
+  const before = await page.evaluate(() => window.scrollY);
+  expect(before).toBeGreaterThan(50);
+
+  await page.locator('#addDebt').click();
+  await expect(page.locator('#debtList')).toContainText('Kato owes today');
+  const after = await page.evaluate(() => window.scrollY);
+  expect(after).toBeGreaterThan(before - 150);
+  expect(after).toBeGreaterThan(100);
+  await expect(page.locator('#summaryCards')).toContainText('Debtors');
+  await expect(page.locator('#summaryCards')).toContainText('UGX 25,000');
+});
+
+test('AA: removing a row (Expense X) does not jump the page to the top', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await openDay(page, '2026-12-13');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+
+  await showForm(page, 'expenseForm');
+  await page.locator('#expenseDescription').fill('Lunch');
+  await page.locator('#expenseAmount').fill('10000');
+  await page.locator('#addExpense').click();
+  await expect(page.locator('#expenseList')).toContainText('Lunch');
+
+  const removeBtn = page.locator('#expenseList [data-remove-expense]');
+  await removeBtn.scrollIntoViewIfNeeded();
+  const before = await page.evaluate(() => window.scrollY);
+  expect(before).toBeGreaterThan(50);
+
+  await removeBtn.click();
+  await expect(page.locator('#expenseList')).not.toContainText('Lunch');
+  const after = await page.evaluate(() => window.scrollY);
+  expect(after).toBeGreaterThan(before - 150);
+  expect(after).toBeGreaterThan(100);
+});
+
+test('AB: the Open day button has been removed', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  await expect(page.locator('#loadDay')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open day' })).toHaveCount(0);
+});
+
+test('AC: changing the Business Date automatically loads it, with no Open day click', async ({ page }) => {
+  await loginAsSalesOperator(page);
+
+  // Date A: a saved, identifiable figure.
+  await openDay(page, '2026-12-14');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('110');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  await page.locator('#actualCash').fill('8690000');
+  const saved = await saveWorkingDay(page);
+  expect(saved.status()).toBe(200);
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · BALANCED');
+
+  // Switch to Date B using only the date input - the day loads without any
+  // Open day button, because it no longer exists.
+  await openDay(page, '2026-12-15');
+  await expect(page.locator('#statusPill')).toHaveText('NOT SAVED YET');
+  await expect(salesCard(page, 'Compact Standard').locator('[data-card-field="quantity"]').first())
+    .toHaveValue('');
+
+  // Switch back to Date A, again using only the date input.
+  await openDay(page, '2026-12-14');
+  await expect(page.locator('#statusPill')).toHaveText('SAVED · BALANCED');
+  await expect(card.locator('[data-card-field="quantity"]').first()).toHaveValue('110');
+  await expect(card.locator('[data-card-field="unit_price_ugx"]').first()).toHaveValue('79000');
+});
+
+test('AD: changing the date does not autosave an abandoned unsaved value', async ({ page }) => {
+  await loginAsSalesOperator(page);
+
+  await openDay(page, '2026-12-16');
+  await countEverythingBack(page);
+  await sellOneTenCartons(page);
+  const card = salesCard(page, 'Compact Standard');
+  await card.locator('[data-card-field="quantity"]').first().fill('110');
+  await card.locator('[data-card-field="unit_price_ugx"]').first().fill('79000');
+  // Deliberately never pressed Save.
+
+  const writes = [];
+  page.on('request', (request) => {
+    const method = request.method();
+    if (method !== 'GET' && request.url().includes('/api/sales/')) writes.push(`${method} ${request.url()}`);
+  });
+
+  await openDay(page, '2026-12-17');
+  expect(writes).toEqual([]);
+
+  await openDay(page, '2026-12-16');
+  await expect(page.locator('#statusPill')).toHaveText('NOT SAVED YET');
+  await expect(card.locator('[data-card-field="quantity"]').first()).toHaveValue('');
+  const stored = await dayJson(page, '2026-12-16');
+  expect(stored.day).toBeNull();
+});
+
+test('AH: no Open day button, auto-load and no jump, at mobile and desktop widths', async ({ page }) => {
+  await loginAsSalesOperator(page);
+  const dates = ['2026-12-18', '2026-12-19'];
+  const viewports = [{ width: 375, height: 812 }, { width: 1280, height: 900 }];
+  for (let i = 0; i < viewports.length; i += 1) {
+    await page.setViewportSize(viewports[i]);
+    await expect(page.locator('#loadDay')).toHaveCount(0);
+
+    await openDay(page, dates[i]);
+    await countEverythingBack(page);
+    await sellOneTenCartons(page);
+
+    const card = salesCard(page, 'Compact Standard');
+    const addBtn = card.locator('[data-card-add]');
+    await addBtn.scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => window.scrollY);
+    await addBtn.click();
+    await expect(card.locator('.price-row')).toHaveCount(2);
+    const after = await page.evaluate(() => window.scrollY);
+    expect(after).toBeGreaterThan(before - 150);
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  }
+});
