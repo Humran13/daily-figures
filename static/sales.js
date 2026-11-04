@@ -6,7 +6,7 @@ const ugx=n=>n==null?'—':(n<0?'-':'')+'UGX '+Math.abs(n).toLocaleString('en-US
 const token=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random();
 const METHOD_LABEL={cash:'Cash',mobile_money:'Mobile Money',bank:'Bank',other:'Other'};
 const ACCOUNT_LABEL={cash:'Cash',mobile_money:'Mobile Money',company:'Company cashier',bank:'Bank',other:'Other'};
-function msg(text,ok=false){const e=$('message');e.textContent=text||'';e.className=text?(ok?'ok':'error'):'';if(text)e.scrollIntoView({behavior:'smooth',block:'nearest'});}
+function msg(text,ok=false){const e=$('message');e.textContent=text||'';e.className=text?(ok?'ok':'error'):'';}
 async function api(path,options={}){options.headers={...(options.headers||{}),'Content-Type':'application/json'};const r=await fetch(path,options);const d=await r.json().catch(()=>({error:'Unexpected server response'}));if(!r.ok)throw new Error(d.error||'Request failed');return d;}
 async function withBusy(button,work){if(button)button.disabled=true;try{return await work();}finally{if(button)button.disabled=false;}}
 function profileId(){
@@ -1253,7 +1253,6 @@ document.addEventListener('click',e=>{
   renderReportLinks();
 });
 document.addEventListener('DOMContentLoaded',()=>{
-  $('loadDay').onclick=()=>loadDay();
   $('addStockProduct').onclick=addStockProductCard;
   bindStockEvents();
   $('addExpense').onclick=e=>addExpense(e.currentTarget);
