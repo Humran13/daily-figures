@@ -55,6 +55,7 @@
       if (enabled(flags, 'production')) return '/production.html?tab=new';
       return '/dispatch.html?tab=new';
     }
+    if (role === 'salesperson') return '/sales.html';
     if (enabled(flags, 'dashboard')) return '/dashboard.html';
     if (enabled(flags, 'daily_figures')) return '/';
     if (enabled(flags, 'history_exports')) return '/history.html';

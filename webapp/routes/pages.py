@@ -23,7 +23,7 @@ from flask import Blueprint, Response, current_app, redirect
 from webapp.auth import active_section, current_user
 from webapp.models.section import SECTION_FINISHED_GOODS, SECTION_SALES, SECTION_SPARE_PARTS
 from webapp.models.user import (
-    ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER, ROLES,
+    ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SALESPERSON, ROLE_SUPER_ADMIN, ROLE_VIEWER, ROLES,
 )
 from webapp.services import feature_flag_service as ffs
 
@@ -33,12 +33,17 @@ pages_bp = Blueprint("pages", __name__)
 # (read-only there, same as everywhere else) — only Operator gets a
 # different landing page, resolved below via OPERATOR_LANDING_CHAIN
 # instead of a fixed path, since which operational book is "first" depends
-# on which of Dispatch/Returns/Production is actually enabled.
+# on which of Dispatch/Returns/Production is actually enabled. Sales
+# Person lands on sales.html instead of Dashboard — it isn't in Dashboard's
+# own allowed_roles, so leaving it out here would bounce straight back
+# into this same fallback (an infinite redirect) the moment it landed
+# anywhere outside Sales. Mirrors static/app-shell.js's resolveLanding().
 FIRST_AUTHORIZED_PAGE = {
     ROLE_SUPER_ADMIN: "/dashboard.html",
     ROLE_MANAGER: "/dashboard.html",
     ROLE_ACCOUNTANT: "/dashboard.html",
     ROLE_VIEWER: "/dashboard.html",
+    ROLE_SALESPERSON: "/sales.html",
 }
 
 # Operator's landing page, and the "Home" destination the shared

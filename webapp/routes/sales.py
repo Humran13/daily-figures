@@ -13,7 +13,7 @@ from webapp.models.sales import (
 )
 from webapp.models.sales_category import SalesCategory
 from webapp.models.user import (
-    ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SUPER_ADMIN, ROLE_VIEWER, User,
+    ROLE_ACCOUNTANT, ROLE_MANAGER, ROLE_OPERATOR, ROLE_SALESPERSON, ROLE_SUPER_ADMIN, ROLE_VIEWER, User,
 )
 from webapp.services import branding_service
 from webapp.services.audit_service import record_audit
@@ -22,8 +22,12 @@ from webapp.services.export_service import MIME_TYPES, build_export
 from webapp.services import sales_service as svc
 
 sales_bp = Blueprint("sales", __name__, url_prefix="/api/sales")
-ELEVATED = (ROLE_SUPER_ADMIN, ROLE_MANAGER)
-READ_ALL = (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_ACCOUNTANT, ROLE_VIEWER)
+# A Sales Person has full authority inside this module — the same
+# correction/elevated powers as a Manager — but nowhere outside it: both
+# tuples are local to this file and never consulted by any other
+# blueprint, so this never reaches Finished Goods, Spare Parts or Admin.
+ELEVATED = (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_SALESPERSON)
+READ_ALL = (ROLE_SUPER_ADMIN, ROLE_MANAGER, ROLE_SALESPERSON, ROLE_ACCOUNTANT, ROLE_VIEWER)
 
 
 def _error(exc, status=400):
@@ -67,7 +71,7 @@ def _elevated():
 
 
 def _operational_writer():
-    return current_user().role in (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN)
+    return current_user().role in (ROLE_OPERATOR, ROLE_MANAGER, ROLE_SUPER_ADMIN, ROLE_SALESPERSON)
 
 
 def _product_meta(product, business_date):
